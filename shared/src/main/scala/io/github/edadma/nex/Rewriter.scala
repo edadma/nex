@@ -10,6 +10,8 @@ object Rewriter:
       case ArrayLit(elems) => ArrayLit(elems.map(rewrite)).setPos(expr.pos)
       case Assign(name, e) => Assign(name, rewrite(e)).setPos(expr.pos)
       case Lambda(p, body) => Lambda(p, rewrite(body)).setPos(expr.pos)
+      case Pipe(value, fn) => Pipe(rewrite(value), rewrite(fn)).setPos(expr.pos)
+      case Compose(f, g) => Compose(rewrite(f), rewrite(g)).setPos(expr.pos)
       // Wrap these in Lambda if they contain placeholders
       case _ if containsPlaceholder(expr) =>
         Lambda(placeholderParam, replacePlaceholder(expr)).setPos(expr.pos)
@@ -25,6 +27,8 @@ object Rewriter:
       case UnaryOp(_, e) => containsPlaceholder(e)
       case Call(_, args) => args.exists(containsPlaceholder)
       case Assign(_, e) => containsPlaceholder(e)
+      case Pipe(value, fn) => containsPlaceholder(value) || containsPlaceholder(fn)
+      case Compose(f, g) => containsPlaceholder(f) || containsPlaceholder(g)
 
   private def replacePlaceholder(expr: Expr): Expr =
     expr match
@@ -37,6 +41,8 @@ object Rewriter:
       case UnaryOp(op, e) => UnaryOp(op, replacePlaceholder(e)).setPos(expr.pos)
       case Call(name, args) => Call(name, args.map(replacePlaceholder)).setPos(expr.pos)
       case Assign(name, e) => Assign(name, replacePlaceholder(e)).setPos(expr.pos)
+      case Pipe(value, fn) => Pipe(replacePlaceholder(value), replacePlaceholder(fn)).setPos(expr.pos)
+      case Compose(f, g) => Compose(replacePlaceholder(f), replacePlaceholder(g)).setPos(expr.pos)
 
   private def rewriteChildren(expr: Expr): Expr =
     expr match
@@ -47,3 +53,5 @@ object Rewriter:
       case UnaryOp(op, e) => UnaryOp(op, rewrite(e)).setPos(expr.pos)
       case Call(name, args) => Call(name, args.map(rewrite)).setPos(expr.pos)
       case Assign(name, e) => Assign(name, rewrite(e)).setPos(expr.pos)
+      case Pipe(value, fn) => Pipe(rewrite(value), rewrite(fn)).setPos(expr.pos)
+      case Compose(f, g) => Compose(rewrite(f), rewrite(g)).setPos(expr.pos)

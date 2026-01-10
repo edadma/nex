@@ -13,7 +13,7 @@ case class Config(
 
   val parser = OParser.sequence(
     programName("nex"),
-    head("nex", "0.1"),
+    head("nex", "0.0.1"),
     opt[String]('e', "eval")
       .action((x, c) => c.copy(eval = Some(x)))
       .text("evaluate expression and print result"),

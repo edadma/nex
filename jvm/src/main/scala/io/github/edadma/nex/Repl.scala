@@ -17,7 +17,7 @@ object Repl:
 
     val evaluator = new Evaluator()
 
-    println("Nex Array REPL v0.1")
+    println("Nex Array REPL v0.0.1")
     println("Type 'quit' or 'exit' to exit, Ctrl-C to cancel, Ctrl-D to quit")
     println()
 

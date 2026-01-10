@@ -1,18 +1,19 @@
 package io.github.edadma.nex
 
+import scala.util.matching.Regex
 import scala.util.parsing.combinator.*
-import scala.util.parsing.input.{CharSequenceReader, Position}
+import scala.util.parsing.input.CharSequenceReader
 
 object Parser extends RegexParsers with PackratParsers:
   override def skipWhitespace: Boolean = true
-  override val whiteSpace = "[ \t]+".r
+  override val whiteSpace: Regex       = "[ \t]+".r
 
   def parse(input: String): Either[String, Expr] =
     val reader = new PackratReader(new CharSequenceReader(input))
     parseAll(statement, reader) match
       case Success(result, _) => Right(result)
       case Failure(msg, next) => Left(s"Parse error at ${next.pos}: $msg")
-      case Error(msg, next) => Left(s"Parse error at ${next.pos}: $msg")
+      case Error(msg, next)   => Left(s"Parse error at ${next.pos}: $msg")
 
   private lazy val statement: PackratParser[Expr] =
     assignment | expression
@@ -21,12 +22,30 @@ object Parser extends RegexParsers with PackratParsers:
     positioned((ident <~ "=") ~ expression ^^ { case name ~ expr => Assign(name, expr) })
 
   private lazy val expression: PackratParser[Expr] =
-    (expression ~ ("+" | "-") ~ term ^^ { case left ~ op ~ right =>
-      BinOp(op, left, right).setPos(left.pos)
-    }) | term
+    pipeline
 
-  private lazy val term: PackratParser[Expr] =
-    (term ~ ("*" | "/") ~ factor ^^ { case left ~ op ~ right =>
+  private lazy val pipeline: PackratParser[Expr] =
+    (pipeline ~ ("|" ~> composition) ^^ { case left ~ right =>
+      Pipe(left, right).setPos(left.pos)
+    }) | composition
+
+  private lazy val composition: PackratParser[Expr] =
+    (additive ~ ("." ~> composition) ^^ { case left ~ right =>
+      Compose(left, right).setPos(left.pos)
+    }) | additive
+
+  private lazy val additive: PackratParser[Expr] =
+    (additive ~ ("+" | "-") ~ comparison ^^ { case left ~ op ~ right =>
+      BinOp(op, left, right).setPos(left.pos)
+    }) | comparison
+
+  private lazy val comparison: PackratParser[Expr] =
+    (comparison ~ (">=" | "<=" | "==" | "!=" | ">" | "<") ~ multiplicative ^^ { case left ~ op ~ right =>
+      BinOp(op, left, right).setPos(left.pos)
+    }) | multiplicative
+
+  private lazy val multiplicative: PackratParser[Expr] =
+    (multiplicative ~ ("*" | "/") ~ factor ^^ { case left ~ op ~ right =>
       BinOp(op, left, right).setPos(left.pos)
     }) | factor
 

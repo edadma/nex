@@ -16,6 +16,13 @@ class Evaluator:
   globals.set("pi", ScalarValue(DALNumber(math.Pi)))
   globals.set("e", ScalarValue(DALNumber(math.E)))
 
+  // Arity of built-in functions for currying
+  private val builtinArity = Map(
+    "map" -> 2, "filter" -> 2, "iota" -> 1, "reshape" -> 2,
+    "shape" -> 1, "sum" -> 1, "product" -> 1, "count" -> 1,
+    "range" -> 2, "take" -> 2, "drop" -> 2
+  )
+
   def eval(expr: Expr): Value =
     evalIn(expr, globals)
 
@@ -25,7 +32,10 @@ class Evaluator:
         case Num(s) => ScalarValue(parseNumber(s))
         case Str(s) => StringValue(s)
         case Var(name) =>
-          env.get(name).getOrElse(throw RuntimeError(s"Undefined variable: $name", expr.pos))
+          env.get(name).orElse {
+            // Check if it's a builtin name - return as a curried function
+            builtinArity.get(name).map(arity => CurriedBuiltin(name, arity, List()))
+          }.getOrElse(throw RuntimeError(s"Undefined variable: $name", expr.pos))
         case Placeholder() =>
           throw RuntimeError("Placeholder '_' used outside of function context", expr.pos)
         case Lambda(param, body) =>
@@ -56,23 +66,96 @@ class Evaluator:
           val value = evalIn(e, env)
           globals.set(name, value)
           value
+        case Pipe(valueExpr, fnExpr) =>
+          val value = evalIn(valueExpr, env)
+          val fn = evalIn(fnExpr, env)
+          applyFunction(fn, value, expr.pos)
+        case Compose(fExpr, gExpr) =>
+          val f = evalIn(fExpr, env)
+          val g = evalIn(gExpr, env)
+          ComposedFunction(f, g)
     catch
       case e: BuiltinError => throw RuntimeError(e.msg, expr.pos)
 
-  private def evalCall(name: String, args: List[Expr], env: Environment, pos: Position): Value =
+  private def applyFunction(fn: Value, arg: Value, pos: Position): Value =
+    fn match
+      case FunctionValue(param, body, closureEnv) =>
+        val callEnv = closureEnv.child
+        callEnv.set(param, arg)
+        evalIn(body, callEnv)
+      case CurriedBuiltin(name, arity, appliedArgs) =>
+        val newArgs = appliedArgs :+ arg
+        if newArgs.length == arity then
+          if name == "map" || name == "filter" then
+            // map and filter need special handling - can't use Builtins.call
+            evalHigherOrder(name, newArgs, pos)
+          else
+            Builtins.call(name, newArgs)
+        else
+          CurriedBuiltin(name, arity, newArgs)
+      case ComposedFunction(f, g) =>
+        val intermediate = applyFunction(g, arg, pos)
+        applyFunction(f, intermediate, pos)
+      case other =>
+        throw RuntimeError(s"Cannot apply ${valueType(other)} as function", pos)
+
+  private def evalHigherOrder(name: String, args: List[Value], pos: Position): Value =
+    def applyFnValue(fn: Value, arg: Value): Value =
+      fn match
+        case f: FunctionValue =>
+          val callEnv = f.env.child
+          callEnv.set(f.param, arg)
+          evalIn(f.body, callEnv)
+        case c: ComposedFunction =>
+          applyFunction(c, arg, pos)
+        case c: CurriedBuiltin =>
+          applyFunction(c, arg, pos)
+        case _ =>
+          throw RuntimeError(s"Expected a function, got ${valueType(fn)}", pos)
+
     name match
-      case "map" => evalMap(args, env, pos)
-      case "filter" => evalFilter(args, env, pos)
-      case "iota" => Builtins.iota(args.map(a => evalIn(a, env)))
-      case "reshape" => Builtins.reshape(args.map(a => evalIn(a, env)))
-      case "shape" => Builtins.shape(args.map(a => evalIn(a, env)))
-      case "sum" => Builtins.sum(args.map(a => evalIn(a, env)))
-      case "product" => Builtins.product(args.map(a => evalIn(a, env)))
-      case "count" => Builtins.count(args.map(a => evalIn(a, env)))
-      case "range" => Builtins.range(args.map(a => evalIn(a, env)))
-      case "take" => Builtins.take(args.map(a => evalIn(a, env)))
-      case "drop" => Builtins.drop(args.map(a => evalIn(a, env)))
-      case _ =>
+      case "map" =>
+        val fn = args(0)
+        val arr = args(1) match
+          case a: ArrayValue => a
+          case ScalarValue(n) => ArrayValue.vector(Vector(n))
+          case other => throw RuntimeError(s"map requires an array, got ${valueType(other)}", pos)
+        val results = arr.data.map { n =>
+          applyFnValue(fn, ScalarValue(n)) match
+            case ScalarValue(r) => r
+            case other => throw RuntimeError(s"map function must return scalar, got ${valueType(other)}", pos)
+        }
+        ArrayValue.vector(results)
+      case "filter" =>
+        val fn = args(0)
+        val arr = args(1) match
+          case a: ArrayValue => a
+          case ScalarValue(n) => ArrayValue.vector(Vector(n))
+          case other => throw RuntimeError(s"filter requires an array, got ${valueType(other)}", pos)
+        val results = arr.data.filter { n =>
+          applyFnValue(fn, ScalarValue(n)) match
+            case ScalarValue(r) => isTruthy(r)
+            case other => throw RuntimeError(s"filter predicate must return scalar, got ${valueType(other)}", pos)
+        }
+        ArrayValue.vector(results)
+      case _ => throw RuntimeError(s"Unknown higher-order function: $name", pos)
+
+  private def evalCall(name: String, args: List[Expr], env: Environment, pos: Position): Value =
+    builtinArity.get(name) match
+      case Some(arity) =>
+        val evaluatedArgs = args.map(a => evalIn(a, env))
+        if evaluatedArgs.length < arity then
+          // Partial application
+          CurriedBuiltin(name, arity, evaluatedArgs)
+        else if evaluatedArgs.length == arity then
+          // Full application
+          if name == "map" || name == "filter" then
+            evalHigherOrder(name, evaluatedArgs, pos)
+          else
+            Builtins.call(name, evaluatedArgs)
+        else
+          throw RuntimeError(s"$name expects $arity arguments, got ${evaluatedArgs.length}", pos)
+      case None =>
         env.get(name) match
           case Some(FunctionValue(param, body, closureEnv)) =>
             if args.length != 1 then
@@ -81,6 +164,15 @@ class Evaluator:
             val callEnv = closureEnv.child
             callEnv.set(param, argValue)
             evalIn(body, callEnv)
+          case Some(curried: CurriedBuiltin) =>
+            // Apply arguments to curried builtin
+            args.foldLeft(curried: Value) { (fn, argExpr) =>
+              applyFunction(fn, evalIn(argExpr, env), pos)
+            }
+          case Some(composed: ComposedFunction) =>
+            if args.length != 1 then
+              throw RuntimeError(s"Composed function expects 1 argument, got ${args.length}", pos)
+            applyFunction(composed, evalIn(args.head, env), pos)
           case Some(_) =>
             throw RuntimeError(s"$name is not a function", pos)
           case None =>
@@ -137,18 +229,48 @@ class Evaluator:
       case _ => true
 
   private def evalBinOp(op: String, left: Value, right: Value, pos: Position): Value =
+    val comparisonOps = Set(">", "<", ">=", "<=", "==", "!=")
+    if comparisonOps.contains(op) then
+      evalComparison(op, left, right, pos)
+    else
+      (left, right) match
+        case (ScalarValue(l), ScalarValue(r)) =>
+          val result = ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)
+          ScalarValue(result)
+        case (ArrayValue(shape, data), ScalarValue(r)) =>
+          ArrayValue(shape, data.map(l => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        case (ScalarValue(l), ArrayValue(shape, data)) =>
+          ArrayValue(shape, data.map(r => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        case (ArrayValue(shape1, data1), ArrayValue(shape2, data2)) =>
+          if shape1 != shape2 then
+            throw RuntimeError(s"Shape mismatch: ${shape1.mkString("x")} vs ${shape2.mkString("x")}", pos)
+          ArrayValue(shape1, data1.zip(data2).map((l, r) => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        case _ =>
+          throw RuntimeError(s"Cannot apply $op to ${valueType(left)} and ${valueType(right)}", pos)
+
+  private def evalComparison(op: String, left: Value, right: Value, pos: Position): Value =
+    def compare(l: DALNumber, r: DALNumber): DALNumber =
+      val cmp = ComplexDAL.compare(l, r)
+      val result = op match
+        case ">" => cmp > 0
+        case "<" => cmp < 0
+        case ">=" => cmp >= 0
+        case "<=" => cmp <= 0
+        case "==" => cmp == 0
+        case "!=" => cmp != 0
+      DALNumber(if result then 1 else 0)
+
     (left, right) match
       case (ScalarValue(l), ScalarValue(r)) =>
-        val result = ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)
-        ScalarValue(result)
+        ScalarValue(compare(l, r))
       case (ArrayValue(shape, data), ScalarValue(r)) =>
-        ArrayValue(shape, data.map(l => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        ArrayValue(shape, data.map(l => compare(l, r)))
       case (ScalarValue(l), ArrayValue(shape, data)) =>
-        ArrayValue(shape, data.map(r => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        ArrayValue(shape, data.map(r => compare(l, r)))
       case (ArrayValue(shape1, data1), ArrayValue(shape2, data2)) =>
         if shape1 != shape2 then
           throw RuntimeError(s"Shape mismatch: ${shape1.mkString("x")} vs ${shape2.mkString("x")}", pos)
-        ArrayValue(shape1, data1.zip(data2).map((l, r) => ComplexDAL.compute(Symbol(op), l, r, DALNumber.apply)))
+        ArrayValue(shape1, data1.zip(data2).map((l, r) => compare(l, r)))
       case _ =>
         throw RuntimeError(s"Cannot apply $op to ${valueType(left)} and ${valueType(right)}", pos)
 
@@ -174,3 +296,5 @@ class Evaluator:
     case _: StringValue => "string"
     case _: ArrayValue => "array"
     case _: FunctionValue => "function"
+    case _: CurriedBuiltin => "function"
+    case _: ComposedFunction => "function"

@@ -5,6 +5,19 @@ import io.github.edadma.dal.{ComplexDAL, DALNumber}
 case class BuiltinError(msg: String) extends Exception(msg)
 
 object Builtins:
+  def call(name: String, args: List[Value]): Value =
+    name match
+      case "iota" => iota(args)
+      case "reshape" => reshape(args)
+      case "shape" => shape(args)
+      case "sum" => sum(args)
+      case "product" => product(args)
+      case "count" => count(args)
+      case "range" => range(args)
+      case "take" => take(args)
+      case "drop" => drop(args)
+      case _ => throw BuiltinError(s"Unknown builtin: $name")
+
   private def requireInt(v: Value, name: String): Int =
     v match
       case ScalarValue(n) if n.value.isInstanceOf[Integer] => n.value.intValue
@@ -48,7 +61,8 @@ object Builtins:
           case ScalarValue(_) => ArrayValue.vector(Vector.empty)
           case ArrayValue(sh, _) => ArrayValue.vector(sh.map(i => DALNumber(i)))
           case StringValue(s) => ArrayValue.vector(Vector(DALNumber(s.length)))
-          case FunctionValue(_, _, _) => throw BuiltinError("shape: cannot get shape of function")
+          case _: FunctionValue | _: CurriedBuiltin | _: ComposedFunction =>
+            throw BuiltinError("shape: cannot get shape of function")
       case _ => throw BuiltinError("shape requires exactly 1 argument")
 
   def sum(args: List[Value]): Value =

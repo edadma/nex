@@ -174,4 +174,134 @@ class Tests extends AnyFreeSpec with Matchers {
     }
   }
 
+  "Pipeline operator" - {
+    "simple pipeline" in {
+      evalStr("[1, 2, 3] | sum") shouldBe "6"
+    }
+
+    "chained pipeline" in {
+      evalStr("iota(10) | sum") shouldBe "45"
+    }
+
+    "pipeline with map" in {
+      evalStr("[1, 2, 3] | map(_ * 2)") shouldBe "[2, 4, 6]"
+    }
+
+    "pipeline with filter" in {
+      evalStr("[1, 2, 3, 4, 5] | filter(_ > 2)") shouldBe "[3, 4, 5]"
+    }
+
+    "multi-stage pipeline" in {
+      evalStr("iota(10) | filter(_ > 5) | sum") shouldBe "30"
+    }
+
+    "complex pipeline" in {
+      evalStr("iota(10) | filter(_ > 5) | map(_ * 2) | sum") shouldBe "60"
+    }
+
+    "pipeline preserves precedence" in {
+      evalStr("5 + 3 | _ * 2") shouldBe "16"
+    }
+  }
+
+  "Currying" - {
+    "partial application of take" in {
+      evalStr("[1, 2, 3, 4, 5] | take(3)") shouldBe "[1, 2, 3]"
+    }
+
+    "partial application of drop" in {
+      evalStr("[1, 2, 3, 4, 5] | drop(2)") shouldBe "[3, 4, 5]"
+    }
+
+    "partial application of map" in {
+      evalStr("[1, 2, 3] | map(_ + 10)") shouldBe "[11, 12, 13]"
+    }
+
+    "partial application of filter" in {
+      evalStr("[1, 2, 3, 4, 5] | filter(_ > 3)") shouldBe "[4, 5]"
+    }
+
+    "curried function as variable" in {
+      val evaluator = new Evaluator()
+      def evalWith(input: String): String =
+        Parser.parse(input) match
+          case Left(err) => fail(s"Parse error: $err")
+          case Right(ast) =>
+            val rewritten = Rewriter.rewrite(ast)
+            Value.display(evaluator.eval(rewritten))
+
+      evalWith("take3 = take(3)")
+      evalWith("[1, 2, 3, 4, 5] | take3") shouldBe "[1, 2, 3]"
+    }
+
+    "pipeline with multiple curried functions" in {
+      evalStr("iota(10) | filter(_ > 5) | map(_ * 2) | take(3)") shouldBe "[12, 14, 16]"
+    }
+  }
+
+  "Composition operator" - {
+    "compose two functions" in {
+      val evaluator = new Evaluator()
+      def evalWith(input: String): String =
+        Parser.parse(input) match
+          case Left(err) => fail(s"Parse error: $err")
+          case Right(ast) =>
+            val rewritten = Rewriter.rewrite(ast)
+            Value.display(evaluator.eval(rewritten))
+
+      evalWith("double = _ * 2")
+      evalWith("increment = _ + 1")
+      evalWith("f = increment . double")
+      evalWith("5 | f") shouldBe "11"
+    }
+
+    "compose with map" in {
+      val evaluator = new Evaluator()
+      def evalWith(input: String): String =
+        Parser.parse(input) match
+          case Left(err) => fail(s"Parse error: $err")
+          case Right(ast) =>
+            val rewritten = Rewriter.rewrite(ast)
+            Value.display(evaluator.eval(rewritten))
+
+      evalWith("double = _ * 2")
+      evalWith("increment = _ + 1")
+      evalWith("f = increment . double")
+      evalWith("[1, 2, 3] | map(f)") shouldBe "[3, 5, 7]"
+    }
+
+    "composition is right-associative" in {
+      val evaluator = new Evaluator()
+      def evalWith(input: String): String =
+        Parser.parse(input) match
+          case Left(err) => fail(s"Parse error: $err")
+          case Right(ast) =>
+            val rewritten = Rewriter.rewrite(ast)
+            Value.display(evaluator.eval(rewritten))
+
+      evalWith("a = _ + 1")
+      evalWith("b = _ * 2")
+      evalWith("c = _ + 10")
+      // f . g . h means f(g(h(x))), so a . b . c means a(b(c(x)))
+      // For x = 5: c(5) = 15, b(15) = 30, a(30) = 31
+      evalWith("f = a . b . c")
+      evalWith("5 | f") shouldBe "31"
+    }
+  }
+
+  "Complete examples" - {
+    "sum of doubled values" in {
+      evalStr("iota(5) | map(_ * 2) | sum") shouldBe "20"
+    }
+
+    "product via pipeline" in {
+      evalStr("[1, 2, 3, 4] | product") shouldBe "24"
+    }
+
+    "count filtered" in {
+      evalStr("iota(10) | filter(_ > 5) | count") shouldBe "4"
+    }
+  }
+
 }
+

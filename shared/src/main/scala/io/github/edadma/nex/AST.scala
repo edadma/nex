@@ -14,3 +14,5 @@ case class BinOp(op: String, left: Expr, right: Expr) extends Expr
 case class UnaryOp(op: String, expr: Expr) extends Expr
 case class Call(name: String, args: List[Expr]) extends Expr
 case class Assign(name: String, expr: Expr) extends Expr
+case class Pipe(value: Expr, fn: Expr) extends Expr
+case class Compose(f: Expr, g: Expr) extends Expr
