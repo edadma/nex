@@ -92,7 +92,7 @@ class ArithmeticTests extends TestHelpers:
 
   "Complex numbers" - {
     "imaginary unit" in {
-      evalStr("i") shouldBe "0+1i"
+      evalStr("i") shouldBe "i"
     }
 
     "complex expression" in {

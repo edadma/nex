@@ -1,7 +1,7 @@
 package io.github.edadma.nex
 
 import io.github.edadma.dal.DALNumber
-import io.github.edadma.numbers.{Rational, SmallRational, ComplexBigInt, ComplexRational, ComplexDouble, ComplexBigDecimal}
+import io.github.edadma.numbers.{Rational, SmallRational}
 
 sealed trait Value:
   def isScalar: Boolean
@@ -15,10 +15,7 @@ case class StringValue(s: String) extends Value:
 case class FunctionValue(param: String, body: Expr, env: Environment) extends Value:
   def isScalar: Boolean = true
 
-case class BuiltinFunction(name: String, f: Value => Value) extends Value:
-  def isScalar: Boolean = true
-
-case class MultiArgBuiltin(name: String, arity: Int, f: List[Value] => Value) extends Value:
+case class Builtin(name: String, f: List[Value] => Value) extends Value:
   def isScalar: Boolean = true
 
 case class ComposedFunction(f: Value, g: Value) extends Value:
@@ -38,8 +35,7 @@ object Value:
     case ScalarValue(n) => formatNumber(n.value)
     case StringValue(s) => s"\"$s\""
     case FunctionValue(param, _, _) => s"<function($param)>"
-    case BuiltinFunction(name, _) => s"<$name>"
-    case MultiArgBuiltin(name, _, _) => s"<$name>"
+    case Builtin(name, _) => s"<$name>"
     case ComposedFunction(_, _) => "<composed>"
     case ArrayValue(shape, data) if shape.length == 1 =>
       s"[${data.map(d => formatNumber(d.value)).mkString(", ")}]"
@@ -57,16 +53,5 @@ object Value:
   def formatNumber(n: Number): String = n match
     case sr: SmallRational => if sr.isWhole then sr.numerator.toString else s"${sr.numerator}/${sr.denominator}"
     case r: Rational => if r.isWhole then r.numerator.toString else s"${r.numerator}/${r.denominator}"
-    case c: ComplexBigInt => formatComplex(c.re.toString, c.im.toString)
-    case c: ComplexRational => formatComplex(formatNumber(c.re), formatNumber(c.im))
-    case c: ComplexDouble => formatComplex(formatDouble(c.re), formatDouble(c.im))
-    case c: ComplexBigDecimal => formatComplex(c.re.toString, c.im.toString)
-    case d: java.lang.Double => formatDouble(d)
+    case d: java.lang.Double => if d == d.toLong then d.toLong.toString else d.toString
     case other => other.toString
-
-  private def formatDouble(d: Double): String =
-    if d.isWhole then d.toLong.toString else d.toString
-
-  private def formatComplex(re: String, im: String): String =
-    if im.startsWith("-") then s"$re${im}i"
-    else s"$re+${im}i"

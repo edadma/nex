@@ -127,3 +127,133 @@ class BuiltinTests extends TestHelpers:
       evalStr("5 | map(_ * 2)") shouldBe "[10]"
     }
   }
+
+  "Math functions" - {
+    "abs of positive" in {
+      evalStr("abs(5)") shouldBe "5"
+    }
+
+    "abs of negative" in {
+      evalStr("abs(-5)") shouldBe "5"
+    }
+
+    "abs of array" in {
+      evalStr("abs([-3, -2, -1, 0, 1, 2, 3])") shouldBe "[3, 2, 1, 0, 1, 2, 3]"
+    }
+
+    "sqrt of perfect square" in {
+      evalStr("sqrt(4)") shouldBe "2"
+    }
+
+    "sqrt of 9" in {
+      evalStr("sqrt(9)") shouldBe "3"
+    }
+
+    "sqrt of negative" in {
+      evalStr("sqrt(-1)") shouldBe "i"
+    }
+
+    "floor of positive decimal" in {
+      evalStr("floor(3.7)") shouldBe "3"
+    }
+
+    "floor of negative decimal" in {
+      evalStr("floor(-3.2)") shouldBe "-4"
+    }
+
+    "floor of integer" in {
+      evalStr("floor(5)") shouldBe "5"
+    }
+
+    "ceil of positive decimal" in {
+      evalStr("ceil(3.2)") shouldBe "4"
+    }
+
+    "ceil of negative decimal" in {
+      evalStr("ceil(-3.7)") shouldBe "-3"
+    }
+
+    "ceil of integer" in {
+      evalStr("ceil(5)") shouldBe "5"
+    }
+
+    "sin of zero" in {
+      evalStr("sin(0)") shouldBe "0"
+    }
+
+    "cos of zero" in {
+      evalStr("cos(0)") shouldBe "1"
+    }
+
+    "tan of zero" in {
+      evalStr("tan(0)") shouldBe "0"
+    }
+
+    "exp of zero" in {
+      evalStr("exp(0)") shouldBe "1"
+    }
+
+    "exp of one approximates e" in {
+      evalStr("floor(exp(1) * 100) / 100") shouldBe "271/100"
+    }
+
+    "ln of one" in {
+      evalStr("ln(1)") shouldBe "0"
+    }
+
+    "ln of e approximates one" in {
+      evalStr("floor(ln(e) * 100) / 100") shouldBe "1"
+    }
+
+    "asin of zero" in {
+      evalStr("asin(0)") shouldBe "0"
+    }
+
+    "acos of one" in {
+      evalStr("acos(1)") shouldBe "0"
+    }
+
+    "atan of zero" in {
+      evalStr("atan(0)") shouldBe "0"
+    }
+
+    "pow scalar" in {
+      evalStr("pow(2, 3)") shouldBe "8"
+    }
+
+    "pow with array base" in {
+      evalStr("pow([2, 3, 4], 2)") shouldBe "[4, 9, 16]"
+    }
+
+    "mod scalar" in {
+      evalStr("mod(10, 3)") shouldBe "1"
+    }
+
+    "mod with array" in {
+      evalStr("mod([10, 11, 12], 3)") shouldBe "[1, 2, 0]"
+    }
+
+    "min of array" in {
+      evalStr("min([3, 1, 4, 1, 5])") shouldBe "1"
+    }
+
+    "min of scalars" in {
+      evalStr("min(3, 7)") shouldBe "3"
+    }
+
+    "min of multiple scalars" in {
+      evalStr("min(5, 2, 8, 1)") shouldBe "1"
+    }
+
+    "max of array" in {
+      evalStr("max([3, 1, 4, 1, 5])") shouldBe "5"
+    }
+
+    "max of scalars" in {
+      evalStr("max(3, 7)") shouldBe "7"
+    }
+
+    "max of multiple scalars" in {
+      evalStr("max(5, 2, 8, 1)") shouldBe "8"
+    }
+  }

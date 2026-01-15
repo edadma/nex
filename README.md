@@ -72,6 +72,15 @@ sbt 'nexJVM/run -e "iota(10) | filter(_ > 5) | sum"'
 
 > (1 + i) * (1 - i)
 2
+
+> sqrt(-1)
+i
+
+> sqrt(4)
+2
+
+> abs([-3, -2, -1, 0, 1])
+[3, 2, 1, 0, 1]
 ```
 
 ## Pipeline Operator
@@ -121,6 +130,8 @@ The `.` operator composes functions (right-associative):
 
 ## Built-in Functions
 
+### Array Functions
+
 | Function | Description | Example |
 |----------|-------------|---------|
 | `iota(n)` | Generate [0, 1, ..., n-1] | `iota(5)` → `[0, 1, 2, 3, 4]` |
@@ -130,10 +141,33 @@ The `.` operator composes functions (right-associative):
 | `sum(arr)` | Sum all elements | `[1, 2, 3] \| sum` → `6` |
 | `product(arr)` | Product of elements | `[1, 2, 3, 4] \| product` → `24` |
 | `count(arr)` | Number of elements | `[1, 2, 3] \| count` → `3` |
-| `take(n, arr)` | First n elements | `iota(10) \| take(3)` → `[0, 1, 2]` |
-| `drop(n, arr)` | Drop first n elements | `[1,2,3,4,5] \| drop(2)` → `[3, 4, 5]` |
-| `map(fn, arr)` | Apply function to each | `[1,2,3] \| map(_ * 2)` → `[2, 4, 6]` |
-| `filter(fn, arr)` | Keep matching elements | `[1,2,3,4] \| filter(_ > 2)` → `[3, 4]` |
+| `take(n)` | First n elements | `iota(10) \| take(3)` → `[0, 1, 2]` |
+| `drop(n)` | Drop first n elements | `[1,2,3,4,5] \| drop(2)` → `[3, 4, 5]` |
+| `map(fn)` | Apply function to each | `[1,2,3] \| map(_ * 2)` → `[2, 4, 6]` |
+| `filter(fn)` | Keep matching elements | `[1,2,3,4] \| filter(_ > 2)` → `[3, 4]` |
+| `min` | Minimum value | `min([3,1,4])` → `1`, `min(3,7)` → `3` |
+| `max` | Maximum value | `max([3,1,4])` → `4`, `max(3,7)` → `7` |
+
+### Math Functions
+
+All math functions work element-wise on arrays and support complex numbers.
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `abs(x)` | Absolute value | `abs(-5)` → `5` |
+| `sqrt(x)` | Square root | `sqrt(4)` → `2`, `sqrt(-1)` → `i` |
+| `floor(x)` | Floor | `floor(3.7)` → `3` |
+| `ceil(x)` | Ceiling | `ceil(3.2)` → `4` |
+| `sin(x)` | Sine | `sin(0)` → `0` |
+| `cos(x)` | Cosine | `cos(0)` → `1` |
+| `tan(x)` | Tangent | `tan(0)` → `0` |
+| `asin(x)` | Arc sine | `asin(0)` → `0` |
+| `acos(x)` | Arc cosine | `acos(1)` → `0` |
+| `atan(x)` | Arc tangent | `atan(0)` → `0` |
+| `exp(x)` | Exponential | `exp(0)` → `1` |
+| `ln(x)` | Natural logarithm | `ln(1)` → `0` |
+| `pow(x, y)` | Power | `pow(2, 3)` → `8` |
+| `mod(x, y)` | Modulo | `mod(10, 3)` → `1` |
 
 ## Operators
 
