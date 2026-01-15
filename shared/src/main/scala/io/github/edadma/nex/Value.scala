@@ -12,7 +12,7 @@ case class ScalarValue(n: DALNumber) extends Value:
 case class StringValue(s: String) extends Value:
   def isScalar: Boolean = true
 
-case class FunctionValue(param: String, body: Expr, env: Environment) extends Value:
+case class FunctionValue(params: List[String], body: Expr, env: Environment) extends Value:
   def isScalar: Boolean = true
 
 case class Builtin(name: String, f: List[Value] => Value) extends Value:
@@ -34,7 +34,7 @@ object Value:
   def display(v: Value): String = v match
     case ScalarValue(n) => formatNumber(n.value)
     case StringValue(s) => s"\"$s\""
-    case FunctionValue(param, _, _) => s"<function($param)>"
+    case FunctionValue(params, _, _) => s"<function(${params.mkString(", ")})>"
     case Builtin(name, _) => s"<$name>"
     case ComposedFunction(_, _) => "<composed>"
     case ArrayValue(shape, data) if shape.length == 1 =>

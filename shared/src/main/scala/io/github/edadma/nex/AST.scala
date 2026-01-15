@@ -4,15 +4,15 @@ import scala.util.parsing.input.Positional
 
 sealed trait Expr extends Positional
 
-case class Num(value: String) extends Expr
-case class Str(value: String) extends Expr
-case class Var(name: String) extends Expr
-case class Placeholder() extends Expr
-case class Lambda(param: String, body: Expr) extends Expr
-case class ArrayLit(elements: List[Expr]) extends Expr
-case class BinOp(op: String, left: Expr, right: Expr) extends Expr
-case class UnaryOp(op: String, expr: Expr) extends Expr
-case class Apply(fn: Expr, args: List[Expr]) extends Expr
-case class Assign(name: String, expr: Expr) extends Expr
-case class Pipe(value: Expr, fn: Expr) extends Expr
-case class Compose(f: Expr, g: Expr) extends Expr
+case class NumberExpr(value: String) extends Expr
+case class StringExpr(value: String) extends Expr
+case class VarExpr(name: String) extends Expr
+case class PlaceholderExpr() extends Expr
+case class FunctionExpr(params: List[String], body: Expr) extends Expr
+case class ArrayExpr(elements: List[Expr]) extends Expr
+case class BinaryExpr(op: String, left: Expr, right: Expr) extends Expr
+case class UnaryExpr(op: String, expr: Expr) extends Expr
+case class ApplyExpr(fn: Expr, args: List[Expr]) extends Expr
+case class AssignExpr(name: String, expr: Expr) extends Expr
+case class PipeExpr(value: Expr, fn: Expr) extends Expr
+case class ComposeExpr(f: Expr, g: Expr) extends Expr

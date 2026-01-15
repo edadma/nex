@@ -59,7 +59,7 @@ class Evaluator:
             case ScalarValue(n) => ArrayValue.vector(Vector(n))
             case other => throw BuiltinError(s"map requires an array, got ${valueType(other)}")
           val results = arr.data.map { n =>
-            applyFunctionValue(fn, ScalarValue(n)) match
+            applyFunctionValue(fn, List(ScalarValue(n))) match
               case ScalarValue(r) => r
               case other => throw BuiltinError(s"map function must return scalar, got ${valueType(other)}")
           }
@@ -78,7 +78,7 @@ class Evaluator:
             case ScalarValue(n) => ArrayValue.vector(Vector(n))
             case other => throw BuiltinError(s"filter requires an array, got ${valueType(other)}")
           val results = arr.data.filter { n =>
-            applyFunctionValue(pred, ScalarValue(n)) match
+            applyFunctionValue(pred, List(ScalarValue(n))) match
               case ScalarValue(r) => isTruthy(r)
               case other => throw BuiltinError(s"filter predicate must return scalar, got ${valueType(other)}")
           }
@@ -91,33 +91,41 @@ class Evaluator:
   def eval(expr: Expr): Value =
     evalIn(expr, globals)
 
-  // Apply a function value to an argument (used by map/filter)
-  private def applyFunctionValue(fn: Value, arg: Value): Value =
+  // Apply a function value to arguments (used by map/filter and general application)
+  private def applyFunctionValue(fn: Value, args: List[Value]): Value =
     fn match
-      case FunctionValue(param, body, closureEnv) =>
-        val callEnv = closureEnv.child
-        callEnv.set(param, arg)
-        evalIn(body, callEnv)
+      case FunctionValue(params, body, closureEnv) =>
+        if args.length == params.length then
+          val callEnv = closureEnv.child
+          params.zip(args).foreach { (param, arg) => callEnv.set(param, arg) }
+          evalIn(body, callEnv)
+        else if args.length < params.length then
+          // Partial application
+          val callEnv = closureEnv.child
+          params.zip(args).foreach { (param, arg) => callEnv.set(param, arg) }
+          FunctionValue(params.drop(args.length), body, callEnv)
+        else
+          throw BuiltinError(s"Too many arguments: expected ${params.length}, got ${args.length}")
       case Builtin(_, f) =>
-        f(List(arg))
+        f(args)
       case ComposedFunction(f, g) =>
-        val intermediate = applyFunctionValue(g, arg)
-        applyFunctionValue(f, intermediate)
+        val intermediate = applyFunctionValue(g, args)
+        applyFunctionValue(f, List(intermediate))
       case _ =>
         throw BuiltinError(s"Expected a function, got ${valueType(fn)}")
 
   private def evalIn(expr: Expr, env: Environment): Value =
     try
       expr match
-        case Num(s) => ScalarValue(parseNumber(s))
-        case Str(s) => StringValue(s)
-        case Var(name) =>
+        case NumberExpr(s) => ScalarValue(parseNumber(s))
+        case StringExpr(s) => StringValue(s)
+        case VarExpr(name) =>
           env.get(name).getOrElse(throw RuntimeError(s"Undefined variable: $name", expr.pos))
-        case Placeholder() =>
+        case PlaceholderExpr() =>
           throw RuntimeError("Placeholder '_' used outside of function context", expr.pos)
-        case Lambda(param, body) =>
-          FunctionValue(param, body, env)
-        case ArrayLit(elems) =>
+        case FunctionExpr(params, body) =>
+          FunctionValue(params, body, env)
+        case ArrayExpr(elems) =>
           val values = elems.map(e => evalIn(e, env))
           val data = values.flatMap {
             case ScalarValue(n) => Vector(n)
@@ -126,57 +134,41 @@ class Evaluator:
           }.toVector
           if data.isEmpty then ArrayValue.empty
           else ArrayValue.vector(data)
-        case BinOp(op, left, right) =>
+        case BinaryExpr(op, left, right) =>
           evalBinOp(op, evalIn(left, env), evalIn(right, env), expr.pos)
-        case UnaryOp("-", e) =>
+        case UnaryExpr("-", e) =>
           evalIn(e, env) match
             case ScalarValue(n) =>
               ScalarValue(DALNumber(ComplexDAL.negate(n.typ, n.value)))
             case ArrayValue(shape, data) =>
               ArrayValue(shape, data.map(n => DALNumber(ComplexDAL.negate(n.typ, n.value))))
             case other => throw RuntimeError(s"Cannot negate ${valueType(other)}", expr.pos)
-        case UnaryOp(op, _) =>
+        case UnaryExpr(op, _) =>
           throw RuntimeError(s"Unknown unary operator: $op", expr.pos)
-        case Apply(fnExpr, args) =>
+        case ApplyExpr(fnExpr, args) =>
           val fn = evalIn(fnExpr, env)
-          fn match
-            case Builtin(_, f) =>
-              // Evaluate all args and pass to builtin
-              val evaluatedArgs = args.map(a => evalIn(a, env))
-              f(evaluatedArgs)
-            case _ =>
-              args.foldLeft(fn) { (currentFn, argExpr) =>
-                val argVal = evalIn(argExpr, env)
-                applyFunction(currentFn, argVal, expr.pos)
-              }
-        case Assign(name, e) =>
+          val evaluatedArgs = args.map(a => evalIn(a, env))
+          applyFunction(fn, evaluatedArgs, expr.pos)
+        case AssignExpr(name, e) =>
           val value = evalIn(e, env)
           globals.set(name, value)
           value
-        case Pipe(valueExpr, fnExpr) =>
+        case PipeExpr(valueExpr, fnExpr) =>
           val value = evalIn(valueExpr, env)
           val fn = evalIn(fnExpr, env)
-          applyFunction(fn, value, expr.pos)
-        case Compose(fExpr, gExpr) =>
+          applyFunction(fn, List(value), expr.pos)
+        case ComposeExpr(fExpr, gExpr) =>
           val f = evalIn(fExpr, env)
           val g = evalIn(gExpr, env)
           ComposedFunction(f, g)
     catch
       case e: BuiltinError => throw RuntimeError(e.msg, expr.pos)
 
-  private def applyFunction(fn: Value, arg: Value, pos: Position): Value =
-    fn match
-      case FunctionValue(param, body, closureEnv) =>
-        val callEnv = closureEnv.child
-        callEnv.set(param, arg)
-        evalIn(body, callEnv)
-      case Builtin(_, f) =>
-        f(List(arg))
-      case ComposedFunction(f, g) =>
-        val intermediate = applyFunction(g, arg, pos)
-        applyFunction(f, intermediate, pos)
-      case other =>
-        throw RuntimeError(s"Cannot apply ${valueType(other)} as function", pos)
+  private def applyFunction(fn: Value, args: List[Value], pos: Position): Value =
+    try
+      applyFunctionValue(fn, args)
+    catch
+      case e: BuiltinError => throw RuntimeError(e.msg, pos)
 
   private def isTruthy(n: DALNumber): Boolean =
     n.value match

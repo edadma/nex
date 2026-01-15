@@ -11,7 +11,7 @@ class FunctionTests extends TestHelpers:
     }
   }
 
-  "Lambdas" - {
+  "Lambdas (placeholder syntax)" - {
     "lambda stored as variable" in {
       withEvaluator { evalWith =>
         evalWith("f = _ * 2")
@@ -37,6 +37,73 @@ class FunctionTests extends TestHelpers:
       withEvaluator { evalWith =>
         evalWith("f = _ * 3")
         evalWith("5 | f") shouldBe "15"
+      }
+    }
+  }
+
+  "Arrow functions" - {
+    "single param without parens" in {
+      withEvaluator { evalWith =>
+        evalWith("f = x -> x * 2")
+        evalWith("f(5)") shouldBe "10"
+      }
+    }
+
+    "single param with parens" in {
+      withEvaluator { evalWith =>
+        evalWith("f = (x) -> x + 1")
+        evalWith("f(10)") shouldBe "11"
+      }
+    }
+
+    "two params" in {
+      withEvaluator { evalWith =>
+        evalWith("add = (x, y) -> x + y")
+        evalWith("add(3, 4)") shouldBe "7"
+      }
+    }
+
+    "three params" in {
+      withEvaluator { evalWith =>
+        evalWith("f = (a, b, c) -> a + b * c")
+        evalWith("f(1, 2, 3)") shouldBe "7"
+      }
+    }
+
+    "arrow function in pipeline" in {
+      withEvaluator { evalWith =>
+        evalWith("double = x -> x * 2")
+        evalWith("5 | double") shouldBe "10"
+      }
+    }
+
+    "arrow function with map" in {
+      evalStr("[1, 2, 3] | map(x -> x * 2)") shouldBe "[2, 4, 6]"
+    }
+
+    "arrow function with filter" in {
+      evalStr("[1, 2, 3, 4, 5] | filter(x -> x > 2)") shouldBe "[3, 4, 5]"
+    }
+
+    "partial application of two-param function" in {
+      withEvaluator { evalWith =>
+        evalWith("add = (x, y) -> x + y")
+        evalWith("add5 = add(5)")
+        evalWith("add5(3)") shouldBe "8"
+      }
+    }
+
+    "nested arrow functions" in {
+      withEvaluator { evalWith =>
+        evalWith("f = x -> y -> x + y")
+        evalWith("f(3)(4)") shouldBe "7"
+      }
+    }
+
+    "arrow function with complex body" in {
+      withEvaluator { evalWith =>
+        evalWith("f = (x, y) -> x * y + x - y")
+        evalWith("f(3, 4)") shouldBe "11"
       }
     }
   }

@@ -5,41 +5,41 @@ object Rewriter:
 
   def rewrite(expr: Expr): Expr =
     expr match
-      // Don't wrap these in Lambda - just rewrite their children
-      case Apply(fn, args) => Apply(rewrite(fn), args.map(rewrite)).setPos(expr.pos)
-      case ArrayLit(elems) => ArrayLit(elems.map(rewrite)).setPos(expr.pos)
-      case Assign(name, e) => Assign(name, rewrite(e)).setPos(expr.pos)
-      case Lambda(p, body) => Lambda(p, rewrite(body)).setPos(expr.pos)
-      case Pipe(value, fn) => Pipe(rewrite(value), rewrite(fn)).setPos(expr.pos)
-      case Compose(f, g) => Compose(rewrite(f), rewrite(g)).setPos(expr.pos)
-      // Wrap these in Lambda if they contain placeholders
+      // Don't wrap these in FunctionExpr - just rewrite their children
+      case ApplyExpr(fn, args) => ApplyExpr(rewrite(fn), args.map(rewrite)).setPos(expr.pos)
+      case ArrayExpr(elems) => ArrayExpr(elems.map(rewrite)).setPos(expr.pos)
+      case AssignExpr(name, e) => AssignExpr(name, rewrite(e)).setPos(expr.pos)
+      case FunctionExpr(params, body) => FunctionExpr(params, rewrite(body)).setPos(expr.pos)
+      case PipeExpr(value, fn) => PipeExpr(rewrite(value), rewrite(fn)).setPos(expr.pos)
+      case ComposeExpr(f, g) => ComposeExpr(rewrite(f), rewrite(g)).setPos(expr.pos)
+      // Wrap these in FunctionExpr if they contain placeholders
       case _ if containsPlaceholder(expr) =>
-        Lambda(placeholderParam, replacePlaceholder(expr)).setPos(expr.pos)
+        FunctionExpr(List(placeholderParam), replacePlaceholder(expr)).setPos(expr.pos)
       case _ => expr
 
   private def containsPlaceholder(expr: Expr): Boolean =
     expr match
-      case Placeholder() => true
-      case Num(_) | Str(_) | Var(_) => false
-      case Lambda(_, body) => containsPlaceholder(body)
-      case ArrayLit(elems) => elems.exists(containsPlaceholder)
-      case BinOp(_, left, right) => containsPlaceholder(left) || containsPlaceholder(right)
-      case UnaryOp(_, e) => containsPlaceholder(e)
-      case Apply(fn, args) => containsPlaceholder(fn) || args.exists(containsPlaceholder)
-      case Assign(_, e) => containsPlaceholder(e)
-      case Pipe(value, fn) => containsPlaceholder(value) || containsPlaceholder(fn)
-      case Compose(f, g) => containsPlaceholder(f) || containsPlaceholder(g)
+      case PlaceholderExpr() => true
+      case NumberExpr(_) | StringExpr(_) | VarExpr(_) => false
+      case FunctionExpr(_, body) => containsPlaceholder(body)
+      case ArrayExpr(elems) => elems.exists(containsPlaceholder)
+      case BinaryExpr(_, left, right) => containsPlaceholder(left) || containsPlaceholder(right)
+      case UnaryExpr(_, e) => containsPlaceholder(e)
+      case ApplyExpr(fn, args) => containsPlaceholder(fn) || args.exists(containsPlaceholder)
+      case AssignExpr(_, e) => containsPlaceholder(e)
+      case PipeExpr(value, fn) => containsPlaceholder(value) || containsPlaceholder(fn)
+      case ComposeExpr(f, g) => containsPlaceholder(f) || containsPlaceholder(g)
 
   private def replacePlaceholder(expr: Expr): Expr =
     expr match
-      case Placeholder() => Var(placeholderParam).setPos(expr.pos)
-      case Num(_) | Str(_) | Var(_) => expr
-      case Lambda(p, body) => Lambda(p, replacePlaceholder(body)).setPos(expr.pos)
-      case ArrayLit(elems) => ArrayLit(elems.map(replacePlaceholder)).setPos(expr.pos)
-      case BinOp(op, left, right) =>
-        BinOp(op, replacePlaceholder(left), replacePlaceholder(right)).setPos(expr.pos)
-      case UnaryOp(op, e) => UnaryOp(op, replacePlaceholder(e)).setPos(expr.pos)
-      case Apply(fn, args) => Apply(replacePlaceholder(fn), args.map(replacePlaceholder)).setPos(expr.pos)
-      case Assign(name, e) => Assign(name, replacePlaceholder(e)).setPos(expr.pos)
-      case Pipe(value, fn) => Pipe(replacePlaceholder(value), replacePlaceholder(fn)).setPos(expr.pos)
-      case Compose(f, g) => Compose(replacePlaceholder(f), replacePlaceholder(g)).setPos(expr.pos)
+      case PlaceholderExpr() => VarExpr(placeholderParam).setPos(expr.pos)
+      case NumberExpr(_) | StringExpr(_) | VarExpr(_) => expr
+      case FunctionExpr(params, body) => FunctionExpr(params, replacePlaceholder(body)).setPos(expr.pos)
+      case ArrayExpr(elems) => ArrayExpr(elems.map(replacePlaceholder)).setPos(expr.pos)
+      case BinaryExpr(op, left, right) =>
+        BinaryExpr(op, replacePlaceholder(left), replacePlaceholder(right)).setPos(expr.pos)
+      case UnaryExpr(op, e) => UnaryExpr(op, replacePlaceholder(e)).setPos(expr.pos)
+      case ApplyExpr(fn, args) => ApplyExpr(replacePlaceholder(fn), args.map(replacePlaceholder)).setPos(expr.pos)
+      case AssignExpr(name, e) => AssignExpr(name, replacePlaceholder(e)).setPos(expr.pos)
+      case PipeExpr(value, fn) => PipeExpr(replacePlaceholder(value), replacePlaceholder(fn)).setPos(expr.pos)
+      case ComposeExpr(f, g) => ComposeExpr(replacePlaceholder(f), replacePlaceholder(g)).setPos(expr.pos)
