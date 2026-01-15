@@ -54,8 +54,18 @@ object Parser extends RegexParsers with PackratParsers:
     }) | multiplicative
 
   private lazy val multiplicative: PackratParser[Expr] =
-    (multiplicative ~ ("*" | "/") ~ factor ^^ { case left ~ op ~ right =>
+    (multiplicative ~ ("*" | "/" | modKeyword) ~ power ^^ { case left ~ op ~ right =>
       BinaryExpr(op, left, right).setPos(left.pos)
+    }) | power
+
+  // mod keyword - must not be followed by identifier characters
+  private lazy val modKeyword: PackratParser[String] =
+    "mod" <~ guard(not(elem("identifier char", c => c.isLetterOrDigit || c == '_')))
+
+  // Power is right-associative and higher precedence than multiplicative
+  private lazy val power: PackratParser[Expr] =
+    (factor ~ ("^" ~> power) ^^ { case left ~ right =>
+      BinaryExpr("^", left, right).setPos(left.pos)
     }) | factor
 
   private lazy val factor: PackratParser[Expr] =

@@ -46,6 +46,34 @@ class ArithmeticTests extends TestHelpers:
     "parentheses" in {
       evalStr("(2 + 3) * 4") shouldBe "20"
     }
+
+    "power operator" in {
+      evalStr("2^3") shouldBe "8"
+    }
+
+    "power right associative" in {
+      evalStr("2^3^2") shouldBe "512"  // 2^(3^2) = 2^9 = 512
+    }
+
+    "power precedence over multiplication" in {
+      evalStr("2 * 3^2") shouldBe "18"  // 2 * 9 = 18
+    }
+
+    "power with negative exponent" in {
+      evalStr("2^-1") shouldBe "1/2"
+    }
+
+    "infix mod" in {
+      evalStr("10 mod 3") shouldBe "1"
+    }
+
+    "infix mod precedence" in {
+      evalStr("10 + 7 mod 3") shouldBe "11"  // 10 + (7 mod 3) = 10 + 1
+    }
+
+    "infix mod with multiplication" in {
+      evalStr("2 * 5 mod 3") shouldBe "1"  // (2 * 5) mod 3 = 10 mod 3 = 1
+    }
   }
 
   "Comparison operators" - {
