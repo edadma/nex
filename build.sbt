@@ -71,8 +71,9 @@ lazy val nex = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies += "org.jline"     % "jline"         % "3.26.1",
   )
   .nativeSettings(
-//    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.6.0",
-    libraryDependencies += "org.scala-js" %% "scalajs-stubs" % "1.1.0" % "provided",
+    libraryDependencies += "org.scala-js"       %% "scalajs-stubs"   % "1.1.0" % "provided",
+    libraryDependencies += "io.github.edadma"  %%% "readline"        % "0.0.1",
+    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.6.0",
   )
   .jsSettings(
     jsEnv := new org.scalajs.jsenv.nodejs.NodeJSEnv(),
