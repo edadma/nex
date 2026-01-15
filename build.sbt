@@ -59,7 +59,7 @@ lazy val nex = crossProject(JSPlatform, JVMPlatform, NativePlatform)
 //      "io.github.edadma" %%% "cross_platform" % "0.0.20"
 //    ),
     libraryDependencies ++= Seq(
-      "io.github.edadma"       %%% "dal"                      % "0.0.3",
+      "io.github.edadma"       %%% "dal"                      % "0.0.4",
       "org.scala-lang.modules" %%% "scala-parser-combinators" % "2.4.0",
       "com.github.scopt"       %%% "scopt"                    % "4.1.0",
       "com.lihaoyi"            %%% "pprint"                   % "0.9.0",

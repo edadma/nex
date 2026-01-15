@@ -34,6 +34,7 @@ class Evaluator:
   globals.set("sqrt", Builtins.sqrt)
   globals.set("floor", Builtins.floor)
   globals.set("ceil", Builtins.ceil)
+  globals.set("round", Builtins.round)
   globals.set("sin", Builtins.sin)
   globals.set("cos", Builtins.cos)
   globals.set("tan", Builtins.tan)

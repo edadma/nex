@@ -156,6 +156,11 @@ object Builtins:
     case args => throw BuiltinError(s"ceil requires 1 argument, got ${args.length}")
   })
 
+  val round: Builtin = Builtin("round", {
+    case List(v) => mapDALFunction(v, ComplexDAL.roundFunction, "round")
+    case args => throw BuiltinError(s"round requires 1 argument, got ${args.length}")
+  })
+
   val sin: Builtin = Builtin("sin", {
     case List(v) => mapDALFunction(v, ComplexDAL.sinFunction, "sin")
     case args => throw BuiltinError(s"sin requires 1 argument, got ${args.length}")

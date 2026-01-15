@@ -177,6 +177,26 @@ class BuiltinTests extends TestHelpers:
       evalStr("ceil(5)") shouldBe "5"
     }
 
+    "round of positive up" in {
+      evalStr("round(3.7)") shouldBe "4"
+    }
+
+    "round of positive down" in {
+      evalStr("round(3.2)") shouldBe "3"
+    }
+
+    "round of half up" in {
+      evalStr("round(2.5)") shouldBe "3"
+    }
+
+    "round of negative" in {
+      evalStr("round(-2.3)") shouldBe "-2"
+    }
+
+    "round of integer" in {
+      evalStr("round(5)") shouldBe "5"
+    }
+
     "sin of zero" in {
       evalStr("sin(0)") shouldBe "0"
     }
