@@ -74,6 +74,18 @@ class ArithmeticTests extends TestHelpers:
     "infix mod with multiplication" in {
       evalStr("2 * 5 mod 3") shouldBe "1"  // (2 * 5) mod 3 = 10 mod 3 = 1
     }
+
+    "integer division" in {
+      evalStr("7 \\ 3") shouldBe "2"
+    }
+
+    "integer division negative" in {
+      evalStr("-7 \\ 3") shouldBe "-2"  // truncates toward zero
+    }
+
+    "integer division precedence" in {
+      evalStr("10 + 7 \\ 3") shouldBe "12"  // 10 + 2 = 12
+    }
   }
 
   "Comparison operators" - {
