@@ -15,7 +15,10 @@ case class StringValue(s: String) extends Value:
 case class FunctionValue(param: String, body: Expr, env: Environment) extends Value:
   def isScalar: Boolean = true
 
-case class CurriedBuiltin(name: String, arity: Int, appliedArgs: List[Value]) extends Value:
+case class BuiltinFunction(name: String, f: Value => Value) extends Value:
+  def isScalar: Boolean = true
+
+case class MultiArgBuiltin(name: String, arity: Int, f: List[Value] => Value) extends Value:
   def isScalar: Boolean = true
 
 case class ComposedFunction(f: Value, g: Value) extends Value:
@@ -35,9 +38,8 @@ object Value:
     case ScalarValue(n) => formatNumber(n.value)
     case StringValue(s) => s"\"$s\""
     case FunctionValue(param, _, _) => s"<function($param)>"
-    case CurriedBuiltin(name, arity, applied) =>
-      if applied.isEmpty then s"<builtin $name>"
-      else s"<$name(${applied.length}/$arity)>"
+    case BuiltinFunction(name, _) => s"<$name>"
+    case MultiArgBuiltin(name, _, _) => s"<$name>"
     case ComposedFunction(_, _) => "<composed>"
     case ArrayValue(shape, data) if shape.length == 1 =>
       s"[${data.map(d => formatNumber(d.value)).mkString(", ")}]"

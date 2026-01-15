@@ -50,10 +50,19 @@ object Parser extends RegexParsers with PackratParsers:
     }) | factor
 
   private lazy val factor: PackratParser[Expr] =
-    positioned("-" ~> factor ^^ { e => UnaryOp("-", e) }) | primary
+    positioned("-" ~> factor ^^ { e => UnaryOp("-", e) }) | application
+
+  // application handles chained function calls: f(x)(y)(z)
+  private lazy val application: PackratParser[Expr] =
+    primary ~ rep("(" ~> repsep(expression, ",") <~ ")") ^^ {
+      case expr ~ argLists =>
+        argLists.foldLeft(expr) { (fn, args) =>
+          Apply(fn, args).setPos(fn.pos)
+        }
+    }
 
   private lazy val primary: PackratParser[Expr] =
-    number | stringLit | functionCall | placeholder | variable | arrayLit | parens
+    number | stringLit | placeholder | variable | arrayLit | parens
 
   private lazy val placeholder: PackratParser[Placeholder] =
     positioned("_" ^^^ Placeholder())
@@ -78,11 +87,6 @@ object Parser extends RegexParsers with PackratParsers:
 
   private lazy val variable: PackratParser[Var] =
     positioned(ident ^^ { name => Var(name) })
-
-  private lazy val functionCall: PackratParser[Call] =
-    positioned(ident ~ ("(" ~> repsep(expression, ",") <~ ")") ^^ {
-      case name ~ args => Call(name, args)
-    })
 
   private lazy val arrayLit: PackratParser[ArrayLit] =
     positioned("[" ~> repsep(expression, ",") <~ "]" ^^ { elems => ArrayLit(elems) })
