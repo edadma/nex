@@ -33,7 +33,7 @@ ThisBuild / developers := List(
 )
 
 ThisBuild / homepage := Some(url("https://github.com/edadma/nex"))
-ThisBuild / description := "Project description here"
+ThisBuild / description := "Nex: a modern, AOT-compiled, array-first numerical programming language."
 
 ThisBuild / publishTo := sonatypePublishToBundle.value
 
@@ -51,13 +51,10 @@ lazy val nex = crossProject(JSPlatform, JVMPlatform, NativePlatform)
         "-language:existentials",
         "-language:dynamics",
       ),
-//    libraryDependencies += "org.scalatest" %%% "scalatest" % "3.2.19" % "test",
-//    libraryDependencies ++= Seq(
-//      "io.github.edadma" %%% "cross_platform" % "0.0.20"
-//    ),
     libraryDependencies ++= Seq(
-//      "com.github.scopt" %%% "scopt" % "4.1.0",
-//      "com.lihaoyi" %%% "pprint" % "0.9.6" % "test",
+      "org.scala-lang.modules" %%% "scala-parser-combinators" % "2.4.0",
+      "io.github.edadma"       %%% "indentation"              % "0.0.4",
+      "org.scalatest"          %%% "scalatest"                % "3.2.19" % "test",
     ),
     publishMavenStyle      := true,
     Test / publishArtifact := false,

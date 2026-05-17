@@ -165,7 +165,7 @@ val classified =
 7 - 3        // 4
 7 * 3        // 21
 7 / 3        // 2.333...  (real division — operands promoted)
-7 // 3       // 2        (integer division)
+7 div 3      // 2        (integer division — `div` keyword)
 7 % 3        // 1        (modulo, integer)
 2 ^ 10       // 1024     (exponentiation)
 2.0 ^ 0.5    // 1.414...
