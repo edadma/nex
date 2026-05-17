@@ -208,7 +208,7 @@
         },
         {
           "name": "constant.language.nex",
-          "match": "\\b(pi|e|inf|nan|im)\\b"
+          "match": "\\b(pi|e|inf|nan|i)\\b"
         }
       ]
     },

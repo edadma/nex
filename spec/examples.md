@@ -9,7 +9,7 @@ Two parts:
 - **Part I — Tour.** Every v0 language feature shown in small, focused snippets. Read this if you want to *see* what the language is.
 - **Part II — Programs.** Complete real programs combining features. Read this if you want to *see what programs look like*.
 
-All code is valid against `spec/v0.md`. Built-in functions (`sqrt`, `sum`, `map`, ...) and constants (`pi`, `e`, `im`, ...) come from the implicit prelude.
+All code is valid against `spec/v0.md`. Built-in functions (`sqrt`, `sum`, `map`, ...) and constants (`pi`, `e`, `i`, ...) come from the implicit prelude.
 
 ---
 
@@ -70,7 +70,7 @@ val byte    = "\xC3\xA9"             // bytes for "é"
 ```nex
 val name = "Ada"
 val n = 42
-val z = 3.0 + 4im
+val z = 3.0 + 4i
 
 print(s"hello, $name")                  // hello, Ada
 print(s"n = $n, n+1 = ${n + 1}")        // n = 42, n+1 = 43
@@ -84,14 +84,16 @@ print(s"$z.re")                         // (3.0 + 4.0i).re
 print(s"${z.re}")                       // 3.0
 ```
 
-### Complex via the `im` constant
+### Complex via the `i` constant
 
 ```nex
-val a = im                  // (0.0 + 1.0i)  — imaginary unit
-val b = 2im                 // (0.0 + 2.0i)  — juxtaposition: 2 * im
-val c = 3 + 4im             // (3.0 + 4.0i)
-val d = exp(2pi * im)       // ~ (-1.0 + 0.0i)   (Euler's identity)
+val a = i                   // (0.0 + 1.0i)  — imaginary unit
+val b = 2i                  // (0.0 + 2.0i)  — juxtaposition: 2 * i
+val c = 3 + 4i              // (3.0 + 4.0i)
+val d = exp(2pi * i)        // ~ (-1.0 + 0.0i)  (Euler's identity)
 ```
+
+`i` is the prelude name; `for i in 0..n` shadows it normally. Pick a different index name (`j`, `k`, `n`, `m`) if you need both in the same scope.
 
 ### Unit
 
@@ -174,8 +176,8 @@ val classified =
 
 ```nex
 1 + 2.0      // integer 1 → real 1.0; result real 3.0
-1.0 + 2im    // real → complex; result (1.0 + 2.0i)
-1 + 2im      // integer → real → complex; result (1.0 + 2.0i)
+1.0 + 2i     // real → complex; result (1.0 + 2.0i)
+1 + 2i       // integer → real → complex; result (1.0 + 2.0i)
 ```
 
 ## Comparison and logical
@@ -202,7 +204,7 @@ val a = 2x                  // 2 * x = 10.0
 val b = 2(x + 1)            // 2 * (x + 1) = 12.0
 val c = 2pi                 // 2 * pi
 val d = 3sin(pi/4)          // 3 * sin(pi/4)
-val e = 2im                 // 2 * im
+val e = 2i                  // 2 * i
 
 // Identifier-prefix is NOT juxtaposition — xy is one identifier.
 val y = 4.0
@@ -433,7 +435,7 @@ pi          // 3.14159265358979...
 e           // 2.71828...
 inf         // +infinity
 nan         // a quiet NaN
-im          // (0.0 + 1.0i) — imaginary unit
+i           // (0.0 + 1.0i) — imaginary unit
 ```
 
 ## Prelude — math
@@ -544,7 +546,7 @@ def test_approx_array() =
 
 @test
 def test_approx_complex() =
-  assert_approx((1.0 + 2im) * im, -2.0 + 1im, 1e-12)
+  assert_approx((1.0 + 2i) * i, -2.0 + 1i, 1e-12)
 
 @test
 def test_traps_on_bad_division() =
@@ -683,13 +685,13 @@ def main() =
 
 ```nex
 def main() =
-  val z1 = 1.0 + 2im            // (1.0 + 2.0i)
-  val z2 = 3.0 - 1im            // (3.0 - 1.0i)
+  val z1 = 1.0 + 2i             // (1.0 + 2.0i)
+  val z2 = 3.0 - 1i             // (3.0 - 1.0i)
 
   print(s"z1 + z2 = ${z1 + z2}")
   print(s"z1 * z2 = ${z1 * z2}")
   print(s"|z1| = ${z1.abs()}, arg(z1) = ${z1.arg()}")
-  print(s"re(z1) = ${z1.re}, im(z1) = ${z1.im}")
+  print(s"z1.re = ${z1.re}, z1.im = ${z1.im}")
 ```
 
 ## 7. Quadratic formula
@@ -700,11 +702,11 @@ def solve_quadratic(a: real, b: real, c: real) =
   val disc = b^2 - 4a*c
   if disc >= 0.0 then
     val sd = sqrt(disc)
-    ((-b + sd) / (2a) + 0im, (-b - sd) / (2a) + 0im)
+    ((-b + sd) / (2a) + 0i, (-b - sd) / (2a) + 0i)
   else
     val real_part = -b / (2a)
     val imag_part = sqrt(-disc) / (2a)
-    (real_part + imag_part*im, real_part - imag_part*im)
+    (real_part + imag_part*i, real_part - imag_part*i)
   end if
 
 def main() =
@@ -715,7 +717,7 @@ def main() =
   print(s"complex roots: $c1, $c2")
 ```
 
-Notice the math-flavored juxtaposition: `4a*c`, `(2a)`. The `imag_part*im` uses explicit `*` because `imag_part` is an identifier (no juxtaposition between two identifiers).
+Notice the math-flavored juxtaposition: `4a*c`, `(2a)`. The `imag_part*i` uses explicit `*` because `imag_part` is an identifier (no juxtaposition between two identifiers).
 
 ## 8. A multi-file module: descriptive statistics with inline tests
 
@@ -895,7 +897,7 @@ def main() =
 
 ```nex
 def escape_iters(c: complex, max_iter: integer) =
-  var z = 0im
+  var z = 0i
   var i = 0
   while i < max_iter and z.abs() <= 2.0 do
     z = z*z + c
@@ -909,7 +911,7 @@ def mandelbrot(width: integer, height: integer, max_iter: integer) =
     for px in 0..width do
       val x = -2.0 + 3.0 * to_real(px) / to_real(width)
       val y = -1.5 + 3.0 * to_real(py) / to_real(height)
-      val c = x + y*im
+      val c = x + y*i
       result[py, px] = escape_iters(c, max_iter)
     end for
   end for
