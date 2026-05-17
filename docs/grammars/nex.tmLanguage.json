@@ -1,0 +1,321 @@
+{
+  "name": "Nex",
+  "scopeName": "source.nex",
+  "fileTypes": ["nex", "lnex"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#attributes" },
+    { "include": "#strings" },
+    { "include": "#module-declaration" },
+    { "include": "#import-statement" },
+    { "include": "#function-declaration" },
+    { "include": "#struct-declaration" },
+    { "include": "#binding-declaration" },
+    { "include": "#keywords" },
+    { "include": "#operators-logical" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.nex",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.nex",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            { "include": "#comments" }
+          ]
+        }
+      ]
+    },
+
+    "attributes": {
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.nex",
+          "match": "@(test|strict)\\b"
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.interpolated.nex",
+          "begin": "s\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.nex" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.nex" }
+          },
+          "patterns": [
+            { "include": "#string-escapes" },
+            {
+              "name": "constant.character.escape.dollar.nex",
+              "match": "\\$\\$"
+            },
+            {
+              "name": "meta.interpolation.expr.nex",
+              "begin": "\\$\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.interpolation.begin.nex" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.interpolation.end.nex" }
+              },
+              "patterns": [
+                { "include": "$self" }
+              ]
+            },
+            {
+              "match": "(\\$)([a-zA-Z_][a-zA-Z0-9_]*)",
+              "captures": {
+                "1": { "name": "punctuation.section.interpolation.begin.nex" },
+                "2": { "name": "variable.other.interpolated.nex" }
+              }
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.nex",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.nex" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.nex" }
+          },
+          "patterns": [
+            { "include": "#string-escapes" }
+          ]
+        }
+      ]
+    },
+
+    "string-escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.nex",
+          "match": "\\\\(n|t|r|\\\\|\"|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]+\\})"
+        }
+      ]
+    },
+
+    "module-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(module)\\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.other.module.nex" },
+            "2": { "name": "entity.name.namespace.nex" }
+          }
+        }
+      ]
+    },
+
+    "import-statement": {
+      "patterns": [
+        {
+          "match": "\\b(import)\\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)*)",
+          "captures": {
+            "1": { "name": "keyword.other.import.nex" },
+            "2": { "name": "entity.name.namespace.nex" }
+          }
+        }
+      ]
+    },
+
+    "function-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(def)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.nex" },
+            "2": { "name": "entity.name.function.nex" }
+          }
+        }
+      ]
+    },
+
+    "struct-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.struct.nex" },
+            "2": { "name": "entity.name.type.struct.nex" }
+          }
+        }
+      ]
+    },
+
+    "binding-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(const|val|var)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.nex" },
+            "2": { "name": "variable.other.declaration.nex" }
+          }
+        }
+      ]
+    },
+
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.nex",
+          "match": "\\b(if|then|else|for|in|do|while|return|match|end)\\b"
+        },
+        {
+          "name": "storage.modifier.nex",
+          "match": "\\b(mut|private)\\b"
+        },
+        {
+          "name": "keyword.other.nex",
+          "match": "\\b(as)\\b"
+        }
+      ]
+    },
+
+    "operators-logical": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.nex",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.nex",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.nex",
+          "match": "\\b(pi|e|inf|nan|im)\\b"
+        }
+      ]
+    },
+
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.nex",
+          "match": "\\b(bool|integer|real|complex|unit|string)\\b"
+        },
+        {
+          "name": "entity.name.type.nex",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\b"
+        }
+      ]
+    },
+
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.nex",
+          "match": "\\b0x[0-9A-Fa-f][0-9A-Fa-f_]*"
+        },
+        {
+          "name": "constant.numeric.binary.nex",
+          "match": "\\b0b[01][01_]*"
+        },
+        {
+          "name": "constant.numeric.octal.nex",
+          "match": "\\b0o[0-7][0-7_]*"
+        },
+        {
+          "name": "constant.numeric.float.nex",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?"
+        },
+        {
+          "name": "constant.numeric.float.nex",
+          "match": "\\b[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*"
+        },
+        {
+          "name": "constant.numeric.integer.nex",
+          "match": "\\b[0-9][0-9_]*"
+        }
+      ]
+    },
+
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.nex",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.range.nex",
+          "match": "\\.\\.="
+        },
+        {
+          "name": "keyword.operator.range.nex",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.comparison.nex",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.matmul.nex",
+          "match": "@"
+        },
+        {
+          "name": "keyword.operator.arithmetic.nex",
+          "match": "//|\\+|-|\\*|/|%|\\^"
+        },
+        {
+          "name": "keyword.operator.assignment.nex",
+          "match": "="
+        }
+      ]
+    },
+
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.parens.nex",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.nex",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.separator.nex",
+          "match": "[,;:]"
+        },
+        {
+          "name": "punctuation.accessor.nex",
+          "match": "\\."
+        }
+      ]
+    },
+
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.nex",
+          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}
