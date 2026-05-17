@@ -581,7 +581,7 @@ def test_public_fn_monotonic() =
 
 Folder layout:
 
-```
+```nex
 src/
   mylib/
     core.nex          ← module mylib
@@ -729,7 +729,7 @@ Notice the math-flavored juxtaposition: `4a*c`, `(2a)`. The `imag_part*i` uses e
 
 Folder layout:
 
-```
+```nex
 src/
   stats/
     moments.nex          ← module stats
