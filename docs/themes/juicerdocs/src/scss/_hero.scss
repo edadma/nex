@@ -139,6 +139,12 @@
 }
 .juicerdocs-page-splash .juicerdocs-hero-meta {
   justify-content: center;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.juicerdocs-page-splash .juicerdocs-hero-logo {
+  width: 9rem;
+  height: 9rem;
 }
 .juicerdocs-page-splash .juicerdocs-hero-summary {
   margin-left: auto;
