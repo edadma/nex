@@ -19,6 +19,9 @@ headingShift = 0
 # files at the URLs we publish.
 htmlDir = ""
 
+# Brand assets.
+favicon = "/nex-logo.png"
+
 # Recompile theme CSS/JS on every build via sass/esbuild. Falls back to a
 # verbatim copy when those aren't on PATH.
 [assets]
@@ -38,3 +41,4 @@ minify = true
 [juicerdocs]
 version    = "v0"
 getStarted = false
+logo       = "/nex-logo.png"
