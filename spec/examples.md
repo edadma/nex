@@ -263,15 +263,21 @@ val d  = u @ u                       // 61.0           dot (rank-1 @ rank-1)
 ## Tuples
 
 ```nex
-val t = (1, 2.0, "three")
+val t = 1, 2.0, "three"                     // no parens needed
 
 t.0                    // 1
 t.1                    // 2.0
 t.2                    // "three"
 
-// Destructuring at binding:
-val (a, b, c) = t
-val (x, _) = (3.14, "ignored")
+// Destructuring at binding — no parens needed
+val a, b, c = t
+val x, _ = 3.14, "ignored"
+
+// Parens are only needed in contexts where commas mean something else,
+// e.g. function arguments or array elements:
+f(1, 2, 3)             // 3 separate arguments
+f((1, 2, 3))           // 1 argument, the tuple
+[(1, 2), (3, 4)]       // array of 2 tuples
 ```
 
 ## Ranges
@@ -416,8 +422,8 @@ for i in 0..n do
   process(i)
 end for
 
-for (i, x) in enumerate([10.0, 20.0, 30.0]) do
-  print(s"index $i = $x")
+for k, x in enumerate([10.0, 20.0, 30.0]) do
+  print(s"index $k = $x")
 end for
 
 // `while` loop:
@@ -702,18 +708,18 @@ def solve_quadratic(a: real, b: real, c: real) =
   val disc = b^2 - 4a*c
   if disc >= 0.0 then
     val sd = sqrt(disc)
-    ((-b + sd) / (2a) + 0i, (-b - sd) / (2a) + 0i)
+    (-b + sd) / (2a) + 0i, (-b - sd) / (2a) + 0i
   else
     val real_part = -b / (2a)
     val imag_part = sqrt(-disc) / (2a)
-    (real_part + imag_part*i, real_part - imag_part*i)
+    real_part + imag_part*i, real_part - imag_part*i
   end if
 
 def main() =
-  val (r1, r2) = solve_quadratic(1.0, -3.0, 2.0)    // x² - 3x + 2 = 0
+  val r1, r2 = solve_quadratic(1.0, -3.0, 2.0)      // x² - 3x + 2 = 0
   print(s"real roots: $r1, $r2")
 
-  val (c1, c2) = solve_quadratic(1.0, 0.0, 1.0)     // x² + 1 = 0
+  val c1, c2 = solve_quadratic(1.0, 0.0, 1.0)       // x² + 1 = 0
   print(s"complex roots: $c1, $c2")
 ```
 
@@ -976,14 +982,14 @@ def power_iteration(A: [[real]], iters: integer) =
     lambda = dot(v, A @ v)           // Rayleigh quotient
   end for
 
-  (lambda, v)
+  lambda, v
 
 def main() =
   // Symmetric matrix with eigenvalues 5 and 1
   val A = [[3.0, 2.0],
            [2.0, 3.0]]
 
-  val (lambda, v) = power_iteration(A, 50)
+  val lambda, v = power_iteration(A, 50)
 
   print(s"dominant eigenvalue ~ $lambda")
   print(s"corresponding eigenvector ~ $v")
@@ -991,7 +997,7 @@ def main() =
 @test
 def test_power_iteration_finds_correct_eigenvalue() =
   val A = [[3.0, 2.0], [2.0, 3.0]]
-  val (lambda, _) = power_iteration(A, 100)
+  val lambda, _ = power_iteration(A, 100)
   assert_approx(lambda, 5.0, 1e-6)
 ```
 
@@ -1020,13 +1026,13 @@ val constant_cases = [
 
 @test
 def test_mean_recovers_constants() =
-  for (sample, c) in constant_cases do
+  for sample, c in constant_cases do
     assert_approx(mean(sample), c, 1e-12)
   end for
 
 @test
 def test_stddev_of_any_constant_is_zero() =
-  for (sample, _) in constant_cases do
+  for sample, _ in constant_cases do
     assert_approx(stddev(sample), 0.0, 1e-12)
   end for
 
