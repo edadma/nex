@@ -1,0 +1,40 @@
+# nexlang.org — the docs site for Nex, built with juicer.
+#
+# Local preview:  sbt --error 'juicerJVM/run serve -s docs -L'  (run from juicer/)
+# Production:     deployed to nexlang.org.
+
+title       = "Nex"
+author      = "Ed Maxedon"
+baseURL     = "https://nexlang.org/"
+description = "A modern, AOT-compiled, array-first numerical programming language. Fortran's heritage, modern syntax, built-in complex numbers and matrices, fusion-aware compilation."
+
+repoURL = "https://github.com/edadma/nex"
+
+theme = "juicerdocs"
+
+# Page <h1> comes from frontmatter title; markdown headings start at <h2>.
+headingShift = 0
+
+# Match URL space to on-disk layout so GitHub Pages / any static host serves
+# files at the URLs we publish.
+htmlDir = ""
+
+# Recompile theme CSS/JS on every build via sass/esbuild. Falls back to a
+# verbatim copy when those aren't on PATH.
+[assets]
+enabled     = true
+fingerprint = true
+
+[[assets.sass]]
+input  = "themes/juicerdocs/src/scss/juicerdocs.scss"
+output = "/juicerdocs.css"
+minify = true
+
+[[assets.esbuild]]
+input  = "themes/juicerdocs/static/juicerdocs.js"
+output = "/juicerdocs.js"
+minify = true
+
+[juicerdocs]
+version    = "v0"
+getStarted = false
