@@ -322,13 +322,17 @@ class NexElaborator:
     // the last is the entry module by topo order.
     val rootPath = modules.lastOption.map(_.path).getOrElse(Nil)
 
-    // -- Stage 4: lifetime analysis (§8.2, §8.3 auto-clone) ---------------
+    // -- Stage 4: lifetime analysis (§8.2, §8.3, §4.11) ------------------
     // Wraps move sites whose source is a still-live `var` array binding
     // in [[TClone]] so the original buffer stays usable after the move.
+    // Also enforces §4.11: a var-array binding may be captured by at
+    // most one closure.
     val pre        = TProgram(rootPath, allLowered.toList, symbols)
     val lifetime   = new NexLifetime(
       mutableSymIds = mutableSymIds.contains,
       symbolType    = id => symbols.get(id).map(_.tpe).getOrElse(TyUnknown),
+      symbolName    = id => symbols.get(id).map(_.name).getOrElse(s"#$id"),
+      err           = (msg, pos) => err(msg, pos),
     )
     val rewritten  = lifetime.rewrite(pre)
 

@@ -42,7 +42,15 @@ import scala.util.parsing.input.Position
 class NexLifetime(
     mutableSymIds: Int => Boolean,
     symbolType:    Int => Type,
+    symbolName:    Int => String        = id => s"#$id",
+    err:           (String, Option[Position]) => Unit = (_, _) => (),
 ):
+
+  /** Set of var-array Symbol ids that have already been captured by some
+    * earlier-walked [[TLambda]]. A second capture of the same id surfaces
+    * the §4.11 uniqueness error. Reset at the start of each `rewrite`.
+    */
+  private val capturedBy = mutable.Map.empty[Int, Option[Position]]
 
   /** True iff `symId` names a `var` binding whose current (post-Stage-2)
     * type is a rank-1 or rank-2 array. Only those are unique-owned per
@@ -59,6 +67,7 @@ class NexLifetime(
     * where appropriate.
     */
   def rewrite(p: TProgram): TProgram =
+    capturedBy.clear()
     p.copy(decls = p.decls.map(rewriteDecl))
 
   private def rewriteDecl(d: TDecl): TDecl = d match
@@ -159,7 +168,23 @@ class NexLifetime(
       case TField(r, n, p, t)             => TField(rewriteSubtree(r, refs), n, p, t)
       case TTupleProj(r, idx, p, t)       => TTupleProj(rewriteSubtree(r, refs), idx, p, t)
       case TMethodCall(r, n, args, p, t)  => TMethodCall(rewriteSubtree(r, refs), n, args.map(rewriteSubtree(_, refs)), p, t)
-      case TLambda(ps, body, p, t)        =>
+      case lam @ TLambda(ps, body, p, t) =>
+        // §4.11: a var-array binding may be captured by at most one
+        // closure. Find this lambda's free var-array refs (those bound
+        // OUTSIDE the lambda) and record them; on second capture of the
+        // same id, surface an error pointing at the first capture site.
+        val captures = findLambdaCaptures(lam)
+        captures.foreach { (id, refPos) =>
+          capturedBy.get(id) match
+            case Some(prev) =>
+              val where = prev.map(pp => s" at line ${pp.line}").getOrElse("")
+              err(
+                s"var-array `${symbolName(id)}` already captured by another closure$where (§4.11 forbids multiple closure capture of the same var binding)",
+                refPos,
+              )
+            case None =>
+              capturedBy(id) = p
+        }
         // Lambda body is a separate function scope — re-run the analysis
         // inside (its own var bindings and refs are independent of the
         // enclosing function's). Captures from outside still hit the
@@ -190,6 +215,59 @@ class NexLifetime(
       case v @ TVarRef(s, _, _) if isVarArray(s.id) && refs.getOrElse(s.id, 0) > 1 =>
         TClone(v, v.pos, v.tpe)
       case _ => e
+
+  // --------------------------------------------------------------------------
+  // Closure-capture analysis (§4.11)
+  // --------------------------------------------------------------------------
+
+  /** Find the var-array Symbol ids that `lambda` captures — references
+    * inside its body to bindings declared OUTSIDE its scope. Returns a
+    * map from captured id to a representative source position (the
+    * first TVarRef site, for error reporting).
+    *
+    * Scope tracking adds the lambda's params plus any inner block-level
+    * vals/vars and `for` loop variables to the `bound` set as we
+    * descend. Nested lambdas don't pollute the outer set — their params
+    * are scoped to the nested lambda.
+    */
+  private def findLambdaCaptures(lambda: TLambda): Map[Int, Option[Position]] =
+    val bound = mutable.Set.empty[Int]
+    lambda.params.foreach(p => bound += p.id)
+    val frees = mutable.Map.empty[Int, Option[Position]]
+    collectLambdaFrees(lambda.body, bound, frees)
+    frees.toMap
+
+  private def collectLambdaFrees(
+      e: TExpr,
+      bound: mutable.Set[Int],
+      frees: mutable.Map[Int, Option[Position]],
+  ): Unit = e match
+    case TVarRef(s, p, _) if isVarArray(s.id) && !bound.contains(s.id) =>
+      // Record only the FIRST free-ref position; subsequent reads
+      // resolve to the same binding and the first position is enough
+      // for the error report.
+      if !frees.contains(s.id) then frees(s.id) = p
+    case TLambda(ps, body, _, _) =>
+      val sub = mutable.Set.empty[Int] ++= bound
+      ps.foreach(p => sub += p.id)
+      collectLambdaFrees(body, sub, frees)
+    case TBlock(items, r, _, _) =>
+      val sub = mutable.Set.empty[Int] ++= bound
+      items.foreach {
+        case TBlockBinding(s, _, v) =>
+          collectLambdaFrees(v, sub, frees)
+          sub += s.id
+        case TBlockExpr(x) => collectLambdaFrees(x, sub, frees)
+      }
+      collectLambdaFrees(r, sub, frees)
+    case TFor(vs, it, body, _, _) =>
+      collectLambdaFrees(it, bound, frees)
+      val sub = mutable.Set.empty[Int] ++= bound
+      vs.foreach(s => sub += s.id)
+      collectLambdaFrees(body, sub, frees)
+    case _ =>
+      // No new bindings introduced — just recurse.
+      walkChildren(e, x => collectLambdaFrees(x, bound, frees))
 
   // --------------------------------------------------------------------------
   // Shared child-walker (used by both reference counting and any future

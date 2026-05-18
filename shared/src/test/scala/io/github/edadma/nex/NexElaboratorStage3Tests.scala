@@ -347,3 +347,105 @@ class NexElaboratorStage3Tests extends AnyWordSpec with Matchers:
       tuple.elems(1) shouldBe a[TCall]
     }
   }
+
+  // ==========================================================================
+  // §4.11 — unique closure capture for var-array bindings
+  // ==========================================================================
+
+  "unique closure capture (§4.11)" should {
+
+    "accept a single closure capturing a var-array binding" in {
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  val f = () -> a[0]
+        |  print(f())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "reject two closures capturing the same var-array binding" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  val f = () -> a[0]
+        |  val g = () -> a[1]
+        |  print(f() + g())
+      """.stripMargin)
+      errs should have size 1
+      errs.head should include("already captured by another closure")
+      errs.head should include("§4.11")
+    }
+
+    "accept two closures capturing different var-array bindings" in {
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  var b = [4, 5, 6]
+        |  val f = () -> a[0]
+        |  val g = () -> b[0]
+        |  print(f())
+        |  print(g())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "accept multiple closures capturing a scalar var (not array)" in {
+      // Only var-arrays are unique-owned per spec §8.2; scalar vars can
+      // be freely shared across closures.
+      val tp = elab("""
+        |def main() =
+        |  var k = 1
+        |  val f = () -> k
+        |  val g = () -> k + 1
+        |  print(f())
+        |  print(g())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "accept multiple closures capturing a val-array (not var)" in {
+      // val-arrays aren't unique-owned (a val can't be moved), so they
+      // can be captured by any number of closures.
+      val tp = elab("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  val f = () -> a[0]
+        |  val g = () -> a[1]
+        |  print(f() + g())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "lambda's own param shadows an outer var-array with the same name" in {
+      // The inner `a` is the lambda parameter, not the outer var, so
+      // there's no capture and the outer-binding rule doesn't apply.
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  val f = a -> a[0]
+        |  val g = () -> a[0]
+        |  print(f([9, 9, 9]))
+        |  print(g())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "nested var inside a lambda body is a local binding, not a capture" in {
+      // `var inner` is bound INSIDE the lambda body, so it's not a
+      // capture of any outer binding. Two outer closures with their own
+      // local var-arrays should both elaborate cleanly.
+      val tp = elab("""
+        |def main() =
+        |  val f = () ->
+        |    var inner = [1, 2, 3]
+        |    inner[0]
+        |  val g = () ->
+        |    var inner = [4, 5, 6]
+        |    inner[0]
+        |  print(f())
+        |  print(g())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+  }
