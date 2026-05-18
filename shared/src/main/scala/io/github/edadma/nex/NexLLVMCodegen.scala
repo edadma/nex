@@ -231,6 +231,39 @@ class NexLLVMCodegen:
         |@.arr_close   = private unnamed_addr constant [2 x i8] c"]\00"
         |@.arr_sep     = private unnamed_addr constant [3 x i8] c", \00"
         |@.oob_msg     = private unnamed_addr constant [27 x i8] c"trap: index out of bounds\0A\00"
+        |@.fmt_real_int = private unnamed_addr constant [7 x i8] c"%lld.0\00"
+        |@.fmt_real_g   = private unnamed_addr constant [3 x i8] c"%g\00"
+        |
+        |declare double @floor(double)
+        |declare double @fabs(double)
+        |
+        |; Print a real value without a trailing newline. Matches the
+        |; interpreter's formatValue: if v is a whole number with |v| < 1e15,
+        |; print "<lld>.0"; otherwise "%g". Used by the print(real) and the
+        |; array/interpolation paths.
+        |define void @__nex_print_real_raw(double %v) {
+        |entry:
+        |  %f      = call double @floor(double %v)
+        |  %is_int = fcmp oeq double %v, %f
+        |  %a      = call double @fabs(double %v)
+        |  %small  = fcmp olt double %a, 1.0e+15
+        |  %both   = and i1 %is_int, %small
+        |  br i1 %both, label %whole, label %generic
+        |whole:
+        |  %ll = fptosi double %v to i64
+        |  call i32 (ptr, ...) @printf(ptr @.fmt_real_int, i64 %ll)
+        |  ret void
+        |generic:
+        |  call i32 (ptr, ...) @printf(ptr @.fmt_real_g, double %v)
+        |  ret void
+        |}
+        |
+        |define void @__nex_print_real(double %v) {
+        |entry:
+        |  call void @__nex_print_real_raw(double %v)
+        |  call i32 (ptr, ...) @printf(ptr @.nl)
+        |  ret void
+        |}
         |
         |; --- Rank-1 runtime helpers -------------------------------------------
         |
@@ -598,6 +631,27 @@ class NexLLVMCodegen:
 
     case TIndex(arr, indices, _, t) =>
       emitIndex(arr, indices, t)
+
+    case TElementWise(op, l, r, _, t) =>
+      emitElementWise(op, l, r, t)
+
+    case TBroadcast(scalar, arr, op, scalarFirst, _, t) =>
+      emitBroadcast(scalar, arr, op, scalarFirst, t)
+
+    case TSlice(arr, lo, hi, inclusive, _, t) =>
+      emitSlice(arr, lo, hi, inclusive, t)
+
+    case TSlice2(arr, rowAx, colAx, _, t) =>
+      emitSlice2(arr, rowAx, colAx, t)
+
+    case TClone(arr, _, t) =>
+      emitClone(arr, t)
+
+    case TFlatIndex(arr, idx, _, t) =>
+      emitFlatIndex(arr, idx, t)
+
+    case TFusedLoop(loopVar, length, body, cols, _, t) =>
+      emitFusedLoop(loopVar, length, body, cols, t)
 
     case TIf(cond, thenB, elseOpt, _, t) =>
       emitIf(cond, thenB, elseOpt, t)
@@ -1045,17 +1099,436 @@ class NexLLVMCodegen:
         emitLine(s"  $r = call i64 @__nex_arr1_len(ptr $av)\n"); r
       case (1, "rows") =>
         "1"
-      case (2, "rows") =>
+      case (2, "rows") | (2, "len") =>
+        // length(rank-2) follows the interpreter convention: it returns
+        // the row count, not rows*cols. (The flat element count is
+        // available internally as __nex_arr2_len for codegen helpers.)
         emitLine(s"  $r = call i64 @__nex_arr2_rows(ptr $av)\n"); r
       case (2, "cols") =>
         emitLine(s"  $r = call i64 @__nex_arr2_cols(ptr $av)\n"); r
-      case (2, "len") =>
-        emitLine(s"  $r = call i64 @__nex_arr2_len(ptr $av)\n"); r
       case _ =>
         notYet(s"$which for rank $rank"); "0"
     // Release the owning share we took on the input array.
     emitArrDec(av, arr.tpe)
     result
+
+  // ---------------------------------------------------------------------------
+  // Element-wise ops, broadcasts, slices, clone, flat index, fused loop.
+  // ---------------------------------------------------------------------------
+
+  /** Open an iteration loop over `0..len` with a fresh counter slot and
+    * call `genBody(i)` inside the body block. `genBody` receives the
+    * SSA register for the current counter value and is responsible for
+    * emitting all of the body's instructions before returning. The
+    * returned exit label is left as the current block.
+    *
+    * Used by [[emitElementWise]] / [[emitBroadcast]] / slice / clone /
+    * print-array — every per-element loop has the same shape.
+    */
+  private def emitCountingLoop(len: String, prefix: String)(genBody: String => Unit): Unit =
+    val iSlot = newReg()
+    emitLine(s"  $iSlot = alloca i64\n")
+    emitLine(s"  store i64 0, ptr $iSlot\n")
+    val condL = freshLabel(s"$prefix.cond")
+    val bodyL = freshLabel(s"$prefix.body")
+    val exitL = freshLabel(s"$prefix.exit")
+    emitTerminator(s"  br label %$condL\n")
+    startBlock(condL)
+    val cur = newReg()
+    emitLine(s"  $cur = load i64, ptr $iSlot\n")
+    val ok  = newReg()
+    emitLine(s"  $ok = icmp slt i64 $cur, $len\n")
+    emitTerminator(s"  br i1 $ok, label %$bodyL, label %$exitL\n")
+    startBlock(bodyL)
+    genBody(cur)
+    if currentBlock.isDefined then
+      val nx = newReg()
+      emitLine(s"  $nx = add i64 $cur, 1\n")
+      emitLine(s"  store i64 $nx, ptr $iSlot\n")
+      emitTerminator(s"  br label %$condL\n")
+    startBlock(exitL)
+
+  /** Emit a `length` lookup for either rank of array via the runtime
+    * helpers. For rank-2 this returns the FLAT (rows*cols) element count
+    * — different from [[emitArrayLengthish]]("len") which follows the
+    * interpreter's "length = rows" convention.
+    */
+  private def flatLengthOf(arrV: String, t: Type): String =
+    val r = newReg()
+    arrayRank(t) match
+      case 1 => emitLine(s"  $r = call i64 @__nex_arr1_len(ptr $arrV)\n"); r
+      case 2 => emitLine(s"  $r = call i64 @__nex_arr2_len(ptr $arrV)\n"); r
+      case other => notYet(s"flat length of rank $other"); "0"
+
+  /** Allocate a fresh array shaped like `model` (same rank, same
+    * dimensions). Returns the new descriptor's SSA value, with
+    * `refcount = 1`. Element size comes from the result element type
+    * (which may differ from the model's, e.g. a relational op result
+    * has bool elements over reals).
+    */
+  private def allocLike(model: String, modelT: Type, resultElem: Type): String =
+    val esz = elemSize(resultElem)
+    val desc = newReg()
+    arrayRank(modelT) match
+      case 1 =>
+        val lenR = newReg()
+        emitLine(s"  $lenR = call i64 @__nex_arr1_len(ptr $model)\n")
+        emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $lenR, i64 $esz)\n")
+      case 2 =>
+        val rowsR = newReg()
+        emitLine(s"  $rowsR = call i64 @__nex_arr2_rows(ptr $model)\n")
+        val colsR = newReg()
+        emitLine(s"  $colsR = call i64 @__nex_arr2_cols(ptr $model)\n")
+        emitLine(s"  $desc = call ptr @__nex_arr2_alloc(i64 $rowsR, i64 $colsR, i64 $esz)\n")
+      case other => notYet(s"alloc-like of rank $other")
+    desc
+
+  /** Return a pointer to the flat element buffer of an array descriptor. */
+  private def bufPtr(desc: String, t: Type): String =
+    val r = newReg()
+    arrayRank(t) match
+      case 1 =>
+        val dp = newReg()
+        emitLine(s"  $dp = getelementptr inbounds %nex_arr1, ptr $desc, i32 0, i32 2\n")
+        emitLine(s"  $r = load ptr, ptr $dp\n")
+        r
+      case 2 =>
+        val dp = newReg()
+        emitLine(s"  $dp = getelementptr inbounds %nex_arr2, ptr $desc, i32 0, i32 3\n")
+        emitLine(s"  $r = load ptr, ptr $dp\n")
+        r
+      case other => notYet(s"buf ptr of rank $other"); "null"
+
+  /** Emit `op` between two scalar values of the same Nex type, returning
+    * the SSA register of the result. Reuses the existing [[binOpInst]]
+    * table. Result type is implied by the operands (same as the
+    * elementwise spec — Stage 2 lifts only valid op/operand combos).
+    */
+  private def emitScalarBinOp(op: String, lv: String, rv: String, opT: Type): String =
+    op match
+      case "and" | "or" =>
+        // For element-wise paths these get evaluated eagerly (no
+        // short-circuit possible at element level).
+        val reg = newReg()
+        val instr = if op == "and" then "and" else "or"
+        emitLine(s"  $reg = $instr i1 $lv, $rv\n")
+        reg
+      case _ =>
+        val (instr, _) = binOpInst(op, opT)
+        val reg = newReg()
+        emitLine(s"  $reg = $instr ${llvmType(opT)} $lv, $rv\n")
+        reg
+
+  /** Lower `lhs ⊙ rhs` element-wise when both sides are array-typed.
+    * Allocates a fresh result of the same shape, iterates the flat
+    * buffer, applies the scalar op per element. Both operands are
+    * dec'd before returning the fresh array.
+    */
+  private def emitElementWise(op: String, lhs: TExpr, rhs: TExpr, resultT: Type): String =
+    val elemL  = arrayElem(lhs.tpe)
+    val elemR  = arrayElem(rhs.tpe)
+    val resE   = arrayElem(resultT)
+    val stL    = storageType(elemL)
+    val stR    = storageType(elemR)
+    val stRes  = storageType(resE)
+    val langL  = llvmType(elemL)
+    val langR  = llvmType(elemR)
+    val esRes  = elemSize(resE)
+
+    val lv = emitExpr(lhs)
+    val rv = emitExpr(rhs)
+
+    val desc = allocLike(lv, lhs.tpe, resE)
+    val lenR = flatLengthOf(lv, lhs.tpe)
+    val lBuf = bufPtr(lv, lhs.tpe)
+    val rBuf = bufPtr(rv, rhs.tpe)
+    val oBuf = bufPtr(desc, resultT)
+
+    emitCountingLoop(lenR, "ew") { i =>
+      val lSlot = newReg()
+      emitLine(s"  $lSlot = getelementptr inbounds $stL, ptr $lBuf, i64 $i\n")
+      val ll = loadElem(stL, lSlot, langL)
+      val rSlot = newReg()
+      emitLine(s"  $rSlot = getelementptr inbounds $stR, ptr $rBuf, i64 $i\n")
+      val rr = loadElem(stR, rSlot, langR)
+      val out = emitScalarBinOp(op, ll, rr, elemL)
+      val oSlot = newReg()
+      emitLine(s"  $oSlot = getelementptr inbounds $stRes, ptr $oBuf, i64 $i\n")
+      storeElem(stRes, out, oSlot)
+    }
+
+    emitArrDec(lv, lhs.tpe)
+    emitArrDec(rv, rhs.tpe)
+    desc
+
+  /** Lower a scalar × array (or array × scalar) broadcast. */
+  private def emitBroadcast(scalar: TExpr, arr: TExpr, op: String, scalarFirst: Boolean, resultT: Type): String =
+    val elem  = arrayElem(arr.tpe)
+    val resE  = arrayElem(resultT)
+    val stE   = storageType(elem)
+    val stRes = storageType(resE)
+    val langE = llvmType(elem)
+
+    val sv = emitExpr(scalar)
+    val av = emitExpr(arr)
+
+    val desc = allocLike(av, arr.tpe, resE)
+    val lenR = flatLengthOf(av, arr.tpe)
+    val aBuf = bufPtr(av, arr.tpe)
+    val oBuf = bufPtr(desc, resultT)
+
+    emitCountingLoop(lenR, "bc") { i =>
+      val aSlot = newReg()
+      emitLine(s"  $aSlot = getelementptr inbounds $stE, ptr $aBuf, i64 $i\n")
+      val e = loadElem(stE, aSlot, langE)
+      val (l, r) = if scalarFirst then (sv, e) else (e, sv)
+      val out = emitScalarBinOp(op, l, r, elem)
+      val oSlot = newReg()
+      emitLine(s"  $oSlot = getelementptr inbounds $stRes, ptr $oBuf, i64 $i\n")
+      storeElem(stRes, out, oSlot)
+    }
+
+    emitArrDec(av, arr.tpe)
+    desc
+
+  /** Lower `arr[lo..hi]` / `arr[lo..=hi]` (rank-1) to a fresh array of
+    * `hi-lo` (or `hi-lo+1`) elements copied from the source.
+    */
+  private def emitSlice(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, resultT: Type): String =
+    val elem = arrayElem(arr.tpe)
+    val stE  = storageType(elem)
+    val langE = llvmType(elem)
+    val esz  = elemSize(elem)
+
+    val av  = emitExpr(arr)
+    val loV = emitExpr(lo)
+    val hiV = emitExpr(hi)
+
+    // Slice length: hi - lo (exclusive) or hi - lo + 1 (inclusive).
+    val rawLen = newReg()
+    emitLine(s"  $rawLen = sub i64 $hiV, $loV\n")
+    val length = if inclusive then
+      val r = newReg()
+      emitLine(s"  $r = add i64 $rawLen, 1\n")
+      r
+    else rawLen
+
+    val desc = newReg()
+    emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $length, i64 $esz)\n")
+    val srcBuf = bufPtr(av, arr.tpe)
+    val outBuf = bufPtr(desc, resultT)
+
+    emitCountingLoop(length, "slice1") { i =>
+      val srcIdx = newReg()
+      emitLine(s"  $srcIdx = add i64 $loV, $i\n")
+      val sSlot = newReg()
+      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $srcIdx\n")
+      val v = loadElem(stE, sSlot, langE)
+      val oSlot = newReg()
+      emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $i\n")
+      storeElem(stE, v, oSlot)
+    }
+
+    emitArrDec(av, arr.tpe)
+    desc
+
+  /** Lower a rank-2 axis-spec slice. The result rank depends on how
+    * many axes are preserved; rank-0 (scalar) currently surfaces a diag.
+    */
+  private def emitSlice2(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, resultT: Type): String =
+    // Compute the (loR, hiR, isRangeR) for the row axis, similar for col.
+    val elem = arrayElem(arr.tpe)
+    val stE  = storageType(elem)
+    val langE = llvmType(elem)
+    val esz  = elemSize(elem)
+
+    val av = emitExpr(arr)
+    val rowsAll = newReg()
+    emitLine(s"  $rowsAll = call i64 @__nex_arr2_rows(ptr $av)\n")
+    val colsAll = newReg()
+    emitLine(s"  $colsAll = call i64 @__nex_arr2_cols(ptr $av)\n")
+
+    // For each axis: (loStart, loEnd, preserved?, isSingleton?).
+    // `preserved` means this axis contributes to the result rank.
+    def axis(spec: TAxisSpec, total: String): (String, String, Boolean, Option[String]) = spec match
+      case TAxisAll => ("0", total, true, None)
+      case TAxisIndex(idx) =>
+        val iv = emitExpr(idx)
+        val hi = newReg()
+        emitLine(s"  $hi = add i64 $iv, 1\n")
+        (iv, hi, false, Some(iv))
+      case TAxisRange(lo, hi, inclusive) =>
+        val loV = emitExpr(lo)
+        val hiV = emitExpr(hi)
+        val end = if inclusive then
+          val r = newReg(); emitLine(s"  $r = add i64 $hiV, 1\n"); r
+        else hiV
+        (loV, end, true, None)
+
+    val (rLo, rEnd, rPres, _) = axis(rowAx, rowsAll)
+    val (cLo, cEnd, cPres, _) = axis(colAx, colsAll)
+    val rLen = newReg()
+    emitLine(s"  $rLen = sub i64 $rEnd, $rLo\n")
+    val cLen = newReg()
+    emitLine(s"  $cLen = sub i64 $cEnd, $cLo\n")
+
+    val srcBuf = bufPtr(av, arr.tpe)
+
+    val result = (rPres, cPres) match
+      case (true, true) =>
+        // Both axes preserved → rank-2 result.
+        val desc = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr2_alloc(i64 $rLen, i64 $cLen, i64 $esz)\n")
+        val outBuf = bufPtr(desc, resultT)
+        emitCountingLoop(rLen, "slice2r") { i =>
+          emitCountingLoop(cLen, "slice2c") { j =>
+            val sr = newReg(); emitLine(s"  $sr = add i64 $rLo, $i\n")
+            val sc = newReg(); emitLine(s"  $sc = add i64 $cLo, $j\n")
+            val srcFlat = newReg(); emitLine(s"  $srcFlat = mul i64 $sr, $colsAll\n")
+            val srcIdx  = newReg(); emitLine(s"  $srcIdx = add i64 $srcFlat, $sc\n")
+            val sSlot = newReg()
+            emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $srcIdx\n")
+            val v = loadElem(stE, sSlot, langE)
+            val outFlat = newReg(); emitLine(s"  $outFlat = mul i64 $i, $cLen\n")
+            val outIdx  = newReg(); emitLine(s"  $outIdx = add i64 $outFlat, $j\n")
+            val oSlot = newReg()
+            emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $outIdx\n")
+            storeElem(stE, v, oSlot)
+          }
+        }
+        desc
+
+      case (true, false) =>
+        // Row axis preserved, col collapsed → rank-1 of rLen elements.
+        val desc = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $rLen, i64 $esz)\n")
+        val outBuf = bufPtr(desc, resultT)
+        emitCountingLoop(rLen, "slice2rc") { i =>
+          val sr = newReg(); emitLine(s"  $sr = add i64 $rLo, $i\n")
+          val sFlat = newReg(); emitLine(s"  $sFlat = mul i64 $sr, $colsAll\n")
+          val sIdx  = newReg(); emitLine(s"  $sIdx = add i64 $sFlat, $cLo\n")
+          val sSlot = newReg()
+          emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $sIdx\n")
+          val v = loadElem(stE, sSlot, langE)
+          val oSlot = newReg()
+          emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $i\n")
+          storeElem(stE, v, oSlot)
+        }
+        desc
+
+      case (false, true) =>
+        // Col axis preserved, row collapsed → rank-1 of cLen elements.
+        val desc = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $cLen, i64 $esz)\n")
+        val outBuf = bufPtr(desc, resultT)
+        emitCountingLoop(cLen, "slice2cr") { j =>
+          val sc = newReg(); emitLine(s"  $sc = add i64 $cLo, $j\n")
+          val sFlat = newReg(); emitLine(s"  $sFlat = mul i64 $rLo, $colsAll\n")
+          val sIdx  = newReg(); emitLine(s"  $sIdx = add i64 $sFlat, $sc\n")
+          val sSlot = newReg()
+          emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $sIdx\n")
+          val v = loadElem(stE, sSlot, langE)
+          val oSlot = newReg()
+          emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $j\n")
+          storeElem(stE, v, oSlot)
+        }
+        desc
+
+      case (false, false) =>
+        // Both axes collapsed → scalar; should have been TIndex, not TSlice2.
+        notYet("rank-2 slice with both axes collapsed")
+        "null"
+
+    emitArrDec(av, arr.tpe)
+    result
+
+  /** Lower [[TClone]] — deep-copy the source descriptor and its buffer
+    * into a fresh allocation. Source's owning share is released.
+    */
+  private def emitClone(arr: TExpr, resultT: Type): String =
+    val elem = arrayElem(arr.tpe)
+    val stE  = storageType(elem)
+    val langE = llvmType(elem)
+    val esz  = elemSize(elem)
+
+    val src   = emitExpr(arr)
+    val desc  = allocLike(src, arr.tpe, elem)
+    val len   = flatLengthOf(src, arr.tpe)
+    val sBuf  = bufPtr(src, arr.tpe)
+    val oBuf  = bufPtr(desc, resultT)
+
+    emitCountingLoop(len, "clone") { i =>
+      val sSlot = newReg()
+      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $sBuf, i64 $i\n")
+      val v = loadElem(stE, sSlot, langE)
+      val oSlot = newReg()
+      emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $oBuf, i64 $i\n")
+      storeElem(stE, v, oSlot)
+    }
+
+    emitArrDec(src, arr.tpe)
+    desc
+
+  /** Lower [[TFlatIndex]] — single flat-index access regardless of rank.
+    * Used inside [[TFusedLoop]] bodies. Result is the loaded element
+    * (a scalar of the array's element type).
+    */
+  private def emitFlatIndex(arr: TExpr, idx: TExpr, resultT: Type): String =
+    val elem = arrayElem(arr.tpe)
+    val esz  = elemSize(elem)
+    val stE  = storageType(elem)
+    val langE = llvmType(elem)
+    val av   = emitExpr(arr)
+    val iv   = emitExpr(idx)
+    val slot = newReg()
+    arrayRank(arr.tpe) match
+      case 1 => emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $av, i64 $iv, i64 $esz)\n")
+      case 2 => emitLine(s"  $slot = call ptr @__nex_arr2_flat_slot(ptr $av, i64 $iv, i64 $esz)\n")
+      case other => notYet(s"flat index of rank $other"); return "0"
+    val v = loadElem(stE, slot, langE)
+    emitArrDec(av, arr.tpe)
+    v
+
+  /** Lower [[TFusedLoop]] — the fusion-pass output. Allocates a fresh
+    * array of `length` elements, then iterates 0..length binding
+    * `loopVar` to the flat index and storing `body` into the buffer.
+    * `cols=None` → rank-1; `cols=Some(c)` → rank-2 with rows = length/c.
+    */
+  private def emitFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, cols: Option[TExpr], resultT: Type): String =
+    val resElem = arrayElem(resultT)
+    val stE     = storageType(resElem)
+    val esz     = elemSize(resElem)
+    val len     = emitExpr(length)
+
+    val desc = cols match
+      case None =>
+        val d = newReg()
+        emitLine(s"  $d = call ptr @__nex_arr1_alloc(i64 $len, i64 $esz)\n")
+        d
+      case Some(cExpr) =>
+        val c = emitExpr(cExpr)
+        val rows = newReg()
+        emitLine(s"  $rows = sdiv i64 $len, $c\n")
+        val d = newReg()
+        emitLine(s"  $d = call ptr @__nex_arr2_alloc(i64 $rows, i64 $c, i64 $esz)\n")
+        d
+
+    val outBuf = bufPtr(desc, resultT)
+
+    // The loop variable is a per-function Symbol — register a fresh slot
+    // for it so the body's TVarRef(loopVar) reads the current index.
+    val ivSlot = newReg()
+    emitLine(s"  $ivSlot = alloca i64\n")
+    locals(loopVar.id) = ivSlot
+
+    emitCountingLoop(len, "fused") { i =>
+      emitLine(s"  store i64 $i, ptr $ivSlot\n")
+      val v = emitExpr(body)
+      val oSlot = newReg()
+      emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $i\n")
+      storeElem(stE, v, oSlot)
+    }
+    desc
 
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
@@ -1242,7 +1715,7 @@ class NexLLVMCodegen:
               case TyInteger =>
                 emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 $v)\n")
               case TyReal =>
-                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real, double $v)\n")
+                emitLine(s"  call void @__nex_print_real(double $v)\n")
               case TyBool =>
                 val sel = newReg()
                 emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
@@ -1262,7 +1735,7 @@ class NexLLVMCodegen:
       case TyInteger =>
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int_raw, i64 $v)\n")
       case TyReal =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real_raw, double $v)\n")
+        emitLine(s"  call void @__nex_print_real_raw(double $v)\n")
       case TyBool =>
         val sel = newReg()
         emitLine(s"  $sel = select i1 $v, ptr @.fmt_str_raw, ptr @.fmt_str_raw\n")
@@ -1434,7 +1907,7 @@ class NexLLVMCodegen:
       case TyInteger =>
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int_raw, i64 $v)\n")
       case TyReal =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real_raw, double $v)\n")
+        emitLine(s"  call void @__nex_print_real_raw(double $v)\n")
       case TyBool =>
         val tPtr = internStringLiteral("true")
         val fPtr = internStringLiteral("false")

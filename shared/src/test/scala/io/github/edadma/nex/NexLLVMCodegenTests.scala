@@ -661,3 +661,144 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
       makeBody should include("ret ptr")
     }
   }
+
+  "arrays (rank-2)" should {
+    "emit __nex_arr2_alloc for a 2x3 literal with 6 stores" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[0, 0])
+      """.stripMargin)
+      ir should include("@__nex_arr2_alloc(i64 2, i64 3, i64 8)")
+    }
+
+    "rank-2 index uses @__nex_arr2_slot" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m[1, 0])
+      """.stripMargin)
+      ir should include("call ptr @__nex_arr2_slot")
+    }
+
+    "rows(m) and cols(m) call the helpers; length(m) returns row count" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(rows(m))
+        |  print(cols(m))
+        |  print(length(m))
+      """.stripMargin)
+      // length and rows both route through @__nex_arr2_rows; cols through
+      // @__nex_arr2_cols. The flat-element @__nex_arr2_len helper is only
+      // used internally by codegen (not by `length`).
+      ir should include("@__nex_arr2_rows")
+      ir should include("@__nex_arr2_cols")
+    }
+  }
+
+  "element-wise and broadcast" should {
+    "[a]+[b] emits a loop alloca'd at the source length" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  val b = [10, 20, 30]
+        |  print(a + b)
+      """.stripMargin)
+      ir should include("ew.cond")
+      ir should include("ew.body")
+      // The result alloc reuses the lhs length.
+      ir should include("@__nex_arr1_len")
+    }
+
+    "scalar + array uses broadcast loop with scalarFirst=true" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  print(100 + a)
+      """.stripMargin)
+      ir should include("bc.cond")
+      ir should include("bc.body")
+    }
+
+    "array - scalar (non-commutative, scalarFirst=false) preserves operand order" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(a - 1)
+      """.stripMargin)
+      ir should include("bc.cond")
+      // Look for `sub i64 <elem>, <scalar>` rather than `sub <scalar>, <elem>`.
+      // The elem comes first (%tN), the scalar 1 as immediate.
+      ir should include regex """sub i64 %t\d+, 1"""
+    }
+  }
+
+  "slicing" should {
+    "rank-1 exclusive slice computes hi - lo length" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  print(a[1..4])
+      """.stripMargin)
+      ir should include("slice1.cond")
+      ir should include("sub i64")
+    }
+
+    "rank-1 inclusive slice computes (hi - lo) + 1 length" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  print(a[0..=2])
+      """.stripMargin)
+      ir should include("slice1.cond")
+      // The inclusive form's +1 fixup
+      ir should include regex """add i64 %t\d+, 1"""
+    }
+
+    "rank-2 [:,:] preserves both axes and copies the whole matrix" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m[:, :])
+      """.stripMargin)
+      ir should include("slice2r.cond")
+      ir should include("slice2c.cond")
+    }
+
+    "rank-2 [i,:] collapses the row axis, yielding rank-1 of cols" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[0, :])
+      """.stripMargin)
+      // Row axis collapsed → emitSlice2's `slice2cr` branch (col axis
+      // preserved, single loop over cLen).
+      ir should include("slice2cr.cond")
+    }
+
+    "rank-2 [:,j] collapses the col axis, yielding rank-1 of rows" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[:, 1])
+      """.stripMargin)
+      // Col axis collapsed → emitSlice2's `slice2rc` branch (row axis
+      // preserved, single loop over rLen).
+      ir should include("slice2rc.cond")
+    }
+  }
+
+  "real formatting" should {
+    "print(real) routes through @__nex_print_real (mimics formatValue)" in {
+      val ir = compile("def main() = print(3.0)")
+      ir should include("define void @__nex_print_real(double %v)")
+      ir should include("call void @__nex_print_real(double 0x")
+    }
+
+    "whole reals print as `<n>.0` (e.g. 3.0, not 3)" in {
+      val ir = compile("def main() = print(3.0)")
+      // The helper itself contains the `%lld.0` format string.
+      ir should include("@.fmt_real_int")
+    }
+  }
