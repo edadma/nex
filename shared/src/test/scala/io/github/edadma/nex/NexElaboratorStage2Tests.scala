@@ -849,10 +849,62 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       call.tpe shouldBe TyArray(TyInteger, 1)
     }
 
-    "push-down does NOT happen for bound-then-not-pushed lambdas without a declared type" in {
-      // `val f = x -> x * 2` (no declared type): the lambda is inferred
-      // at the val site with no expected type, so the param stays
-      // TyUnknown. Documents the remaining gap (option C would close it).
+    "deferred resolve refines a bound-then-called lambda at the first call site" in {
+      // `val f = x -> x * 2` has no declared type, so the lambda's param
+      // sym leaves the binding site at TyUnknown. The deferredLambdas
+      // map remembers it; the first call site with a concrete TyFunc
+      // expected type (here `apply`'s declared `f: (integer -> integer)`)
+      // triggers in-place refinement. After elaboration:
+      //   - f's TTopBinding.value points at the refined TLambda
+      //   - the lambda's param sym is TyInteger
+      //   - f's Symbol's tpe is the refined TyFunc
+      val tp = elab("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |val f = x -> x * 2
+        |val r = apply(f, 3)
+      """.stripMargin)
+      val fBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "f").get
+      val lam   = fBind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+      lam.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+      fBind.sym.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+
+    "deferred resolve works for a block-level bound-then-called lambda" in {
+      val tp = elab("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |def main() =
+        |  val f = x -> x * 2
+        |  apply(f, 3)
+      """.stripMargin)
+      val main = tp.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f }.get
+      val body = main.body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      bind.sym.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+
+    "deferred resolve works through prelude HOF call sites" in {
+      // `xs.map(f)` (or `map(xs, f)`) where f is a bound lambda — the
+      // HOF push-down path constructs an expected TyFunc for the f
+      // arg, which is then routed through inferArg's deferred branch.
+      val tp = elab("""
+        |val xs = [1, 2, 3]
+        |val f  = x -> x * 2
+        |val ys = map(xs, f)
+      """.stripMargin)
+      val fBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "f").get
+      val lam   = fBind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "deferred resolve is a no-op when there is no later call site" in {
+      // Pure bind-and-never-call leaves the lambda at TyUnknown — the
+      // map is populated but nothing reads it. Verifies the resolve
+      // path doesn't fire spuriously.
       val tp = elab("""
         |val f = x -> x * 2
       """.stripMargin)

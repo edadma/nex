@@ -387,6 +387,28 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(sum(xs.map(x -> x * 10)))
       """.stripMargin) shouldBe "60\n"
     }
+
+    "bound-then-called lambda with no declared type runs after deferred resolve" in {
+      // The lambda `f` is bound with no declared type; its param starts
+      // at TyUnknown. The deferred-resolve pass refines it at the first
+      // call site (`apply(f, 3)`), where `apply`'s declared
+      // `f: (integer -> integer)` gives the expected shape.
+      runOut("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |def main() =
+        |  val f = x -> x * 2
+        |  print(apply(f, 3))
+      """.stripMargin) shouldBe "6\n"
+    }
+
+    "bound-then-called lambda runs through prelude HOF" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  val f  = x -> x * 10
+        |  print(sum(map(xs, f)))
+      """.stripMargin) shouldBe "100\n"
+    }
   }
 
   // ==========================================================================

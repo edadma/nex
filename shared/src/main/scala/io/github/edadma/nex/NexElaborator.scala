@@ -84,6 +84,22 @@ class NexElaborator:
     */
   private val mutableSymIds = mutable.Set.empty[Int]
 
+  /** Symbol id → TLambda value, for every `val/var = lambda` binding whose
+    * lambda has any `TyUnknown` param. Populated by inferTopBinding /
+    * inferBlockItem. Consumed by [[inferArg]] when a TVarRef to such a
+    * Symbol appears in an arg position with a concrete expected `TyFunc`:
+    * the stored lambda gets re-inferred with the pushed-down types and
+    * the entry is replaced with the refined version. Stage 3 lowering
+    * then swaps the binding's `value` field in place.
+    *
+    * Monomorphic by construction — the param-set check `currentType(s) ==
+    * TyUnknown` inside the TLambda branch of `inferArg` means only the
+    * first refinement sticks. Calling a bound-then-called lambda with
+    * conflicting expected types at different sites surfaces as a normal
+    * type error from `checkAssignable`, which is the right v0 behaviour.
+    */
+  private val deferredLambdas = mutable.Map.empty[Int, TLambda]
+
   /** Define a name in the current scope, minting a fresh symbol. Returns
     * either the new symbol or the existing one (and records an error).
     */
@@ -584,7 +600,32 @@ class NexElaborator:
           val ty          = TyFunc(freshParams.map(s => (s.tpe, ParamMode.Read)), body2.tpe)
           TLambda(freshParams, body2, p, ty)
         case _ => infExpr(arg)
+
+    // Deferred resolve: `val f = lam` left lam's params at TyUnknown.
+    // First call site that gives a concrete TyFunc refines lam in place
+    // — the lambda is re-inferred with pushed-down param types, the
+    // deferred map is updated, and the Symbol's tpe is bumped to the
+    // refined function type. Stage 3 swaps the refined value back into
+    // the binding's `value` field. The refreshed TVarRef is returned so
+    // the call site sees the now-concrete function type.
+    case TVarRef(s, p, _) if deferredLambdas.contains(s.id) =>
+      expected match
+        case TyFunc(_, _) =>
+          val lam      = deferredLambdas(s.id)
+          val refined  = inferArg(lam, expected).asInstanceOf[TLambda]
+          deferredLambdas(s.id) = refined
+          val freshSym = setSymType(s, refined.tpe)
+          TVarRef(freshSym, p, refined.tpe)
+        case _ => infExpr(arg)
+
     case _ => infExpr(arg)
+
+  /** A lambda is "partially inferred" iff at least one param's type in
+    * the symbol table is still TyUnknown. Used to decide whether a
+    * `val f = lam` binding goes into [[deferredLambdas]].
+    */
+  private def isPartiallyInferredLambda(lam: TLambda): Boolean =
+    lam.params.exists(s => currentType(s) == TyUnknown)
 
   // -- program -------------------------------------------------------------
 
@@ -621,7 +662,13 @@ class NexElaborator:
       case TyUnknown => v2.tpe
       case _         => checkAssignable(v2, declared); declared
     val sym2 = setSymType(b.sym, t)
+    registerDeferredLambda(sym2, v2)
     b.copy(sym = sym2, value = v2)
+
+  private def registerDeferredLambda(sym: Symbol, v: TExpr): Unit = v match
+    case lam: TLambda if isPartiallyInferredLambda(lam) =>
+      deferredLambdas(sym.id) = lam
+    case _ => ()
 
   /** Assignment-compatibility check used at val/var/const sites and at
     * `assignment-expression` sites. If `expected` is numeric and the
@@ -850,6 +897,7 @@ class NexElaborator:
         case TyUnknown => vv.tpe
         case _         => checkAssignable(vv, declared); declared
       val s2 = setSymType(s, t)
+      registerDeferredLambda(s2, vv)
       TBlockBinding(s2, kind, vv)
     case TBlockExpr(x) => TBlockExpr(infExpr(x))
 
@@ -1128,7 +1176,15 @@ class NexElaborator:
       val body2 = lowerExpr(f.body)
       validateModes(f, body2)
       f.copy(body = body2)
-    case b: TTopBinding => b.copy(value = lowerExpr(b.value))
+    case b: TTopBinding =>
+      // If this binding's lambda was refined by a later call site (see
+      // [[deferredLambdas]]), swap the refined version in *before*
+      // lowering — the old value still has TyUnknown params. Also
+      // refresh the binding's sym from the symbol table so downstream
+      // readers (`b.sym.tpe`) see the post-refinement type rather than
+      // the snapshot taken at binding time.
+      val v = deferredLambdas.get(b.sym.id).getOrElse(b.value)
+      b.copy(sym = refreshSym(b.sym), value = lowerExpr(v))
     case other          => other
 
   private def lowerExpr(e: TExpr): TExpr = e match
@@ -1163,8 +1219,13 @@ class NexElaborator:
     case TAssign(tgt, v, p, t)         => TAssign(lowerExpr(tgt), lowerExpr(v), p, t)
     case TBlock(items, r, p, t)        =>
       val its = items.map {
-        case TBlockBinding(s, k, v) => TBlockBinding(s, k, lowerExpr(v))
-        case TBlockExpr(x)          => TBlockExpr(lowerExpr(x))
+        case TBlockBinding(s, k, v) =>
+          // Same deferred-lambda swap + sym refresh as the TTopBinding
+          // case in lowerDecl — block-level `val f = lam` may have been
+          // refined by a later call site.
+          val v2 = deferredLambdas.get(s.id).getOrElse(v)
+          TBlockBinding(refreshSym(s), k, lowerExpr(v2))
+        case TBlockExpr(x) => TBlockExpr(lowerExpr(x))
       }
       TBlock(its, lowerExpr(r), p, t)
     case TElementWise(op, l, r, p, t)  => TElementWise(op, lowerExpr(l), lowerExpr(r), p, t)
