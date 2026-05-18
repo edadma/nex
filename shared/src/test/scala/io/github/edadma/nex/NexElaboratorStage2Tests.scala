@@ -652,4 +652,19 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       val ref = interp.parts.collect { case r: TInterpRef => r }.head
       ref.sym.tpe shouldBe TyInteger
     }
+
+    "TStructDecl carries the resolved struct type, not the Nil placeholder" in {
+      // `elabStruct` mints the struct sym with a Nil-fields placeholder
+      // type (so the name resolves during Pass A), then updates the
+      // symbol table when the field types are known. The returned
+      // TStructDecl previously kept the placeholder Symbol. Verify
+      // the resolved type is now exposed on the decl's `sym`.
+      val tp = elab("""
+        |struct Point
+        |  x: real
+        |  y: real
+      """.stripMargin)
+      val sd = tp.decls.head.asInstanceOf[TStructDecl]
+      sd.sym.tpe shouldBe TyStruct("Point", List("x" -> TyReal, "y" -> TyReal))
+    }
   }

@@ -275,9 +275,13 @@ class NexElaborator:
 
   private def elabStruct(s: StructDeclAST, sym: Symbol): TStructDecl =
     val fs = s.fields.map(f => (f.name, typeOf(f.typ)))
-    // Update the symbol's type now that we know the fields.
-    symbols.update(sym.copy(tpe = TyStruct(s.name, fs)))
-    TStructDecl(sym, fs, s.isPrivate, Some(s.pos))
+    // Update the symbol's type now that we know the fields, and reflect
+    // the same Symbol on the returned TStructDecl so walkers see the
+    // resolved struct type instead of the Pass-A `TyStruct(name, Nil)`
+    // placeholder.
+    val resolvedSym = sym.copy(tpe = TyStruct(s.name, fs))
+    symbols.update(resolvedSym)
+    TStructDecl(resolvedSym, fs, s.isPrivate, Some(s.pos))
 
   private def elabTopBinding(
       d:    DeclAST,
