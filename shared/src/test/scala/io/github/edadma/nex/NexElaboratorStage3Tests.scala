@@ -200,3 +200,56 @@ class NexElaboratorStage3Tests extends AnyWordSpec with Matchers:
       inner.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
     }
   }
+
+  // ==========================================================================
+  // `${...}` sub-expression lowering (regression for bug found 2026-05-18)
+  // ==========================================================================
+
+  "interpolated `${...}` lowering" should {
+
+    "lower juxtaposition inside `${...}` to a TBroadcast over an array" in {
+      // Before the fix to lowerExpr's TInterpStringLit branch, the inner
+      // TJuxtapose was never lowered — it survived as TJuxtapose at the
+      // root of the printed string and the eventual codegen would choke.
+      val tp = elab("""
+        |def main() =
+        |  val v = [1.0, 2.0]
+        |  print(s"doubled = ${2v}")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      val exprPart = interp.parts.collect { case e: TInterpExpr => e }.head
+      exprPart.expr shouldBe a[TBroadcast]
+    }
+
+    "lower method-call dispatch inside `${...}`" in {
+      // `a.sum()` inside `${...}` should be lowered from TMethodCall to a
+      // direct TCall (function-call sugar per §4.9).
+      val tp = elab("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  print(s"total = ${a.sum()}")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      val exprPart = interp.parts.collect { case e: TInterpExpr => e }.head
+      // After lowering, the inner method-call is a plain TCall, not a TMethodCall.
+      exprPart.expr shouldBe a[TCall]
+      exprPart.expr.asInstanceOf[TCall].callee.asInstanceOf[TVarRef].sym.name shouldBe "sum"
+    }
+
+    "catch `mut`-misuse inside `${...}` via walkForMutations" in {
+      // Before the fix to walkForMutations's TInterpStringLit branch,
+      // call-site mode validation never visited interpolated subtrees,
+      // so a misuse like `${bump(read_param)}` would slip past.
+      val errs = elabExpect("""
+        |def bump(x: mut integer) =
+        |  x = x + 1
+        |def caller(y: integer) =
+        |  print(s"after = ${bump(y)}")
+      """.stripMargin)
+      errs.mkString(";") should include("cannot pass `y` to a `mut`-mode parameter")
+    }
+  }

@@ -603,9 +603,16 @@ class NexElaborator:
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit => e
 
     case TInterpStringLit(parts, p, _) =>
-      // Sub-expressions are still raw text in Stage 1; Stage 3 will
-      // re-parse them. Symbol references already resolved.
-      TInterpStringLit(parts, p, TyString)
+      // `${...}` re-parse happens in Stage 1, so the parts list may
+      // contain `TInterpExpr(x)` holding a freshly elaborated subtree.
+      // Those subtrees need the same Stage-2 inference treatment any
+      // other expression gets, or their types stay TyUnknown and the
+      // mut-call-site check skips them.
+      val inferredParts = parts.map {
+        case TInterpExpr(x) => TInterpExpr(infExpr(x))
+        case other          => other
+      }
+      TInterpStringLit(inferredParts, p, TyString)
 
     case TVarRef(s, p, _) =>
       TVarRef(s, p, currentType(s))
@@ -992,8 +999,15 @@ class NexElaborator:
     case TMap(a, f, p, t)              => TMap(lowerExpr(a), lowerExpr(f), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(lowerExpr(a), lowerExpr(i), lowerExpr(f), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(lowerExpr(l), lowerExpr(r), p, t)
-    case TInterpStringLit(_, _, _)
-       | _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
+    case TInterpStringLit(parts, p, t) =>
+      // Recurse into `${...}` subtrees so juxt-lowering, method-call
+      // dispatch, etc. happen there too. Same rationale as Stage 2.
+      val lowered = parts.map {
+        case TInterpExpr(x) => TInterpExpr(lowerExpr(x))
+        case other          => other
+      }
+      TInterpStringLit(lowered, p, t)
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
        | _: TUnitLit | _: TVarRef => e
 
   /** Per §4.9: `e.name(args)` is:
@@ -1116,4 +1130,9 @@ class NexElaborator:
       case TMap(a, f, _, _)            => walkForMutations(a, reads, names); walkForMutations(f, reads, names)
       case TReduce(a, i, f, _, _)      => walkForMutations(a, reads, names); walkForMutations(i, reads, names); walkForMutations(f, reads, names)
       case TMatMul(l, r, _, _)         => walkForMutations(l, reads, names); walkForMutations(r, reads, names)
+      case TInterpStringLit(parts, _, _) =>
+        parts.foreach {
+          case TInterpExpr(x) => walkForMutations(x, reads, names)
+          case _              => ()
+        }
       case _                           => ()

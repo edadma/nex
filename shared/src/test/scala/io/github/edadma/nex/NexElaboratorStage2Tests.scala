@@ -394,3 +394,43 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       rhsOf(tp).tpe shouldBe TyArray(TyInteger, 1)
     }
   }
+
+  // ==========================================================================
+  // Interpolated-string subtree inference (regression for bug found 2026-05-18)
+  // ==========================================================================
+
+  "interpolated `${...}` subtrees" should {
+
+    "type-infer the sub-expression of a `${...}` part" in {
+      // Before the fix to infExpr's TInterpStringLit branch, the inner
+      // TInterpExpr(a + b) kept TyUnknown — Stage 2 never walked into it.
+      val tp = elab("""
+        |def main() =
+        |  val a = 3
+        |  val b = 4
+        |  print(s"sum = ${a + b}")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      val exprPart = interp.parts.collect { case e: TInterpExpr => e }.head
+      exprPart.expr.tpe shouldBe TyInteger
+    }
+
+    "type-infer a complex sub-expression" in {
+      // `${if a < b then b else a}` — the inner if-expression should
+      // come back with TyInteger, having walked condition + both branches.
+      val tp = elab("""
+        |def main() =
+        |  val a = 3
+        |  val b = 4
+        |  print(s"max = ${if a < b then b else a}")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      val ifExpr = interp.parts.collect { case e: TInterpExpr => e }.head.expr.asInstanceOf[TIf]
+      ifExpr.tpe shouldBe TyInteger
+      ifExpr.cond.tpe shouldBe TyBool
+    }
+  }
