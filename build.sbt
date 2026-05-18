@@ -78,7 +78,12 @@ lazy val nex = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     //    Test / scalaJSUseTestModuleInitializer := false,
     Test / scalaJSUseMainModuleInitializer := false,
     Test / scalaJSUseTestModuleInitializer := true,
-    scalaJSUseMainModuleInitializer        := true,
+    // Library bundle: no @main initializer. The playground entry
+    // point is reached via `@JSExportTopLevel("nexRunSource")` in
+    // js/src/main/scala/io/github/edadma/nex/Playground.scala.
+    // The CLI's `@main run` lives in jvm/src/main/scala/ so it
+    // doesn't drag ProcessBuilder/Process into the JS link.
+    scalaJSUseMainModuleInitializer        := false,
 //    libraryDependencies += "io.github.cquiroz" %%% "scala-java-time" % "2.6.0",
   )
 

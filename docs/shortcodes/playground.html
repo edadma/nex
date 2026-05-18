@@ -1,0 +1,121 @@
+{{ // Nex playground — a self-contained editor + Run button + output
+   // pane. Loads the Scala.js bundle lazily on first click so the
+   // ~1.8 MB asset doesn't block initial page render.
+   //
+   // Usage in markdown:
+   //   [= playground =]
+   //   def main() = print("Hello from Nex")
+   //   [= /playground =]
+   //
+   // Paired shortcode: the content between the open and close tags is
+   // taken as the initial editor contents. Surrounding whitespace is
+   // trimmed so authors don't have to worry about indentation.
+   //
+   // Lives in nex's own docs/shortcodes/ for now. Once the experience
+   // is solid we lift it into juicerdocs proper. }}
+<div class="nex-playground" data-nex-playground>
+  <textarea class="nex-playground-src" spellcheck="false">{{ trim .content }}</textarea>
+  <div class="nex-playground-bar">
+    <button type="button" class="nex-playground-run">Run</button>
+    <span class="nex-playground-status" aria-live="polite"></span>
+  </div>
+  <pre class="nex-playground-out" aria-label="Program output"></pre>
+</div>
+
+<style>
+  .nex-playground {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 1rem 0;
+    padding: 0.75rem;
+    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border-radius: 6px;
+    background: var(--juicerdocs-surface, #fafafa);
+  }
+  .nex-playground-src {
+    width: 100%;
+    min-height: 8rem;
+    padding: 0.5rem;
+    font-family: var(--juicerdocs-font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-size: 0.95em;
+    line-height: 1.5;
+    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border-radius: 4px;
+    background: var(--juicerdocs-bg, #ffffff);
+    color: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .nex-playground-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .nex-playground-run {
+    padding: 0.35rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border-radius: 4px;
+    background: var(--juicerdocs-accent, #6f1f9e);
+    color: white;
+  }
+  .nex-playground-run:hover { filter: brightness(1.1); }
+  .nex-playground-run:disabled { opacity: 0.6; cursor: progress; }
+  .nex-playground-status {
+    font-size: 0.85em;
+    color: var(--juicerdocs-fg-muted, #71717a);
+  }
+  .nex-playground-out {
+    margin: 0;
+    padding: 0.5rem;
+    min-height: 2.5rem;
+    font-family: var(--juicerdocs-font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-size: 0.9em;
+    white-space: pre-wrap;
+    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border-radius: 4px;
+    background: var(--juicerdocs-bg, #ffffff);
+    color: inherit;
+  }
+</style>
+
+<script type="module">
+  // Lazy-loaded singleton: the first Run anywhere on the page triggers
+  // the bundle import; every subsequent playground reuses it.
+  let bundlePromise = null;
+  function loadBundle() {
+    if (bundlePromise) return bundlePromise;
+    bundlePromise = import('/nex-playground.js').then(m => m.nexRunSource);
+    return bundlePromise;
+  }
+
+  // Wire every playground on the page. Idempotent via `data-wired`
+  // so re-runs (dev hot-reload, etc.) don't double-attach.
+  for (const pg of document.querySelectorAll('.nex-playground[data-nex-playground]:not([data-wired])')) {
+    pg.setAttribute('data-wired', '');
+    const src    = pg.querySelector('.nex-playground-src');
+    const run    = pg.querySelector('.nex-playground-run');
+    const out    = pg.querySelector('.nex-playground-out');
+    const status = pg.querySelector('.nex-playground-status');
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      status.textContent = 'loading interpreter…';
+      try {
+        const nexRunSource = await loadBundle();
+        status.textContent = 'running…';
+        const t0     = performance.now();
+        const result = nexRunSource(src.value);
+        const ms     = Math.round(performance.now() - t0);
+        out.textContent = result;
+        status.textContent = `${ms} ms`;
+      } catch (e) {
+        out.textContent = 'error: ' + (e && e.message ? e.message : String(e));
+        status.textContent = 'failed';
+      } finally {
+        run.disabled = false;
+      }
+    });
+  }
+</script>

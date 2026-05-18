@@ -32,3 +32,9 @@ examples/compile-hello/main
 # Compiled example binaries (keep .nex sources, drop products)
 examples/*/main
 examples/**/main.ll
+
+# Scala.js bundle for the docs playground — rebuild with
+# `sbt nexJS/fullLinkJS && cp js/target/scala-3.8.3/nex-opt/main.js docs/static/nex-playground.js`
+# before deploying the docs site. Don't commit the artifact — it churns
+# on every codegen / elaborator / parser change.
+docs/static/nex-playground.js
