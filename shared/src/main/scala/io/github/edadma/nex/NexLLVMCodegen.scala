@@ -41,8 +41,8 @@ class NexLLVMCodegen:
   def compile(tp: TProgram): String =
     emitPreamble()
     for d <- tp.decls do d match
-      case f: TFunDecl if f.sym.name == "main" && f.params.isEmpty =>
-        emitMain(f)
+      case f: TFunDecl =>
+        emitFunction(f)
       case _: TModuleDecl | _: TImportDecl =>
         () // metadata only
       case other =>
@@ -68,17 +68,51 @@ class NexLLVMCodegen:
     )
 
   // ---------------------------------------------------------------------------
-  // `def main()` — the only top-level shape supported in this slice.
-  // The Nex `main` returns unit; the LLVM `main` returns i32 (0).
+  // Function emission. `main` is special-cased: Nex's `def main() : unit`
+  // maps to the LLVM `i32 @main()` entry, which always returns 0. Every
+  // other user function emits `@<name>(<params>)` with the user-declared
+  // return type.
+  //
+  // Param-passing strategy: each param is received in SSA form (`%arg0`,
+  // `%arg1`, ...) and immediately spilled to an `alloca` so that
+  // subsequent `TVarRef` loads work uniformly with `val` / `var`. The
+  // alloca register is recorded in `locals` keyed by Symbol id; LLVM's
+  // `mem2reg` at `-O1+` collapses the indirection back to SSA.
   // ---------------------------------------------------------------------------
 
-  private def emitMain(f: TFunDecl): Unit =
+  private def emitFunction(f: TFunDecl): Unit =
     regCounter = 0
     locals.clear()
-    out.append("define i32 @main() {\n")
+
+    val isMain  = f.sym.name == "main" && f.params.isEmpty
+    val retLLT  = if isMain then "i32" else llvmType(f.returnType)
+    val funcId  = f.sym.name
+
+    val paramSig =
+      f.params.zipWithIndex
+        .map { case (p, i) => s"${llvmType(p.tpe)} %arg$i" }
+        .mkString(", ")
+
+    out.append(s"define $retLLT @$funcId($paramSig) {\n")
     out.append("entry:\n")
-    emitExpr(f.body)
-    out.append("  ret i32 0\n")
+
+    // Spill each param to an alloca so TVarRef loads work uniformly.
+    for ((p, i) <- f.params.zipWithIndex) do
+      val ty   = llvmType(p.tpe)
+      val slot = newReg()
+      out.append(s"  $slot = alloca $ty\n")
+      out.append(s"  store $ty %arg$i, ptr $slot\n")
+      locals(p.id) = slot
+
+    val result = emitExpr(f.body)
+
+    if isMain then
+      out.append("  ret i32 0\n")
+    else if f.returnType == TyUnit || result == "void" then
+      out.append("  ret void\n")
+    else
+      out.append(s"  ret ${llvmType(f.returnType)} $result\n")
+
     out.append("}\n\n")
 
   // ---------------------------------------------------------------------------
@@ -115,6 +149,8 @@ class NexLLVMCodegen:
       callee match
         case TVarRef(s, _, _) if s.name == "print" && args.size == 1 =>
           emitPrintCall(args.head); "void"
+        case TVarRef(s, _, calleeT) if s.kind == SymKind.Function =>
+          emitUserCall(s, calleeT, args)
         case other =>
           notYet(s"call to ${other.getClass.getSimpleName}"); "0"
 
@@ -135,6 +171,34 @@ class NexLLVMCodegen:
     out.append(s"  $slot = alloca $ty\n")
     if ty != "void" then out.append(s"  store $ty $rv, ptr $slot\n")
     locals(sym.id) = slot
+
+  // ---------------------------------------------------------------------------
+  // User-function call — emits `call <retT> @<name>(<argT> <arg>, ...)`.
+  // A unit-returning callee produces a `call void @name(...)` with no
+  // result register; the emitExpr return value is `"void"` so any
+  // downstream consumer (statement position) discards it.
+  // ---------------------------------------------------------------------------
+
+  private def emitUserCall(callee: Symbol, calleeT: Type, args: List[TExpr]): String =
+    val argList = args.map { a =>
+      val v = emitExpr(a)
+      s"${llvmType(a.tpe)} $v"
+    }.mkString(", ")
+
+    val retT = calleeT match
+      case TyFunc(_, r) => r
+      case _            => callee.tpe match
+        case TyFunc(_, r) => r
+        case _            => TyUnknown
+
+    retT match
+      case TyUnit =>
+        out.append(s"  call void @${callee.name}($argList)\n")
+        "void"
+      case other =>
+        val reg = newReg()
+        out.append(s"  $reg = call ${llvmType(other)} @${callee.name}($argList)\n")
+        reg
 
   // ---------------------------------------------------------------------------
   // `print(...)` — overloaded across integer / real / bool. Threads through

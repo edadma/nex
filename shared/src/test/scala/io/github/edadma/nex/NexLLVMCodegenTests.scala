@@ -131,13 +131,51 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
     }
   }
 
-  "unsupported features" should {
-    "leave a 'not yet supported' comment when a non-main top-level decl is seen" in {
+  "multi-function programs" should {
+    "emit each top-level def with its declared signature" in {
       val ir = compile("""
-        |def helper(x: integer) = x + 1
-        |def main() = print(42)
+        |def helper(x: integer): integer = x + 1
+        |def main() = print(helper(41))
+      """.stripMargin)
+      ir should include("define i64 @helper(i64 %arg0)")
+      ir should include("define i32 @main()")
+      ir should not include "; TODO:"
+    }
+
+    "emit a call to a user function with correct arg types" in {
+      val ir = compile("""
+        |def add(a: integer, b: integer): integer = a + b
+        |def main() = print(add(40, 2))
+      """.stripMargin)
+      ir should include("call i64 @add(i64 40, i64 2)")
+    }
+
+    "real-typed args are passed as double" in {
+      val ir = compile("""
+        |def scale(x: real, k: real): real = x * k
+        |def main() = print(scale(3.0, 2.0))
+      """.stripMargin)
+      ir should include("define double @scale(double %arg0, double %arg1)")
+      ir should include("call double @scale(double")
+    }
+
+    "unit-returning function uses ret void" in {
+      val ir = compile("""
+        |def announce(n: integer) = print(n)
+        |def main() = announce(7)
+      """.stripMargin)
+      ir should include("define void @announce(i64 %arg0)")
+      ir should include("ret void")
+      ir should include("call void @announce(i64 7)")
+    }
+  }
+
+  "unsupported features" should {
+    "leave a 'not yet supported' comment when a top-level binding is seen" in {
+      val ir = compile("""
+        |val x = 42
+        |def main() = print(x)
       """.stripMargin)
       ir should include("; TODO:")
-      ir should include("TFunDecl")
     }
   }

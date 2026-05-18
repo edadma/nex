@@ -1459,7 +1459,36 @@ class NexElaborator:
               params.zip(args).foreach { case ((pt, _), a) => checkAssignable(a, pt) }
             TCall(callee, args, p, ret)
           case _ =>
-            TCall(callee, args, p, TyUnknown)
+            // Fallback for prelude functions whose signatures aren't in
+            // [[TyFunc]] form yet. We don't refine the param types here
+            // (they'd need overload resolution), but we DO supply a
+            // return type where we know one — so a containing function's
+            // inferred return type isn't poisoned by TyUnknown bubbling
+            // up from `print` / `assert` / etc.
+            val ret = callee match
+              case TVarRef(s, _, _) if s.kind == SymKind.Prelude =>
+                preludeReturnType(s.name)
+              case _ => TyUnknown
+            TCall(callee, args, p, ret)
+
+  /** Lookup table for prelude functions whose return type is known
+    * statically and doesn't depend on argument types. HOFs (map/reduce/
+    * filter), Rank-1 calls (sum/dot/enumerate), construction (zeros/
+    * ones), and scalar math (sqrt/sin) have their own inference paths
+    * elsewhere — this table only covers the unit-returning side-effect
+    * functions and conversions.
+    */
+  private val preludeReturnType: Map[String, Type] = Map(
+    "print"          -> TyUnit,
+    "assert"         -> TyUnit,
+    "assert_eq"      -> TyUnit,
+    "assert_approx"  -> TyUnit,
+    "assert_traps"   -> TyUnit,
+    "format"         -> TyString,
+    "to_integer"     -> TyInteger,
+    "to_real"        -> TyReal,
+    "to_complex"     -> TyComplex,
+  ).withDefaultValue(TyUnknown)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
     // Spec §4.14 slicing detection.
