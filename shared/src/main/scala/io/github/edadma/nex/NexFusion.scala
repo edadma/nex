@@ -33,12 +33,28 @@ class NexFusion(symbols: SymbolTable):
       .find(s => s.kind == SymKind.Prelude && s.name == "length")
       .getOrElse(sys.error("NexFusion: prelude `length` not in symbol table"))
 
+  /** Symbol-id → fused TLambda for `val f = x -> body` bindings discovered
+    * during the walk. Populated as we process top-level [[TTopBinding]]s in
+    * order, and as we walk block items inside function bodies. Consumed by
+    * [[fuseMap]] when the lambda argument to `map(...)` is a [[TVarRef]] —
+    * chunk 4's named-lambda chasing. Sequential population means forward
+    * references at the top level are NOT chased (the binding has to lexically
+    * precede the call site within the program); that's a documented chunk-4
+    * limitation, not a soundness issue — the unfused TCall is still emitted.
+    */
+  private val lambdaBindings = mutable.Map.empty[Int, TLambda]
+
   def fuseProgram(p: TProgram): TProgram =
     p.copy(decls = p.decls.map(fuseDecl))
 
   private def fuseDecl(d: TDecl): TDecl = d match
     case f: TFunDecl    => f.copy(body = fuseExpr(f.body))
-    case b: TTopBinding => b.copy(value = fuseExpr(b.value))
+    case b: TTopBinding =>
+      val fv = fuseExpr(b.value)
+      fv match
+        case lam: TLambda => lambdaBindings(b.sym.id) = lam
+        case _            =>
+      b.copy(value = fv)
     case other          => other
 
   /** Walk the typed AST, recursively fusing children first (bottom-up),
@@ -84,8 +100,13 @@ class NexFusion(symbols: SymbolTable):
     case TAssign(tgt, v, p, t)         => TAssign(fuseExpr(tgt), fuseExpr(v), p, t)
     case TBlock(items, r, p, t)        =>
       val its = items.map {
-        case TBlockBinding(s, k, v) => TBlockBinding(s, k, fuseExpr(v))
-        case TBlockExpr(x)          => TBlockExpr(fuseExpr(x))
+        case TBlockBinding(s, k, v) =>
+          val fv = fuseExpr(v)
+          fv match
+            case lam: TLambda => lambdaBindings(s.id) = lam
+            case _            =>
+          TBlockBinding(s, k, fv)
+        case TBlockExpr(x) => TBlockExpr(fuseExpr(x))
       }
       TBlock(its, fuseExpr(r), p, t)
     case TMap(a, f, p, t)              => TMap(fuseExpr(a), fuseExpr(f), p, t)
@@ -158,15 +179,28 @@ class NexFusion(symbols: SymbolTable):
       )
     }
 
-  /** Rule 1c: `map(arr, x -> body)` with an inline lambda → fused loop.
-    * The lambda's body is inlined with its single param substituted to
-    * the indexed access on the array temp. If `arr` is itself a fused
-    * subexpression, chunk-2's chain inlining applies via [[sourceOperand]],
-    * so e.g. `map(2 * a + b, x -> x * 10)` collapses to one loop.
+  /** Rule 1c: `map(arr, fn)` → fused loop, with two ways to resolve `fn`:
     *
-    * Limited to single-param lambdas in chunk 3 — `map` only takes
-    * `(elem -> U)`. Returns `None` if the lambda arg isn't an inline
-    * TLambda (e.g. `map(xs, f)` where f is a TVarRef).
+    *  - **Inline lambda (chunk 3):** `map(arr, x -> body)` — the lambda's
+    *    body is inlined with its single param substituted to the indexed
+    *    access on the array temp.
+    *
+    *  - **Named lambda (chunk 4):** `map(arr, f)` where `f` is a
+    *    [[TVarRef]] whose binding (top-level [[TTopBinding]] or block-level
+    *    [[TBlockBinding]]) was registered in [[lambdaBindings]] earlier in
+    *    the walk. The looked-up lambda is treated identically to an inline
+    *    lambda from here on. The original `val f = ...` stays in the
+    *    program — fusion duplicates the body at each call site, it does
+    *    not consume the binding.
+    *
+    * If `arr` is itself a fused subexpression, chunk-2's chain inlining
+    * applies via [[sourceOperand]], so e.g. `map(2 * a + b, x -> x * 10)`
+    * collapses to one loop.
+    *
+    * Limited to single-param lambdas — `map` only takes `(elem -> U)`.
+    * Returns `None` when `fn` is neither an inline TLambda nor a TVarRef
+    * pointing at a registered lambda (e.g. a function-typed value passed
+    * across module boundaries).
     */
   private def fuseMap(
     arr: TExpr,
@@ -174,8 +208,13 @@ class NexFusion(symbols: SymbolTable):
     pos: Option[Position],
     tpe: Type,
   ): Option[TExpr] =
-    (fn, elemTypeIfRank1(tpe)) match
-      case (lam: TLambda, Some(_)) if lam.params.size == 1 =>
+    val resolved: Option[TLambda] = fn match
+      case lam: TLambda                                  => Some(lam)
+      case TVarRef(sym, _, _)                            => lambdaBindings.get(sym.id)
+      case _                                             => None
+
+    (resolved, elemTypeIfRank1(tpe)) match
+      case (Some(lam), Some(_)) if lam.params.size == 1 =>
         val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
         val iRef = TVarRef(iSym, pos, TyInteger)
         val (aBindings, aElem, aLen) = sourceOperand(arr, iSym, iRef, pos)

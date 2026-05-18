@@ -280,18 +280,16 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       countFusedLoops(loop.body) shouldBe 0
     }
 
-    "leave `map(xs, f)` alone when f is a TVarRef (not an inline lambda)" in {
+    "leave `map(xs, f)` alone when f is not a registered lambda" in {
+      // Chunk 4's named-lambda chasing only fires for [[TVarRef]]s that
+      // resolve to a binding whose value is a TLambda — and even then only
+      // when the binding has been processed earlier in the walk. A bare
+      // [[TVarRef]] to a function parameter (no recorded lambda) is left
+      // alone, as is a TVarRef whose binding lives in another module.
       val body = fBodyAfterFusion("""
-        |def f(xs: [integer]) =
-        |  val g = x -> x * 2
-        |  map(xs, g)
+        |def f(xs: [integer], g: (integer -> integer)) = map(xs, g)
       """.stripMargin)
-      // The block now contains the val + a TCall — the map call is NOT
-      // rewritten because the arg is a TVarRef, not an inline lambda.
-      // Chunk 3 deliberately doesn't chase named-lambda bindings; that's
-      // a later improvement.
-      val block = body.asInstanceOf[TBlock]
-      val mapCall = block.result.asInstanceOf[TCall]
+      val mapCall = body.asInstanceOf[TCall]
       mapCall.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
     }
 
@@ -325,6 +323,116 @@ class NexFusionTests extends AnyWordSpec with Matchers:
         |  val xs = [1, 2, 3]
         |  val ys = [100, 200, 300]
         |  print(map(xs, x -> x * 2) + ys)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[102, 204, 306]\n"
+    }
+  }
+
+  // ==========================================================================
+  // Named-lambda chasing (chunk 4) — `map(xs, f)` where `f` is a TVarRef
+  // that resolves to a registered TLambda. Lookup is sequential, so the
+  // binding must lexically precede the call site within the program.
+  // ==========================================================================
+
+  "named-lambda chasing" should {
+
+    "fuse `map(xs, f)` where f is a top-level val lambda binding" in {
+      val body = fBodyAfterFusion("""
+        |val mul2 = x -> x * 2
+        |def f(xs: [integer]) = map(xs, mul2)
+      """.stripMargin)
+      body shouldBe a[TBlock]
+      val block = body.asInstanceOf[TBlock]
+      block.result shouldBe a[TFusedLoop]
+      val loop = block.result.asInstanceOf[TFusedLoop]
+      // Lambda body inlined into the loop body; no nested fused loops.
+      countFusedLoops(loop.body) shouldBe 0
+      loop.body shouldBe a[TBinOp]
+    }
+
+    "fuse `map(xs, g)` where g is a block-level val lambda binding" in {
+      val body = fBodyAfterFusion("""
+        |def f(xs: [integer]) =
+        |  val g = x -> x * 2
+        |  map(xs, g)
+      """.stripMargin)
+      // The outer block has the `val g = ...` item; its result is the
+      // fused map call. Drill in to assert the fused shape.
+      val outer = body.asInstanceOf[TBlock]
+      outer.result shouldBe a[TBlock]
+      val fused = outer.result.asInstanceOf[TBlock]
+      fused.result shouldBe a[TFusedLoop]
+      countFusedLoops(fused.result.asInstanceOf[TFusedLoop].body) shouldBe 0
+    }
+
+    "leave `map(xs, f)` alone when f is a function parameter" in {
+      // Function parameters aren't registered in lambdaBindings — no
+      // lambda value is known at fuse time. The TCall stays.
+      val body = fBodyAfterFusion("""
+        |def f(xs: [integer], g: (integer -> integer)) = map(xs, g)
+      """.stripMargin)
+      val mapCall = body.asInstanceOf[TCall]
+      mapCall.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
+    }
+
+    "chain `map(xs, f) + ys` collapses to one loop when f is named" in {
+      val body = fBodyAfterFusion("""
+        |val mul2 = x -> x * 2
+        |def f(xs: [integer], ys: [integer]) = map(xs, mul2) + ys
+      """.stripMargin)
+      val outer = body.asInstanceOf[TBlock]
+      val loop  = outer.result.asInstanceOf[TFusedLoop]
+      countFusedLoops(loop.body) shouldBe 0
+    }
+
+    "fused top-level named lambda produces the same output as un-fused" in {
+      val src = """
+        |val mul2 = x -> x * 2
+        |
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(map(xs, mul2))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[2, 4, 6, 8]\n"
+    }
+
+    "fused block-level named lambda produces the same output as un-fused" in {
+      val src = """
+        |def main() =
+        |  val g = x -> x + 100
+        |  val xs = [1, 2, 3]
+        |  print(map(xs, g))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[101, 102, 103]\n"
+    }
+
+    "named lambda used by two call sites fuses both" in {
+      // Each call site gets its own copy of the lambda body, so two
+      // independent fused loops form.
+      val src = """
+        |val mul2 = x -> x * 2
+        |
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  val ys = [10, 20, 30]
+        |  print(map(xs, mul2))
+        |  print(map(ys, mul2))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[2, 4, 6]\n[20, 40, 60]\n"
+    }
+
+    "named lambda + element-wise chain runs the same fused and un-fused" in {
+      val src = """
+        |val mul2 = x -> x * 2
+        |
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  val ys = [100, 200, 300]
+        |  print(map(xs, mul2) + ys)
       """.stripMargin
       runFused(src) shouldBe runUnfused(src)
       runFused(src) shouldBe "[102, 204, 306]\n"
