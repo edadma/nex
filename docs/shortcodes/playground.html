@@ -23,29 +23,36 @@
 </div>
 
 <style>
+  /* Inherits the juicerdocs theme tokens (`--surface`, `--code-bg`,
+     `--code-fg`, `--border`, `--accent`, `--muted`, `--font-mono`)
+     so light and dark modes pick up the right palette automatically.
+     Fallbacks are kept for sites without the juicerdocs theme. */
   .nex-playground {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
     margin: 1rem 0;
     padding: 0.75rem;
-    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border: 1px solid var(--border, #d4d4d8);
     border-radius: 6px;
-    background: var(--juicerdocs-surface, #fafafa);
+    background: var(--surface, #f5f4f7);
   }
   .nex-playground-src {
     width: 100%;
     min-height: 8rem;
     padding: 0.5rem;
-    font-family: var(--juicerdocs-font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
     font-size: 0.95em;
     line-height: 1.5;
-    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border: 1px solid var(--border, #d4d4d8);
     border-radius: 4px;
-    background: var(--juicerdocs-bg, #ffffff);
-    color: inherit;
+    background: var(--code-bg, #ffffff);
+    color: var(--code-fg, #18181b);
     resize: vertical;
     box-sizing: border-box;
+    /* The textarea inherits its caret color from `color:` but some
+       browsers need it explicit for high contrast. */
+    caret-color: var(--code-fg, #18181b);
   }
   .nex-playground-bar {
     display: flex;
@@ -56,28 +63,28 @@
     padding: 0.35rem 1rem;
     font-weight: 600;
     cursor: pointer;
-    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border: 1px solid transparent;
     border-radius: 4px;
-    background: var(--juicerdocs-accent, #6f1f9e);
-    color: white;
+    background: var(--accent, #6f1f9e);
+    color: #ffffff;
   }
   .nex-playground-run:hover { filter: brightness(1.1); }
   .nex-playground-run:disabled { opacity: 0.6; cursor: progress; }
   .nex-playground-status {
     font-size: 0.85em;
-    color: var(--juicerdocs-fg-muted, #71717a);
+    color: var(--muted, #71717a);
   }
   .nex-playground-out {
     margin: 0;
     padding: 0.5rem;
     min-height: 2.5rem;
-    font-family: var(--juicerdocs-font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
     font-size: 0.9em;
     white-space: pre-wrap;
-    border: 1px solid var(--juicerdocs-rule, #d4d4d8);
+    border: 1px solid var(--border, #d4d4d8);
     border-radius: 4px;
-    background: var(--juicerdocs-bg, #ffffff);
-    color: inherit;
+    background: var(--code-bg, #ffffff);
+    color: var(--code-fg, #18181b);
   }
 </style>
 
