@@ -340,16 +340,47 @@ class NexInterpreter:
           VArray2(out, n, n)
         case _ => trap(s"diag expects a rank-1 array", None)
     case "reshape" =>
+      // Spec §10.4 signature: `reshape(a: [T], m: integer, n: integer)`.
+      // Treats `a` as a column-major flat buffer of an `m x n` matrix,
+      // i.e. input[c * m + r] is the element at (r, c) of the result.
+      // Internal storage is row-major (output[r * n + c]).
       args match
-        case List(arr, VTuple(List(VInt(r), VInt(c)))) =>
-          val flat = flatten1(arr)
-          if flat.size != r * c then trap(s"reshape: size mismatch (${flat.size} into $r×$c)", None)
-          VArray2(flat, r.toInt, c.toInt)
-        case _ => trap(s"reshape expects (array, (rows, cols))", None)
+        case List(arr, VInt(rL), VInt(cL)) =>
+          val flat   = flatten1(arr)
+          val rows   = rL.toInt
+          val cols   = cL.toInt
+          if flat.size != rows * cols then
+            trap(s"reshape: size mismatch (${flat.size} into ${rows}×${cols})", None)
+          val out = mutable.ArrayBuffer.fill(rows * cols)(VInt(0).asInstanceOf[Value])
+          var r = 0
+          while r < rows do
+            var c = 0
+            while c < cols do
+              out(r * cols + c) = flat(c * rows + r)
+              c += 1
+            r += 1
+          VArray2(out, rows, cols)
+        case _ => trap(s"reshape expects (array, rows: integer, cols: integer)", None)
+
     case "flatten" =>
+      // Spec §10.4: column-major flatten. For a row-major `VArray2(b, r, c)`
+      // we materialize `[b[0,0], b[1,0], ..., b[r-1,0], b[0,1], ...]` — i.e.
+      // walk columns first, rows inside.
       args match
-        case List(arr) => VArray1(flatten1(arr))
-        case _          => trap(s"flatten expects 1 arg", None)
+        case List(VArray1(b))       => VArray1(b.clone())
+        case List(VArray2(b, r, c)) =>
+          val out = mutable.ArrayBuffer.fill(r * c)(VInt(0).asInstanceOf[Value])
+          var idx = 0
+          var col = 0
+          while col < c do
+            var row = 0
+            while row < r do
+              out(idx) = b(row * c + col)
+              idx += 1
+              row += 1
+            col += 1
+          VArray1(out)
+        case _ => trap(s"flatten expects 1 arg", None)
     case "zeros" =>
       args match
         case List(VInt(n))                 => VArray1(mutable.ArrayBuffer.fill(n.toInt)(VInt(0).asInstanceOf[Value]))

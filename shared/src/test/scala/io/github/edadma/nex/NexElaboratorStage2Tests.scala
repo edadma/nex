@@ -926,6 +926,61 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       bind.value.tpe shouldBe TyReal
     }
 
+    // ========================================================================
+    // §5.3 — const constant-expression enforcement
+    // ========================================================================
+
+    "spec §5.3: const accepts integer/bool literals and arithmetic" in {
+      noException should be thrownBy elab("""
+        |const A = 42
+        |const B = -3
+        |const C = A + B * 2
+        |const D = true and false
+      """.stripMargin)
+    }
+
+    "spec §5.3: const accepts references to prelude constants" in {
+      noException should be thrownBy elab("""
+        |const TAU = 2 * pi
+      """.stripMargin)
+    }
+
+    "spec §5.3: const rejects a function call on the RHS" in {
+      val errs = elabExpect("const X = abs(-5)")
+      errs.exists(_.contains("function call")) shouldBe true
+    }
+
+    "spec §5.3: const rejects a reference to a val binding" in {
+      val errs = elabExpect("""
+        |val x = 42
+        |const Y = x
+      """.stripMargin)
+      errs.exists(_.contains("only other `const` bindings and prelude constants")) shouldBe true
+    }
+
+    "spec §5.3: const rejects a reference to a function" in {
+      val errs = elabExpect("""
+        |def f(n: integer) = n + 1
+        |const X = f
+      """.stripMargin)
+      errs.exists(_.contains("only other `const` bindings and prelude constants")) shouldBe true
+    }
+
+    "spec §5.3: const rejects a string literal" in {
+      val errs = elabExpect("const S = \"hi\"")
+      errs.exists(_.contains("string literal")) shouldBe true
+    }
+
+    "spec §5.3: const rejects an array literal" in {
+      val errs = elabExpect("const A = [1, 2, 3]")
+      errs.exists(_.contains("construct an array")) shouldBe true
+    }
+
+    "spec §5.3: const rejects an if expression" in {
+      val errs = elabExpect("const X = if true then 1 else 2")
+      errs.exists(_.contains("`if`")) shouldBe true
+    }
+
     "push-down works for `xs.map(x -> ...)` method-call sugar" in {
       // Method-call form goes through the TMethodCall branch in Stage 2.
       // The HOF dispatch synthesizes the equivalent TCall shape (receiver

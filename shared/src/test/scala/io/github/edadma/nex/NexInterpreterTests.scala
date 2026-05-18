@@ -533,6 +533,50 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "30\n"
     }
 
+    "flatten produces column-major order (spec §10.4)" in {
+      // For `[[1,2,3],[4,5,6]]` (2 rows, 3 cols), column-major flatten
+      // walks columns first: [1, 4, 2, 5, 3, 6].
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(flatten(m))
+      """.stripMargin) shouldBe "[1, 4, 2, 5, 3, 6]\n"
+    }
+
+    "flatten on a rank-1 array is a copy" in {
+      runOut("""
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  print(flatten(xs))
+      """.stripMargin) shouldBe "[10, 20, 30]\n"
+    }
+
+    "reshape interprets input column-major (spec §10.4)" in {
+      // The column-major flat `[1, 4, 2, 5, 3, 6]` reshaped into 2x3
+      // should give back the original `[[1, 2, 3], [4, 5, 6]]`.
+      runOut("""
+        |def main() =
+        |  val flat = [1, 4, 2, 5, 3, 6]
+        |  print(reshape(flat, 2, 3))
+      """.stripMargin) shouldBe "[[1, 2, 3], [4, 5, 6]]\n"
+    }
+
+    "flatten + reshape round-trip preserves shape (spec §10.4)" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(reshape(flatten(m), 2, 3))
+      """.stripMargin) shouldBe "[[1, 2, 3], [4, 5, 6]]\n"
+    }
+
+    "reshape traps on size mismatch" in {
+      shouldTrap("""
+        |def main() =
+        |  val flat = [1, 2, 3, 4]
+        |  print(reshape(flat, 2, 3))
+      """.stripMargin).msg should include("size mismatch")
+    }
+
     "var array index assign" in {
       runOut("""
         |def main() =

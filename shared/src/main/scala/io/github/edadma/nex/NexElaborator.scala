@@ -778,7 +778,82 @@ class NexElaborator:
       case _         => checkAssignable(v2, declared); declared
     val sym2 = setSymType(b.sym, t)
     registerDeferredLambda(sym2, v2)
+    // Spec §5.3: `const` bindings require a constant expression on the
+    // RHS. Track every const Symbol id so later const refs to this one
+    // can be recognised, and validate the value tree.
+    if b.kind == BindingKind.Const then
+      constSymIds += sym2.id
+      validateConstExpr(v2)
     b.copy(sym = sym2, value = v2)
+
+  /** Symbol ids of top-level `const` bindings — used by
+    * [[validateConstExpr]] to allow references between consts.
+    */
+  private val constSymIds = mutable.Set.empty[Int]
+
+  /** Spec §5.3: enforce that a `const` RHS is a constant expression.
+    *
+    * Allowed:
+    *   - Numeric / boolean literals (incl. the parsed-out negative-juxt
+    *     forms — these are integer/real lits in Stage 1).
+    *   - Arithmetic, comparison, and logical binops: `+ - * / div % ^
+    *     and or == != < <= > >=` (juxt is parsed as `*`).
+    *   - Unary `-`, `not`.
+    *   - References to other `const` bindings.
+    *   - References to prelude constants (`pi`, `e`, `inf`, `nan`, `i`).
+    *
+    * Rejected: function calls (deferred to v1+), references to `val` /
+    * `var`, lambdas, array/tuple/struct construction, control flow,
+    * string literals, interpolated strings, every other expression
+    * form. Each rejection emits an elaboration error rooted at the
+    * offending node's position.
+    */
+  private def validateConstExpr(e: TExpr): Unit =
+    val allowedBinOps = Set(
+      "+", "-", "*", "/", "div", "%", "^",
+      "and", "or",
+      "==", "!=", "<", "<=", ">", ">=",
+    )
+    e match
+      case _: TIntLit | _: TRealLit | _: TBoolLit | _: TUnitLit => ()
+      case TBinOp(op, l, r, p, _) =>
+        if !allowedBinOps.contains(op) then
+          err(s"const expression cannot use operator `$op`", p)
+        else
+          validateConstExpr(l); validateConstExpr(r)
+      case TUnaryOp(op, x, p, _) =>
+        if op != "-" && op != "not" then
+          err(s"const expression cannot use unary `$op`", p)
+        else validateConstExpr(x)
+      case TJuxtapose(c, b, _, _) =>
+        validateConstExpr(c); validateConstExpr(b)
+      case TVarRef(s, p, _) =>
+        s.kind match
+          case SymKind.Prelude =>
+            // Prelude constants are values (TyReal / TyComplex / TyBool /
+            // TyInteger); prelude functions are TyFunc — those are
+            // calls, not allowed in const expressions.
+            s.tpe match
+              case TyFunc(_, _) =>
+                err(s"const expression cannot reference function `${s.name}`", p)
+              case _ => ()
+          case _ =>
+            if !constSymIds.contains(s.id) then
+              err(s"const expression cannot reference `${s.name}` — only other `const` bindings and prelude constants are allowed", p)
+      case TCall(_, _, p, _) =>
+        err("const expression cannot contain a function call (deferred to v1+)", p)
+      case TLambda(_, _, p, _) =>
+        err("const expression cannot be a lambda", p)
+      case TArrayLit(_, p, _) =>
+        err("const expression cannot construct an array", p)
+      case TTuple(_, p, _) =>
+        err("const expression cannot construct a tuple", p)
+      case TIf(_, _, _, p, _) =>
+        err("const expression cannot use `if`", p)
+      case TStringLit(_, p, _) =>
+        err("const expression cannot be a string literal in v0", p)
+      case other =>
+        err(s"const expression contains a non-constant form (${other.getClass.getSimpleName})", other.pos)
 
   private def registerDeferredLambda(sym: Symbol, v: TExpr): Unit = v match
     case lam: TLambda if isPartiallyInferredLambda(lam) =>
