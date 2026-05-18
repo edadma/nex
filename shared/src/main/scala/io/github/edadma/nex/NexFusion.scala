@@ -124,6 +124,7 @@ class NexFusion(symbols: SymbolTable):
     case TMatMul(l, r, p, t)           => TMatMul(fuseExpr(l), fuseExpr(r), p, t)
     case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
+    case TClone(a, p, t)               => TClone(fuseExpr(a), p, t)
     case TSlice(a, lo, hi, inc, p, t)  => TSlice(fuseExpr(a), fuseExpr(lo), fuseExpr(hi), inc, p, t)
     case TSlice2(a, rAx, cAx, p, t)    =>
       def fuseAxis(s: TAxisSpec): TAxisSpec = s match
@@ -348,6 +349,7 @@ class NexFusion(symbols: SymbolTable):
       if lv.id == fromId then e
       else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), cols.map(subst(_, fromId, to)), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(subst(a, fromId, to), subst(i, fromId, to), p, t)
+    case TClone(a, p, t)               => TClone(subst(a, fromId, to), p, t)
     case TSlice(a, lo, hi, inc, p, t)  => TSlice(subst(a, fromId, to), subst(lo, fromId, to), subst(hi, fromId, to), inc, p, t)
     case TSlice2(a, rAx, cAx, p, t)    =>
       def substAxis(s: TAxisSpec): TAxisSpec = s match

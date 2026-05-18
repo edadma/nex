@@ -322,7 +322,19 @@ class NexElaborator:
     // the last is the entry module by topo order.
     val rootPath = modules.lastOption.map(_.path).getOrElse(Nil)
 
-    Right(TProgram(rootPath, allLowered.toList, symbols))
+    // -- Stage 4: lifetime analysis (§8.2, §8.3 auto-clone) ---------------
+    // Wraps move sites whose source is a still-live `var` array binding
+    // in [[TClone]] so the original buffer stays usable after the move.
+    val pre        = TProgram(rootPath, allLowered.toList, symbols)
+    val lifetime   = new NexLifetime(
+      mutableSymIds = mutableSymIds.contains,
+      symbolType    = id => symbols.get(id).map(_.tpe).getOrElse(TyUnknown),
+    )
+    val rewritten  = lifetime.rewrite(pre)
+
+    if errors.nonEmpty then return Left(errors.toList)
+
+    Right(rewritten)
 
   // -- top-binding symbol minting (handles tuple patterns) -------------------
 
@@ -1146,7 +1158,7 @@ class NexElaborator:
     // pass through. TFusedLoop is similar — introduced by NexFusion
     // (Stage 4, post-lowering), never present during Stage 2 today,
     // but pass it through defensively in case the pipeline is rerun.
-    case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex | _: TSlice | _: TSlice2 | _: TAxisAllMark => e
+    case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex | _: TSlice | _: TSlice2 | _: TAxisAllMark | _: TClone => e
 
   private def inferBlockItem(i: TBlockItem): TBlockItem = i match
     case TBlockBinding(s, kind, v) =>
@@ -1668,6 +1680,8 @@ class NexElaborator:
       TFusedLoop(lv, lowerExpr(len), lowerExpr(body), cols.map(lowerExpr), p, t)
     case TFlatIndex(arr, idx, p, t) =>
       TFlatIndex(lowerExpr(arr), lowerExpr(idx), p, t)
+    case TClone(arr, p, t) =>
+      TClone(lowerExpr(arr), p, t)
 
   /** Per §4.9: `e.name(args)` is:
     *   1. field access if `e`'s type has a field `name` (and `args` is empty)

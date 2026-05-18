@@ -678,6 +678,17 @@ class NexInterpreter:
     case _: TAxisAllMark =>
       trap("internal: TAxisAllMark survived to interpreter; should be Stage-2-only", e.pos)
 
+    case TClone(arr, p, _) =>
+      // Spec §8.3: deep-copy an array. Inserted by NexLifetime at move
+      // sites where the source has a later use. The result is a freshly-
+      // owned VArray1 / VArray2 with element-by-element copies (scalar
+      // values clone trivially; nested arrays would recurse but aren't a
+      // v0 surface).
+      evalExpr(arr, env) match
+        case VArray1(b)       => VArray1(b.clone())
+        case VArray2(b, r, c) => VArray2(b.clone(), r, c)
+        case other            => other
+
     case TSlice(arr, lo, hi, inclusive, p, _) =>
       // Spec §4.14: rank-1 slice. Half-open `lo..hi` or closed
       // `lo..=hi`. Out-of-bounds bounds trap. The result is a fresh

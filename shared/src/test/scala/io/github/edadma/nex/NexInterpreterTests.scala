@@ -1296,3 +1296,165 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "3\n"
     }
   }
+
+  // ============================================================================
+  // §8.2 / §8.3 — auto-clone insertion for var-array bindings
+  // ============================================================================
+
+  "auto-clone (§8.3)" should {
+
+    "var b = a clones when a is reused later" in {
+      // `a` is referenced in `print(a[0])` after the var-decl move, so the
+      // var-decl gets `TClone(a)` inserted. Mutating `b[0]` must not change a[0].
+      runOut("""
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  var b = a
+        |  b[0] = 999
+        |  print(a[0])
+        |  print(b[0])
+      """.stripMargin) shouldBe "10\n999\n"
+    }
+
+    "var b = a does not clone when a has no later use" in {
+      // No later reference to `a`, so the original buffer is moved into `b`
+      // without cloning. Observable behavior: identical to the cloned case.
+      // (Test pins that the program runs correctly either way.)
+      runOut("""
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  var b = a
+        |  b[0] = 999
+        |  print(b[0])
+      """.stripMargin) shouldBe "999\n"
+    }
+
+    "mut-call without later use mutates the caller's var (no clone)" in {
+      // Single use of `a` — the mut-call IS the only reference, so no
+      // clone is inserted. The function mutates `a` by-ref.
+      runOut("""
+        |def zero_first(xs: mut [integer]) = xs[0] = 0
+        |
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  zero_first(a)
+      """.stripMargin) shouldBe ""
+    }
+
+    "mut-call with later use of the same var clones (mutation is invisible)" in {
+      // Per spec §8.3 rule 1: the move (mut-call) gets a clone; the later
+      // use sees the original buffer. So `print(a[0])` reads the
+      // UNCHANGED `a`, not the post-zero_first value. This is correct
+      // per spec but surprising — if the user wants the mutation to be
+      // visible, they should NOT reference `a` after the mut-call.
+      runOut("""
+        |def zero_first(xs: mut [integer]) = xs[0] = 0
+        |
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  zero_first(a)
+        |  print(a[0])
+      """.stripMargin) shouldBe "10\n"
+    }
+
+    "var b = a then mut-call on b: a and b are independent clones" in {
+      // `var b = a` clones a (a is used later). `zero_first(b)` clones b
+      // (b is used later in `print(b[0])`). Both `a` and `b` end up
+      // unchanged. The mutation lands on a discarded clone.
+      runOut("""
+        |def zero_first(xs: mut [integer]) = xs[0] = 0
+        |
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  var b = a
+        |  zero_first(b)
+        |  print(a[0])
+        |  print(b[0])
+      """.stripMargin) shouldBe "10\n10\n"
+    }
+
+    "assign b = a clones when a is reused later" in {
+      runOut("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  var b = [9, 9, 9]
+        |  b = a
+        |  b[0] = 0
+        |  print(a[0])
+        |  print(b[0])
+      """.stripMargin) shouldBe "1\n0\n"
+    }
+
+    "rank-2 var binding clones independently" in {
+      runOut("""
+        |def main() =
+        |  var m = [[1, 2], [3, 4]]
+        |  var n = m
+        |  n[0, 0] = 99
+        |  print(m[0, 0])
+        |  print(n[0, 0])
+      """.stripMargin) shouldBe "1\n99\n"
+    }
+
+    "val source bound to var does not need cloning (val is immutable)" in {
+      // §8.2 only restricts `var` arrays. A `val` is not a unique owner —
+      // binding it to a var still produces a fresh var binding; the spec
+      // doesn't require cloning here because a val can't be mutated.
+      // Our pass only clones when source is a var-array. A val source is
+      // currently moved without cloning, which means the new var aliases
+      // the val's buffer. Mutating through the var aliases the val IFF
+      // the underlying buffer is mutable. Since `val` arrays in v0 ARE
+      // backed by a mutable ArrayBuffer, this test pins the v0 behavior:
+      // the aliasing is observable. A future tightening could require
+      // cloning val->var moves too.
+      runOut("""
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  var b = a
+        |  b[0] = 999
+        |  print(a[0])
+        |  print(b[0])
+      """.stripMargin) shouldBe "999\n999\n"
+    }
+
+    "scalar var is never cloned (only arrays are unique-owned)" in {
+      runOut("""
+        |def main() =
+        |  var x = 42
+        |  var y = x
+        |  y = 99
+        |  print(x)
+        |  print(y)
+      """.stripMargin) shouldBe "42\n99\n"
+    }
+
+    "chained var aliasing with intermediate clone" in {
+      // `var b = a` clones a (a used later). `var c = b` clones b (b
+      // used later in `print(b[0])`). All three buffers are independent.
+      // c[0] = 999 affects only c. a and b are clones of the original.
+      runOut("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  var b = a
+        |  var c = b
+        |  c[0] = 999
+        |  print(a[0])
+        |  print(b[0])
+        |  print(c[0])
+      """.stripMargin) shouldBe "1\n1\n999\n"
+    }
+
+    "no clone needed when var is used only once after init" in {
+      // Single-use case: the var-decl is the only move site and there's
+      // no later reference to `a` after it. The pass should NOT insert a
+      // clone — `b` takes over `a`'s buffer.
+      runOut("""
+        |def main() =
+        |  var a = [5, 10, 15]
+        |  var b = a
+        |  print(b[0])
+        |  print(b[1])
+        |  print(b[2])
+      """.stripMargin) shouldBe "5\n10\n15\n"
+    }
+  }

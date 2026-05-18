@@ -170,6 +170,15 @@ case class TFusedLoop(
   */
 case class TFlatIndex(arr: TExpr, idx: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
+/** Deep-copy of an array per spec §8.3 (auto-clone insertion). Inserted by
+  * [[NexLifetime]] at move sites where the source is a `var` array binding
+  * that has a later use in the same function, so the move receives a fresh
+  * buffer and the original binding remains live. The interpreter deep-
+  * copies `VArray1` / `VArray2` element-by-element (rank-2 preserves rows
+  * and cols).
+  */
+case class TClone(arr: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+
 // -- Application / projection ----------------------------------------------
 
 case class TCall(callee: TExpr, args: List[TExpr], pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
