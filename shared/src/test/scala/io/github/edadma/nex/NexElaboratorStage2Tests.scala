@@ -682,3 +682,149 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       lam.params.head.tpe shouldBe TyReal
     }
   }
+
+  // ==========================================================================
+  // Bidirectional inference (lambda params get pushed-down expected types)
+  // ==========================================================================
+
+  "bidirectional inference" should {
+    "infer an unannotated lambda's param type from a plain-call callee's TyFunc" in {
+      // `apply` declares `f: (integer -> integer)`. The lambda passed at
+      // the call site carries no `: T` on `x`, so its param sym leaves
+      // Stage 1 with TyUnknown. After inference push-down, the param
+      // should be TyInteger and the lambda's outer type should be the
+      // matching TyFunc.
+      val tp = elab("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |val r = apply(x -> x * 2, 3)
+      """.stripMargin)
+      val bind = tp.decls.collectFirst { case b: TTopBinding => b }.get
+      val call = bind.value.asInstanceOf[TCall]
+      val lam  = call.args.head.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+
+    "lambda body gets re-inferred with the refined param type" in {
+      // `x * 2` inside the lambda must compute as integer × integer →
+      // integer after push-down (not the TyUnknown × integer → TyUnknown
+      // it would produce without it). The body's tpe is what proves the
+      // body inference saw the refined type.
+      val tp = elab("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |val r = apply(x -> x * 2, 3)
+      """.stripMargin)
+      val bind = tp.decls.collectFirst { case b: TTopBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TCall].args.head.asInstanceOf[TLambda]
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "infer a lambda's param type from a method-call callee resolving to a top-level function" in {
+      // `(3).apply(x -> x * 2)` is a TMethodCall at Stage 2 (push-down
+      // happens there). Stage 3 then lowers it to `apply(3, x -> x * 2)`
+      // — by the time we read the final tree it's a TCall. Either way
+      // the lambda's params got refined at Stage 2.
+      val tp = elab("""
+        |def apply(n: integer, f: (integer -> integer)) = f(n)
+        |val r = (3).apply(x -> x * 2)
+      """.stripMargin)
+      val bind = tp.decls.collectFirst { case b: TTopBinding => b }.get
+      val call = bind.value.asInstanceOf[TCall]
+      // After Stage 3 lowering: TCall(apply, [3, lambda])
+      val lam = call.args(1).asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "infer a lambda's param type from a declared val-binding type" in {
+      // `val f: (integer -> integer) = x -> x * 2` — the declared type
+      // on the binding gets pushed into the lambda before inference.
+      val tp = elab("""
+        |val f: (integer -> integer) = x -> x * 2
+      """.stripMargin)
+      val bind = tp.decls.head.asInstanceOf[TTopBinding]
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "infer a lambda's param type from a block-level val with declared type" in {
+      // Same as the top-level case but for a TBlockBinding inside a def
+      // body — exercises inferBlockItem's push-down branch.
+      val tp = elab("""
+        |def main() =
+        |  val f: (integer -> integer) = x -> x * 2
+        |  f(3)
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "push-down infers multi-arg lambdas" in {
+      val tp = elab("""
+        |def apply2(f: ((integer, integer) -> integer), a: integer, b: integer) = f(a, b)
+        |val r = apply2((x, y) -> x + y, 1, 2)
+      """.stripMargin)
+      val bind = tp.decls.collectFirst { case b: TTopBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TCall].args.head.asInstanceOf[TLambda]
+      lam.params.map(_.tpe) shouldBe List(TyInteger, TyInteger)
+      lam.body.tpe shouldBe TyInteger
+    }
+
+    "annotated params are not silently overwritten by push-down" in {
+      // The annotated `x: real` on the lambda is the source of truth.
+      // Push-down only refines TyUnknown params; an explicit annotation
+      // remains intact when expected and annotated agree.
+      val tp = elab("""
+        |def apply(f: (real -> real), x: real) = f(x)
+        |val r = apply((x: real) -> x * 2.0, 3.0)
+      """.stripMargin)
+      val bind = tp.decls.collectFirst { case b: TTopBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TCall].args.head.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyReal
+    }
+
+    "push-down does NOT happen for prelude-resolved callees (TyUnknown signature)" in {
+      // Prelude funcs (map, reduce, ...) carry TyUnknown signatures in
+      // v0. The lambda's param stays TyUnknown — documents the known
+      // gap. When prelude signatures arrive this test will start failing
+      // and should be updated to the positive form.
+      val tp = elab("""
+        |val xs = [1, 2, 3]
+        |val ys = map(xs, x -> x * 2)
+      """.stripMargin)
+      val ysBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ys").get
+      val lam    = ysBind.value.asInstanceOf[TCall].args(1).asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyUnknown
+    }
+
+    "push-down does NOT happen for bound-then-not-pushed lambdas without a declared type" in {
+      // `val f = x -> x * 2` (no declared type): the lambda is inferred
+      // at the val site with no expected type, so the param stays
+      // TyUnknown. Documents the remaining gap (option C would close it).
+      val tp = elab("""
+        |val f = x -> x * 2
+      """.stripMargin)
+      val fBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "f").get
+      val lam   = fBind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyUnknown
+    }
+
+    "arity mismatch between lambda and expected falls back gracefully" in {
+      // Lambda has 2 params but callee expects 1. The push-down path
+      // skips (its `eparams.size == params.size` guard); inference
+      // proceeds via the no-expected branch. The downstream type-check
+      // then catches the mismatch. We assert the elaborator doesn't
+      // crash and reports a type error.
+      val errs = elabExpect("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |val r = apply((x, y) -> x + y, 3)
+      """.stripMargin)
+      errs.exists(e =>
+        e.contains("cannot assign") || e.contains("expects")
+      ) shouldBe true
+    }
+  }

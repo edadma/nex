@@ -315,6 +315,44 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(f(10))
       """.stripMargin) shouldBe "11\n110\n"
     }
+
+    "unannotated lambda passed to plain call infers param type and runs" in {
+      // Bidirectional inference end-to-end: the lambda's `x` carries no
+      // annotation but the callee declares `f: (integer -> integer)`,
+      // so push-down gives `x: integer` and the runtime computes 6.
+      runOut("""
+        |def apply(f: (integer -> integer), x: integer) = f(x)
+        |def main() =
+        |  print(apply(x -> x * 2, 3))
+      """.stripMargin) shouldBe "6\n"
+    }
+
+    "unannotated lambda passed via method-call sugar runs" in {
+      // Push-down for the method-call path: `n.apply(f)` desugars to
+      // `apply(n, f)`. Stage 2 looks `apply` up by name and pushes its
+      // declared second-param type into the lambda.
+      runOut("""
+        |def apply(n: integer, f: (integer -> integer)) = f(n)
+        |def main() =
+        |  print((3).apply(x -> x * 2))
+      """.stripMargin) shouldBe "6\n"
+    }
+
+    "lambda bound to a val with a declared function type runs" in {
+      runOut("""
+        |def main() =
+        |  val f: (integer -> integer) = x -> x * 2
+        |  print(f(7))
+      """.stripMargin) shouldBe "14\n"
+    }
+
+    "unannotated multi-arg lambda passed to plain call infers and runs" in {
+      runOut("""
+        |def apply2(f: ((integer, integer) -> integer), a: integer, b: integer) = f(a, b)
+        |def main() =
+        |  print(apply2((x, y) -> x + y, 4, 5))
+      """.stripMargin) shouldBe "9\n"
+    }
   }
 
   // ==========================================================================

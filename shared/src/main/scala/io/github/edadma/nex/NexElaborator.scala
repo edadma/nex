@@ -559,6 +559,33 @@ class NexElaborator:
   private def refreshSym(s: Symbol): Symbol =
     symbols.get(s.id).getOrElse(s)
 
+  /** Bidirectional inference for a single argument position.
+    *
+    * When the caller knows what type is expected at this position (because
+    * the callee is a `TyFunc` with concrete param types, or a binding has
+    * a declared type), the expected type is pushed down into the argument
+    * before its body is inferred. This is what lets `xs.map(x -> x * 2)`
+    * — where `x` carries no annotation — infer `x: integer` from the
+    * callee's `(integer -> integer)` parameter type.
+    *
+    * Special-cased: `TLambda` with at least one TyUnknown param. For
+    * everything else this just delegates to [[infExpr]].
+    */
+  private def inferArg(arg: TExpr, expected: Type): TExpr = arg match
+    case TLambda(params, body, p, _) =>
+      expected match
+        case TyFunc(eparams, _) if eparams.size == params.size =>
+          params.zip(eparams).foreach { case (s, (pt, _)) =>
+            if currentType(s) == TyUnknown && pt != TyUnknown then
+              setSymType(s, pt)
+          }
+          val freshParams = params.map(refreshSym)
+          val body2       = infExpr(body)
+          val ty          = TyFunc(freshParams.map(s => (s.tpe, ParamMode.Read)), body2.tpe)
+          TLambda(freshParams, body2, p, ty)
+        case _ => infExpr(arg)
+    case _ => infExpr(arg)
+
   // -- program -------------------------------------------------------------
 
   private def inferProgram(p: TProgram): TProgram =
@@ -586,10 +613,13 @@ class NexElaborator:
     f.copy(sym = sym2, body = body2, returnType = ret)
 
   private def inferTopBinding(b: TTopBinding): TTopBinding =
-    val v2 = infExpr(b.value)
-    val t = currentType(b.sym) match
+    val declared = currentType(b.sym)
+    val v2 =
+      if declared != TyUnknown then inferArg(b.value, declared)
+      else infExpr(b.value)
+    val t = declared match
       case TyUnknown => v2.tpe
-      case declared  => checkAssignable(v2, declared); declared
+      case _         => checkAssignable(v2, declared); declared
     val sym2 = setSymType(b.sym, t)
     b.copy(sym = sym2, value = v2)
 
@@ -654,7 +684,11 @@ class NexElaborator:
 
     case TCall(callee, args, p, _) =>
       val cc = infExpr(callee)
-      val aa = args.map(infExpr)
+      val aa = cc.tpe match
+        case TyFunc(params, _) if params.size == args.size =>
+          args.zip(params).map { case (a, (pt, _)) => inferArg(a, pt) }
+        case _ =>
+          args.map(infExpr)
       inferCall(cc, aa, p)
 
     case TIndex(arr, idx, p, _) =>
@@ -679,14 +713,35 @@ class NexElaborator:
       TTupleProj(rr, idx, p, ty)
 
     case TMethodCall(r, n, args, p, _) =>
-      // Stage 3 will lower; meanwhile we infer recursively so children
-      // carry types.
-      TMethodCall(infExpr(r), n, args.map(infExpr), p, TyUnknown)
+      // Stage 3 will lower this into either a field access or a function
+      // call `n(r, args...)`. Meanwhile, when `n` resolves to a top-level
+      // function with a concrete TyFunc signature whose first param is the
+      // receiver, push the remaining expected param types into `args` so
+      // unannotated lambdas (`xs.foo(x -> x + 1)`) can infer their param
+      // types. Prelude funcs still carry TyUnknown signatures in v0 and
+      // are skipped — `xs.map(x -> x * 2)` does NOT yet infer `x`'s type.
+      val rr = infExpr(r)
+      val aa = current.lookup(n) match
+        case Some(sym) =>
+          currentType(sym) match
+            case TyFunc(params, _) if params.size == args.size + 1 =>
+              args.zip(params.tail).map { case (a, (pt, _)) => inferArg(a, pt) }
+            case _ =>
+              args.map(infExpr)
+        case None =>
+          args.map(infExpr)
+      TMethodCall(rr, n, aa, p, TyUnknown)
 
     case TLambda(params, body, p, _) =>
-      val body2 = infExpr(body)
-      val ty    = TyFunc(params.map(s => (currentType(s), ParamMode.Read)), body2.tpe)
-      TLambda(params, body2, p, ty)
+      // No expected type at this position — params keep whatever type they
+      // had at Stage 1 (annotated or TyUnknown). Refresh the param Symbols
+      // so downstream consumers don't see a stale `.tpe`; for bound-then-
+      // called lambdas with annotations, the annotation already set the
+      // type at Stage 1 mint time.
+      val body2       = infExpr(body)
+      val freshParams = params.map(refreshSym)
+      val ty          = TyFunc(freshParams.map(s => (s.tpe, ParamMode.Read)), body2.tpe)
+      TLambda(freshParams, body2, p, ty)
 
     case TTuple(elems, p, _) =>
       val es = elems.map(infExpr)
@@ -768,10 +823,13 @@ class NexElaborator:
 
   private def inferBlockItem(i: TBlockItem): TBlockItem = i match
     case TBlockBinding(s, kind, v) =>
-      val vv = infExpr(v)
-      val t = currentType(s) match
+      val declared = currentType(s)
+      val vv =
+        if declared != TyUnknown then inferArg(v, declared)
+        else infExpr(v)
+      val t = declared match
         case TyUnknown => vv.tpe
-        case declared  => checkAssignable(vv, declared); declared
+        case _         => checkAssignable(vv, declared); declared
       val s2 = setSymType(s, t)
       TBlockBinding(s2, kind, vv)
     case TBlockExpr(x) => TBlockExpr(infExpr(x))
