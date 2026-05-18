@@ -369,3 +369,74 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       tp.decls(2).asInstanceOf[TTopBinding].sym.name shouldBe "b"
     }
   }
+
+  // ==========================================================================
+  // Modules + imports
+  // ==========================================================================
+
+  "modules" should {
+
+    "accept a leading module declaration and carry its path into TProgram" in {
+      val tp = elab("""
+        |module foo.bar
+        |val x = 1
+      """.stripMargin)
+      tp.modulePath shouldBe List("foo", "bar")
+    }
+
+    "default to an empty modulePath when no module declaration is present" in {
+      val tp = elab("val x = 1")
+      tp.modulePath shouldBe Nil
+    }
+
+    "report `module declaration must come first` when out of place" in {
+      val errs = elabExpect("""
+        |val x = 1
+        |module foo.bar
+      """.stripMargin)
+      errs.exists(_.contains("module declaration must come first")) shouldBe true
+    }
+  }
+
+  "imports" should {
+
+    "register each imported selector as a symbol in scope" in {
+      val tp = elab("""
+        |import some.lib.{a, b as bAlias}
+        |val use = a
+      """.stripMargin)
+      val imp = tp.decls.collectFirst { case i: TImportDecl => i }.get
+      imp.path shouldBe List("some", "lib")
+      imp.selectors.map { case (s, alias) => (s.name, alias) } shouldBe List(
+        "a" -> None,
+        "bAlias" -> Some("bAlias"),
+      )
+    }
+
+    "produce a TImportDecl with an empty selector list when no `.{...}` is given" in {
+      val tp = elab("import some.lib")
+      val imp = tp.decls.head.asInstanceOf[TImportDecl]
+      imp.path shouldBe List("some", "lib")
+      imp.selectors shouldBe Nil
+    }
+  }
+
+  // ==========================================================================
+  // Type-annotation diagnostics
+  // ==========================================================================
+
+  "type-annotation diagnostics" should {
+
+    "reject an unknown type name" in {
+      val errs = elabExpect("val x: Whatever = 1")
+      errs.exists(_.contains("unknown type")) shouldBe true
+    }
+
+    "reject a type annotation on a tuple-destructuring binding" in {
+      // The parser accepts `val a, b: integer = ...` (the type annotation
+      // binds to the whole pattern), but the elaborator currently can't
+      // typecheck a non-tuple annotation against a tuple shape.
+      val errs = elabExpect("val a, b: integer = (1, 2)")
+      errs.exists(_.contains("type annotation on a tuple-destructuring binding")) shouldBe true
+    }
+  }

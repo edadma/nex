@@ -533,3 +533,93 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("requires a tuple value")) shouldBe true
     }
   }
+
+  // ==========================================================================
+  // Misc diagnostics — covers error sites that previously had no test.
+  // ==========================================================================
+
+  "diagnostics" should {
+
+    "reject `@` on non-array operands" in {
+      val errs = elabExpect("""
+        |def f(x: integer, y: integer) = x @ y
+      """.stripMargin)
+      errs.exists(_.contains("`@` requires array operands")) shouldBe true
+    }
+
+    "reject unary `-` on a bool" in {
+      val errs = elabExpect("""
+        |def f() = -true
+      """.stripMargin)
+      errs.exists(_.contains("unary `-` requires numeric operand")) shouldBe true
+    }
+
+    "reject an if-without-else whose branch is not unit" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  if true then 42
+      """.stripMargin)
+      errs.exists(_.contains("if-without-else branch must be unit")) shouldBe true
+    }
+
+    "reject indexing a non-array value" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val x = 5
+        |  x[0]
+      """.stripMargin)
+      errs.exists(_.contains("cannot index value of type")) shouldBe true
+    }
+
+    "reject field access on a non-struct" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val x = 5
+        |  x.something
+      """.stripMargin)
+      errs.exists(_.contains("cannot access field")) shouldBe true
+    }
+
+    "reject access to a non-existent struct field" in {
+      val errs = elabExpect("""
+        |struct Point
+        |  x: real
+        |  y: real
+        |def f(p: Point) = p.z
+      """.stripMargin)
+      errs.exists(_.contains("no field")) shouldBe true
+    }
+
+    "reject a non-existent method call" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val xs = [1, 2, 3]
+        |  xs.notAThing()
+      """.stripMargin)
+      errs.exists(_.contains("no method or function")) shouldBe true
+    }
+
+    "reject a range bound that isn't an integer" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val r = 0.5..5
+      """.stripMargin)
+      errs.exists(_.contains("range bound must be integer")) shouldBe true
+    }
+
+    "reject `div` on non-integer operands" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val x = 3.5 div 2
+      """.stripMargin)
+      errs.exists(_.contains("requires integer")) shouldBe true
+    }
+
+    "reject `<` on non-numeric operands" in {
+      val errs = elabExpect("""
+        |def f() =
+        |  val b = "hi" < "ho"
+      """.stripMargin)
+      errs.exists(e => e.contains("ordered numeric") || e.contains("cannot compare")) shouldBe true
+    }
+  }
