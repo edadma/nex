@@ -28,3 +28,7 @@ docs/_site/
 # next to the source they were built from; never commit them.
 examples/**/*.ll
 examples/compile-hello/main
+
+# Compiled example binaries (keep .nex sources, drop products)
+examples/*/main
+examples/**/main.ll
