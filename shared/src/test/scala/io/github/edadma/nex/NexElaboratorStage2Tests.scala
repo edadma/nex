@@ -667,4 +667,18 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       val sd = tp.decls.head.asInstanceOf[TStructDecl]
       sd.sym.tpe shouldBe TyStruct("Point", List("x" -> TyReal, "y" -> TyReal))
     }
+
+    "annotated lambda params get the annotated type on the Symbol" in {
+      // `(x: real) -> x * 2.0` — `x` is annotated, so the param sym
+      // starts with TyReal at Stage 1. No inference required; just
+      // verify the annotated type survives into the typed AST.
+      val tp = elab("""
+        |def main() =
+        |  val f = (x: real) -> x * 2.0
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyReal
+    }
   }
