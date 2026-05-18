@@ -697,14 +697,32 @@ class NexElaborator:
 
     case TFor(loopVars, iter, body, p, _) =>
       val it = infExpr(iter)
-      it.tpe match
-        case TyArray(elem, 1) if loopVars.size == 1 => setSymType(loopVars.head, elem)
-        case TyArray(_, _)                          => () // tuple destructuring left for Stage 3
-        case TyUnknown                              => ()
-        case other                                  =>
+      // Pin the freshly-typed Symbols back into `loopVars` — `setSymType`
+      // returns the new immutable Symbol with the updated `tpe`, and the
+      // TFor field must hold those updated copies so anything walking the
+      // typed AST (codegen, analysis) sees the right loop-var types.
+      val typedLoopVars: List[Symbol] = it.tpe match
+        case TyArray(elem, 1) if loopVars.size == 1 =>
+          List(setSymType(loopVars.head, elem))
+        case TyArray(TyTuple(elems), 1) if loopVars.size == elems.size =>
+          // `for i, x in [(1, 1.5), (2, 2.5)] do ...` — destructure
+          // tuple-typed elements across the loop vars one-to-one.
+          loopVars.zip(elems).map { case (s, t) => setSymType(s, t) }
+        case TyArray(TyTuple(elems), 1) =>
+          err(s"for-loop tuple destructuring binds ${loopVars.size} names but each element has ${elems.size}", it.pos)
+          loopVars
+        case TyArray(elem, 1) =>
+          // Single-array-of-non-tuple but multiple loop vars — user
+          // wrote e.g. `for a, b in xs` over a non-tuple array.
+          err(s"for-loop binds ${loopVars.size} names but each element is $elem, not a tuple", it.pos)
+          loopVars
+        case TyArray(_, _) => loopVars // rank-2 iteration not yet defined
+        case TyUnknown     => loopVars
+        case other         =>
           err(s"for-loop iterable must be an array, got $other", it.pos)
+          loopVars
       val bb = infExpr(body)
-      TFor(loopVars, it, bb, p, TyUnit)
+      TFor(typedLoopVars, it, bb, p, TyUnit)
 
     case TWhile(c, b, p, _) =>
       val cc = infExpr(c); requireBool(cc, "while condition")

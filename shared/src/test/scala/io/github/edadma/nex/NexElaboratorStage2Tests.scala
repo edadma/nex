@@ -434,3 +434,70 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       ifExpr.cond.tpe shouldBe TyBool
     }
   }
+
+  // ==========================================================================
+  // For-loop tuple destructuring (regression for bug found 2026-05-18)
+  // ==========================================================================
+
+  "for-loop tuple destructuring" should {
+
+    "assign each loop var the corresponding tuple element type" in {
+      // Before the fix, Stage 2 fell into the "tuple destructuring left
+      // for Stage 3" branch and the loop vars kept TyUnknown — the
+      // interpreter happened to dispatch correctly at runtime, but any
+      // static analysis or AOT backend would have been wrong. We use a
+      // directly-typed tuple-array literal (rather than the prelude's
+      // `enumerate`, which still returns TyUnknown) so the test pins the
+      // type-propagation path itself, not the prelude's typing.
+      val tp = elab("""
+        |def main() =
+        |  for a, b in [(1, 1.5), (2, 2.5)] do
+        |    print(a)
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val forExpr = body match
+        case f: TFor => f
+        case b: TBlock => b.result.asInstanceOf[TFor]
+        case other => fail(s"unexpected body shape: $other")
+      forExpr.loopVars.size shouldBe 2
+      forExpr.loopVars(0).tpe shouldBe TyInteger
+      forExpr.loopVars(1).tpe shouldBe TyReal
+    }
+
+    "reject loop-var arity mismatch against the tuple element shape" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  for a, b, c in [(1, 2), (3, 4)] do
+        |    print(a)
+      """.stripMargin)
+      errs.exists(_.contains("for-loop tuple destructuring binds 3 names but each element has 2")) shouldBe true
+    }
+
+    "reject multiple loop vars over an array of non-tuple elements" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  for a, b in [1, 2, 3] do
+        |    print(a)
+      """.stripMargin)
+      errs.exists(_.contains("not a tuple")) shouldBe true
+    }
+
+    "type the loop var in the single-name case too (regression)" in {
+      // Same stale-Symbol bug existed on the single-loop-var path —
+      // `setSymType` updated the symbol table but the TFor field kept
+      // its pre-inference Symbol. Just never caught because no test
+      // looked at `forExpr.loopVars.head.tpe`.
+      val tp = elab("""
+        |def main() =
+        |  for x in [1.5, 2.5, 3.5] do
+        |    print(x)
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val forExpr = body match
+        case f: TFor   => f
+        case b: TBlock => b.result.asInstanceOf[TFor]
+        case other     => fail(s"unexpected body shape: $other")
+      forExpr.loopVars.size shouldBe 1
+      forExpr.loopVars.head.tpe shouldBe TyReal
+    }
+  }

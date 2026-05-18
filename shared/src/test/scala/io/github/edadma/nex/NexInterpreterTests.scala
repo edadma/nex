@@ -240,6 +240,15 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "0\n1\n2\n"
     }
 
+    "for with tuple destructuring on enumerate(xs)" in {
+      runOut("""
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  for i, x in enumerate(xs) do
+        |    print(s"$i: $x")
+      """.stripMargin) shouldBe "0: 10\n1: 20\n2: 30\n"
+    }
+
     "early return" in {
       runOut("""
         |def f(x: integer) =
