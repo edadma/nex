@@ -90,15 +90,11 @@ class NexFusion(symbols: SymbolTable):
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
        | _: TUnitLit | _: TVarRef => e
 
-  /** Rule 1a: rank-1 `lhs op rhs` (both arrays) → fused loop.
-    *
-    *   TBlock(
-    *     [val $l_tmp = lhs; val $r_tmp = rhs],
-    *     TFusedLoop(idx, length($l_tmp),
-    *                TBinOp(op, $l_tmp[idx], $r_tmp[idx])))
-    *
-    * Returns `None` if the node isn't a rank-1 element-wise (rank-2, bool
-    * comparison, or non-numeric element types are left alone for now).
+  /** Rule 1a: rank-1 `lhs op rhs` (both arrays) → fused loop. With chain
+    * inlining: each operand that's already a fused subexpression
+    * (`TBlock` wrapping a `TFusedLoop`) has its bindings hoisted to the
+    * outer block and its body inlined in place of `arr[i]` — collapsing
+    * nested fused loops into one.
     */
   private def fuseElementWise(
     op: String,
@@ -108,33 +104,23 @@ class NexFusion(symbols: SymbolTable):
     tpe: Type,
   ): Option[TExpr] =
     elemTypeIfRank1(tpe).map { elemT =>
-      val lSym = symbols.mint("$fused_l", l.tpe, SymKind.Local)
-      val rSym = symbols.mint("$fused_r", r.tpe, SymKind.Local)
-      val iSym = symbols.mint("$fused_i", TyInteger,  SymKind.Local)
-      val lRef = TVarRef(lSym, pos, l.tpe)
-      val rRef = TVarRef(rSym, pos, r.tpe)
+      val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
       val iRef = TVarRef(iSym, pos, TyInteger)
-      val body = TBinOp(
-        op,
-        TIndex(lRef, List(iRef), pos, elemT),
-        TIndex(rRef, List(iRef), pos, elemT),
-        pos,
-        elemT,
-      )
+      val (lBindings, lElem, lLen) = sourceOperand(l, iSym, iRef, pos)
+      val (rBindings, rElem, _)    = sourceOperand(r, iSym, iRef, pos)
+      val body                     = TBinOp(op, lElem, rElem, pos, elemT)
       TBlock(
-        items = List(
-          TBlockBinding(lSym, BindingKind.Val, l),
-          TBlockBinding(rSym, BindingKind.Val, r),
-        ),
-        result = TFusedLoop(iSym, lengthOf(lRef, pos), body, pos, tpe),
-        pos = pos,
-        tpe = tpe,
+        items  = lBindings ++ rBindings,
+        result = TFusedLoop(iSym, lLen, body, pos, tpe),
+        pos    = pos,
+        tpe    = tpe,
       )
     }
 
   /** Rule 1b: rank-1 broadcast (`scalar op arr` or `arr op scalar`) → fused
     * loop. `scalarFirst` is preserved so the body builds the operands in
-    * the right order.
+    * the right order. Chain inlining applies to `arr` (the scalar is
+    * always evaluated once via a temp).
     */
   private def fuseBroadcast(
     scalar: TExpr,
@@ -145,26 +131,108 @@ class NexFusion(symbols: SymbolTable):
     tpe: Type,
   ): Option[TExpr] =
     elemTypeIfRank1(tpe).map { elemT =>
-      val sSym = symbols.mint("$fused_s", scalar.tpe, SymKind.Local)
-      val aSym = symbols.mint("$fused_a", arr.tpe,    SymKind.Local)
-      val iSym = symbols.mint("$fused_i", TyInteger,    SymKind.Local)
-      val sRef = TVarRef(sSym, pos, scalar.tpe)
-      val aRef = TVarRef(aSym, pos, arr.tpe)
+      val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
       val iRef = TVarRef(iSym, pos, TyInteger)
-      val elemRef = TIndex(aRef, List(iRef), pos, elemT)
+      val sSym = symbols.mint("$fused_s", scalar.tpe, SymKind.Local)
+      val sRef = TVarRef(sSym, pos, scalar.tpe)
+      val (aBindings, aElem, aLen) = sourceOperand(arr, iSym, iRef, pos)
       val body =
-        if scalarFirst then TBinOp(op, sRef,    elemRef, pos, elemT)
-        else                TBinOp(op, elemRef, sRef,    pos, elemT)
+        if scalarFirst then TBinOp(op, sRef, aElem, pos, elemT)
+        else                TBinOp(op, aElem, sRef, pos, elemT)
       TBlock(
-        items = List(
-          TBlockBinding(sSym, BindingKind.Val, scalar),
-          TBlockBinding(aSym, BindingKind.Val, arr),
-        ),
-        result = TFusedLoop(iSym, lengthOf(aRef, pos), body, pos, tpe),
-        pos = pos,
-        tpe = tpe,
+        items  = TBlockBinding(sSym, BindingKind.Val, scalar) :: aBindings,
+        result = TFusedLoop(iSym, aLen, body, pos, tpe),
+        pos    = pos,
+        tpe    = tpe,
       )
     }
+
+  /** Process one source-array operand of a fused loop. Returns:
+    *   - `bindings`: items to splice into the outer TBlock (either a
+    *     single new temp binding, or the hoisted bindings from an inner
+    *     fused subexpression).
+    *   - `elemExpr`: the expression to use in the body in place of
+    *     `arr[outerIdx]`. For a non-fused operand it's `tmp[outerIdx]`;
+    *     for a fused operand it's the inner body with the inner loop
+    *     variable substituted to `outerIdx`.
+    *   - `lenExpr`: the loop's length. Element-wise requires matching
+    *     shapes; we use the first operand's length as the canonical one
+    *     (the second is checked at runtime, future work).
+    */
+  private def sourceOperand(
+    e: TExpr,
+    outerIdx: Symbol,
+    outerIdxRef: TExpr,
+    pos: Option[Position],
+  ): (List[TBlockItem], TExpr, TExpr) =
+    asFusedSource(e) match
+      case Some((innerBindings, innerIdx, innerLen, innerBody)) =>
+        val accessExpr = subst(innerBody, innerIdx.id, outerIdxRef)
+        val lenExpr    = subst(innerLen,  innerIdx.id, outerIdxRef)
+        (innerBindings, accessExpr, lenExpr)
+      case None =>
+        val tmp    = symbols.mint("$fused_a", e.tpe, SymKind.Local)
+        val ref    = TVarRef(tmp, pos, e.tpe)
+        val elemT  = elemTypeIfRank1(e.tpe).getOrElse(TyUnknown)
+        val access = TIndex(ref, List(outerIdxRef), pos, elemT)
+        (List(TBlockBinding(tmp, BindingKind.Val, e)), access, lengthOf(ref, pos))
+
+  /** Match the TBlock(bindings, TFusedLoop) shape produced by an earlier
+    * fuseElementWise / fuseBroadcast call. Returns the bindings, inner
+    * loop variable, inner length, and inner body if so; otherwise None.
+    */
+  private def asFusedSource(e: TExpr): Option[(List[TBlockItem], Symbol, TExpr, TExpr)] = e match
+    case TBlock(items, TFusedLoop(lv, len, body, _, _), _, _) =>
+      Some((items, lv, len, body))
+    case _ => None
+
+  /** Capture-free substitution: replace every TVarRef whose Symbol id
+    * matches `fromId` with `to`. Loop variables are uniquely minted by
+    * this pass so capture is not a concern; this is a straightforward
+    * structural walk over the typed AST.
+    */
+  private def subst(e: TExpr, fromId: Int, to: TExpr): TExpr = e match
+    case TVarRef(s, _, _) if s.id == fromId => to
+    case _: TVarRef                         => e
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit => e
+    case TBinOp(op, l, r, p, t)        => TBinOp(op, subst(l, fromId, to), subst(r, fromId, to), p, t)
+    case TUnaryOp(op, x, p, t)         => TUnaryOp(op, subst(x, fromId, to), p, t)
+    case TJuxtapose(c, b, p, t)        => TJuxtapose(subst(c, fromId, to), subst(b, fromId, to), p, t)
+    case TCall(c, args, p, t)          => TCall(subst(c, fromId, to), args.map(subst(_, fromId, to)), p, t)
+    case TIndex(a, i, p, t)            => TIndex(subst(a, fromId, to), i.map(subst(_, fromId, to)), p, t)
+    case TField(r, n, p, t)            => TField(subst(r, fromId, to), n, p, t)
+    case TTupleProj(r, idx, p, t)      => TTupleProj(subst(r, fromId, to), idx, p, t)
+    case TMethodCall(r, n, args, p, t) => TMethodCall(subst(r, fromId, to), n, args.map(subst(_, fromId, to)), p, t)
+    case TLambda(params, body, p, t)   => TLambda(params, subst(body, fromId, to), p, t)
+    case TTuple(es, p, t)              => TTuple(es.map(subst(_, fromId, to)), p, t)
+    case TArrayLit(es, p, t)           => TArrayLit(es.map(subst(_, fromId, to)), p, t)
+    case TIf(c, th, el, p, t)          => TIf(subst(c, fromId, to), subst(th, fromId, to), el.map(subst(_, fromId, to)), p, t)
+    case TFor(vs, it, b, p, t)         => TFor(vs, subst(it, fromId, to), subst(b, fromId, to), p, t)
+    case TWhile(c, b, p, t)            => TWhile(subst(c, fromId, to), subst(b, fromId, to), p, t)
+    case TReturn(v, p, t)              => TReturn(v.map(subst(_, fromId, to)), p, t)
+    case TAssign(tgt, v, p, t)         => TAssign(subst(tgt, fromId, to), subst(v, fromId, to), p, t)
+    case TBlock(items, r, p, t)        =>
+      val its = items.map {
+        case TBlockBinding(s, k, v) => TBlockBinding(s, k, subst(v, fromId, to))
+        case TBlockExpr(x)          => TBlockExpr(subst(x, fromId, to))
+      }
+      TBlock(its, subst(r, fromId, to), p, t)
+    case TElementWise(op, l, r, p, t)  => TElementWise(op, subst(l, fromId, to), subst(r, fromId, to), p, t)
+    case TBroadcast(s, a, op, sf, p, t)=> TBroadcast(subst(s, fromId, to), subst(a, fromId, to), op, sf, p, t)
+    case TMap(a, f, p, t)              => TMap(subst(a, fromId, to), subst(f, fromId, to), p, t)
+    case TReduce(a, i, f, p, t)        => TReduce(subst(a, fromId, to), subst(i, fromId, to), subst(f, fromId, to), p, t)
+    case TMatMul(l, r, p, t)           => TMatMul(subst(l, fromId, to), subst(r, fromId, to), p, t)
+    case TFusedLoop(lv, len, b, p, t)  =>
+      // The inner loop's own loopVar shadows ours (uniquely minted, but
+      // be defensive): don't substitute under a binder for the same id.
+      if lv.id == fromId then e
+      else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), p, t)
+    case TInterpStringLit(parts, p, t) =>
+      val ps = parts.map {
+        case TInterpExpr(x) => TInterpExpr(subst(x, fromId, to))
+        case other          => other
+      }
+      TInterpStringLit(ps, p, t)
 
   /** Build a `length(arr)` call against the prelude `length` symbol. */
   private def lengthOf(arr: TExpr, pos: Option[Position]): TExpr =
