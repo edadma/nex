@@ -432,11 +432,26 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("unknown type")) shouldBe true
     }
 
-    "reject a type annotation on a tuple-destructuring binding" in {
-      // The parser accepts `val a, b: integer = ...` (the type annotation
-      // binds to the whole pattern), but the elaborator currently can't
-      // typecheck a non-tuple annotation against a tuple shape.
+    "reject a non-tuple type annotation on a tuple-destructuring binding" in {
+      // Spec §4.16 allows tuple-typed annotations on tuple-destructuring
+      // bindings: `val (a, b): (integer, real) = 1, 2.0`. A scalar
+      // annotation like `: integer` doesn't match the pattern's shape;
+      // the elaborator should error with a tuple-type message rather
+      // than silently accepting it.
       val errs = elabExpect("val a, b: integer = (1, 2)")
-      errs.exists(_.contains("type annotation on a tuple-destructuring binding")) shouldBe true
+      errs.exists(_.contains("tuple type annotation")) shouldBe true
+    }
+
+    "accept a tuple type annotation matching the destructuring shape (spec §4.16)" in {
+      val tp = elab("val (a, b): (integer, real) = (1, 2.0)")
+      val aBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "a").get
+      val bBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "b").get
+      aBind.sym.tpe shouldBe TyInteger
+      bBind.sym.tpe shouldBe TyReal
+    }
+
+    "reject a tuple type annotation whose arity doesn't match the pattern" in {
+      val errs = elabExpect("val (a, b): (integer, real, integer) = (1, 2.0, 3)")
+      errs.exists(_.contains("3 elements but the pattern binds 2")) shouldBe true
     }
   }

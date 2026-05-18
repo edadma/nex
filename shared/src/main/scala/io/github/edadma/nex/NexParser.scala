@@ -245,9 +245,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   /** A pattern list: `a` or `a, b, c`. Returns a `VarPat`/`WildcardPat`
     * directly when single-element, or `TuplePat` for multi-element.
+    *
+    * The parenthesised form `(a, b, c)` is accepted because spec §4.16
+    * requires it when the binding has a type annotation
+    * (`val (a, b): (integer, real) = 1, 2.0`) — without parens that
+    * would be parsed as `val a, b: T = ...` and the annotation would
+    * ambiguously attach to `b` alone. Single-element parens collapse to
+    * the inner pattern (consistent with §4.16's "single-element tuples
+    * do not exist" — `(a)` is grouping).
     */
   lazy val patternList: PackratParser[PatternAST] =
-    rep1sep(patternAtom, ",") ^^ {
+    ("(" ~> rep1sep(patternAtom, ",") <~ ")" | rep1sep(patternAtom, ",")) ^^ {
       case p :: Nil => p
       case ps       => TuplePat(ps)
     }

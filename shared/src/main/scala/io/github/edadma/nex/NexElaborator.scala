@@ -352,9 +352,17 @@ class NexElaborator:
     * there is no syntax for a tuple inside a tuple pattern.
     */
   private def bindTuplePatternName(p: PatternAST, kind: SymKind, where: Positional): Symbol =
+    bindTuplePatternName(p, kind, where, TyUnknown)
+
+  private def bindTuplePatternName(
+      p: PatternAST,
+      kind: SymKind,
+      where: Positional,
+      declaredTy: Type,
+  ): Symbol =
     p match
-      case VarPat(name)  => define(name, kind, TyUnknown, where)
-      case WildcardPat() => symbols.mint("_", TyUnknown, kind)
+      case VarPat(name)  => define(name, kind, declaredTy, where)
+      case WildcardPat() => symbols.mint("_", declaredTy, kind)
       case _: TuplePat   => sys.error("unreachable: parser rejects nested tuple patterns")
 
   // ==========================================================================
@@ -425,9 +433,24 @@ class NexElaborator:
       case temp :: names =>
         // Tuple-destructuring binding. The first symbol is a synthetic temp
         // that holds the whole tuple; the rest are user-named projections.
-        // A type annotation here would have to be a `TupleType` — defer.
-        if typAnn.isDefined then
-          err("type annotation on a tuple-destructuring binding is not yet supported", d)
+        // Per spec §4.16: `val (a, b): (T, U) = ...` is allowed; the
+        // annotation must be a tuple type whose arity matches the pattern.
+        typAnn match
+          case Some(t) =>
+            typeOf(t) match
+              case TyTuple(elems) if elems.size == names.size =>
+                // Update each projection's declared type to the matching
+                // element type. The temp keeps its tuple type so its
+                // TVarRef in the projection knows the shape.
+                symbols.update(temp.copy(tpe = TyTuple(elems)))
+                names.zip(elems).foreach { case (s, et) =>
+                  symbols.update(s.copy(tpe = et))
+                }
+              case TyTuple(elems) =>
+                err(s"tuple type annotation has ${elems.size} elements but the pattern binds ${names.size}", d)
+              case other =>
+                err(s"tuple-destructuring binding requires a tuple type annotation, got $other", d)
+          case None => ()
         val tempBinding = TTopBinding(temp, kind, value, Some(p))
         val projections = names.zipWithIndex.map { case (s, i) =>
           TTopBinding(s, kind, TTupleProj(TVarRef(temp, Some(p)), i, Some(p)), Some(p))
@@ -468,13 +491,29 @@ class NexElaborator:
       case WildcardPat() =>
         List(TBlockBinding(markMutable(symbols.mint("_", declaredTy, SymKind.Local)), kind, value))
       case t: TuplePat =>
-        if typAnn.isDefined then
-          err("type annotation on a tuple-destructuring binding is not yet supported", d)
-        val temp = markMutable(symbols.mint("$tuple", TyUnknown, SymKind.Local))
+        // Per spec §4.16: a type annotation on a tuple-destructuring
+        // binding must itself be a tuple type whose arity matches.
+        val elemTypes: List[Type] = typAnn match
+          case Some(annAst) =>
+            typeOf(annAst) match
+              case TyTuple(elems) if elems.size == t.elems.size => elems
+              case TyTuple(elems) =>
+                err(s"tuple type annotation has ${elems.size} elements but the pattern binds ${t.elems.size}", d)
+                List.fill(t.elems.size)(TyUnknown)
+              case other =>
+                err(s"tuple-destructuring binding requires a tuple type annotation, got $other", d)
+                List.fill(t.elems.size)(TyUnknown)
+          case None => List.fill(t.elems.size)(TyUnknown)
+
+        val tempT = typAnn match
+          case Some(annAst) => typeOf(annAst)
+          case None         => TyUnknown
+        val temp = markMutable(symbols.mint("$tuple", tempT, SymKind.Local))
         val tempBinding = TBlockBinding(temp, kind, value)
-        val projections = t.elems.zipWithIndex.map { case (subPat, i) =>
-          val s = markMutable(bindTuplePatternName(subPat, SymKind.Local, d))
-          TBlockBinding(s, kind, TTupleProj(TVarRef(temp), i))
+        val projections = t.elems.zip(elemTypes).zipWithIndex.map {
+          case ((subPat, elemT), i) =>
+            val s = markMutable(bindTuplePatternName(subPat, SymKind.Local, d, elemT))
+            TBlockBinding(s, kind, TTupleProj(TVarRef(temp), i))
         }
         tempBinding :: projections
 
