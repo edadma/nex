@@ -501,3 +501,35 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       forExpr.loopVars.head.tpe shouldBe TyReal
     }
   }
+
+  // ==========================================================================
+  // TTupleProj inference (direct unit-test coverage for the projection node)
+  // ==========================================================================
+
+  "TTupleProj inference" should {
+
+    "type each projection as the corresponding element type" in {
+      // `val a, b = (1, 2.5)` lowers to:
+      //   $tuple = (1, 2.5)            // TyTuple(TyInteger, TyReal)
+      //   a      = $tuple.0            // TTupleProj idx=0 → TyInteger
+      //   b      = $tuple.1            // TTupleProj idx=1 → TyReal
+      val tp = elab("val a, b = (1, 2.5)")
+      val aDecl = tp.decls(1).asInstanceOf[TTopBinding]
+      val bDecl = tp.decls(2).asInstanceOf[TTopBinding]
+      aDecl.value.tpe shouldBe TyInteger
+      bDecl.value.tpe shouldBe TyReal
+      // The owning symbols' types are updated too.
+      aDecl.sym.tpe shouldBe TyInteger
+      bDecl.sym.tpe shouldBe TyReal
+    }
+
+    "report arity mismatch via the projection type-check" in {
+      val errs = elabExpect("val a, b, c = (1, 2)")
+      errs.exists(_.contains("binds 3 names but the value has only 2 elements")) shouldBe true
+    }
+
+    "report a non-tuple RHS via the projection type-check" in {
+      val errs = elabExpect("val a, b = 5")
+      errs.exists(_.contains("requires a tuple value")) shouldBe true
+    }
+  }

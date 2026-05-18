@@ -253,3 +253,97 @@ class NexElaboratorStage3Tests extends AnyWordSpec with Matchers:
       errs.mkString(";") should include("cannot pass `y` to a `mut`-mode parameter")
     }
   }
+
+  // ==========================================================================
+  // Call-site mode validation — Stage-3 unit coverage of checkCallSiteModes
+  // (integration tests live in NexInterpreterTests::"call-site mode check")
+  // ==========================================================================
+
+  "checkCallSiteModes" should {
+
+    "accept a `var`-rooted name as a `mut` argument" in {
+      elab("""
+        |def bump(x: mut integer) =
+        |  x = x + 1
+        |def main() =
+        |  var n = 5
+        |  bump(n)
+      """.stripMargin)
+    }
+
+    "accept a `var`-rooted field access as a `mut` argument" in {
+      elab("""
+        |struct Box
+        |  v: integer
+        |def bump(x: mut integer) =
+        |  x = x + 1
+        |def main() =
+        |  var b = Box(10)
+        |  bump(b.v)
+      """.stripMargin)
+    }
+
+    "reject a `val`-rooted name as a `mut` argument" in {
+      val errs = elabExpect("""
+        |def bump(x: mut integer) =
+        |  x = x + 1
+        |def main() =
+        |  val n = 5
+        |  bump(n)
+      """.stripMargin)
+      errs.exists(_.contains("cannot pass `n` to a `mut`-mode parameter")) shouldBe true
+    }
+
+    "reject an arbitrary expression (no root symbol) as a `mut` argument" in {
+      val errs = elabExpect("""
+        |def bump(x: mut integer) =
+        |  x = x + 1
+        |def main() = bump(2 + 3)
+      """.stripMargin)
+      errs.exists(_.contains("requires an l-value argument")) shouldBe true
+    }
+
+    "stay silent for callees with no `mut` parameters" in {
+      // The mode check should not even fire when the callee declares no
+      // mut params — otherwise the predicate guard would burn cycles
+      // walking every TCall in every function body.
+      elab("""
+        |def square(x: integer) = x * x
+        |def main() = print(square(5))
+      """.stripMargin)
+    }
+  }
+
+  // ==========================================================================
+  // Tuple destructuring lowering (Stage 3 passes TTupleProj through)
+  // ==========================================================================
+
+  "tuple destructuring lowering" should {
+
+    "leave TTupleProj nodes intact through lowering" in {
+      // Stage 3's lowerExpr just recurses on TTupleProj's receiver.
+      // Confirm the projection survives all the way to the final AST.
+      val tp = elab("val a, b = (1, 2)")
+      val aDecl = tp.decls(1).asInstanceOf[TTopBinding]
+      aDecl.value shouldBe a[TTupleProj]
+      aDecl.value.asInstanceOf[TTupleProj].idx shouldBe 0
+    }
+
+    "lower nested calls inside the projected expression" in {
+      // The projection's `receiver` field is recursed into by lowerExpr,
+      // so any method-call sugar etc. inside the temp's initializer
+      // gets lowered too. Smoke test: the temp's value (a TTuple of
+      // calls) survives unchanged because TTuple just elem-recurses.
+      val tp = elab("""
+        |def add(x: integer, y: integer) = x + y
+        |val a, b = add(1, 2), add(3, 4)
+      """.stripMargin)
+      val temp = tp.decls.collectFirst {
+        case b: TTopBinding if b.sym.name == "$tuple" => b
+      }.getOrElse(fail("temp binding not found"))
+      val tuple = temp.value.asInstanceOf[TTuple]
+      tuple.elems should have size 2
+      tuple.elems(0) shouldBe a[TCall]
+      tuple.elems(1) shouldBe a[TCall]
+    }
+  }

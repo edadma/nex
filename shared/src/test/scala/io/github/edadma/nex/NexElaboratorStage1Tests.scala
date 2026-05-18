@@ -274,3 +274,98 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("invalid assignment target")) shouldBe true
     }
   }
+
+  // ==========================================================================
+  // `${...}` Stage-1 re-parse — verifies parts shape, not types
+  // ==========================================================================
+
+  "${...} interpolation" should {
+
+    "build a TInterpStringLit with a TInterpExpr part for `${expr}`" in {
+      val tp = elab("""
+        |def main() =
+        |  val a = 1
+        |  print(s"x = ${a + 1}")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      // Should contain: TInterpText("x = "), TInterpExpr(TBinOp("+", a, 1))
+      interp.parts.size shouldBe 2
+      interp.parts.head shouldBe a[TInterpText]
+      val exprPart = interp.parts(1).asInstanceOf[TInterpExpr]
+      exprPart.expr shouldBe a[TBinOp]
+      exprPart.expr.asInstanceOf[TBinOp].op shouldBe "+"
+    }
+
+    "still build a TInterpRef for the legacy `$ident` form" in {
+      val tp = elab("""
+        |def main() =
+        |  val n = 5
+        |  print(s"n = $n")
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body
+      val print = body.asInstanceOf[TBlock].result.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      interp.parts.collect { case r: TInterpRef => r.sym.name } shouldBe List("n")
+    }
+
+    "report `failed to parse interpolated expression` for a malformed `${...}`" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  print(s"bad = ${1 + }")
+      """.stripMargin)
+      errs.exists(_.contains("failed to parse interpolated expression")) shouldBe true
+    }
+  }
+
+  // ==========================================================================
+  // Tuple destructuring — Stage-1 binding shape
+  // ==========================================================================
+
+  "tuple destructuring (Stage 1 shape)" should {
+
+    "expand a top-level `val a, b = (1, 2)` to temp + 2 projection bindings" in {
+      val tp = elab("val a, b = (1, 2)")
+      // Should produce 3 TTopBindings: $tuple, a, b.
+      tp.decls should have size 3
+      val temp = tp.decls(0).asInstanceOf[TTopBinding]
+      val aDecl = tp.decls(1).asInstanceOf[TTopBinding]
+      val bDecl = tp.decls(2).asInstanceOf[TTopBinding]
+      temp.sym.name shouldBe "$tuple"
+      temp.value shouldBe a[TTuple]
+      aDecl.sym.name shouldBe "a"
+      aDecl.value shouldBe a[TTupleProj]
+      aDecl.value.asInstanceOf[TTupleProj].idx shouldBe 0
+      bDecl.value.asInstanceOf[TTupleProj].idx shouldBe 1
+      // Both projections receive from the temp.
+      aDecl.value.asInstanceOf[TTupleProj].receiver.asInstanceOf[TVarRef].sym.id shouldBe temp.sym.id
+    }
+
+    "expand a block-level `val a, b = pair` to TBlockBindings of the same shape" in {
+      val tp = elab("""
+        |def main() =
+        |  val pair = (10, 20)
+        |  val a, b = pair
+        |  print(a)
+      """.stripMargin)
+      val body = tp.decls.head.asInstanceOf[TFunDecl].body.asInstanceOf[TBlock]
+      // items: [pair=..., $tuple=pair, a=$tuple.0, b=$tuple.1]
+      val items = body.items
+      items should have size 4
+      items.map {
+        case TBlockBinding(s, _, _) => s.name
+        case _                      => "(other)"
+      } shouldBe List("pair", "$tuple", "a", "b")
+    }
+
+    "the wildcard `_` in a tuple pattern still introduces a binding" in {
+      // The wildcard slot still produces a TTopBinding (for the temp it
+      // can never be referenced) so projections stay one-to-one with the
+      // tuple value's elements.
+      val tp = elab("val _, b = (99, 7)")
+      tp.decls should have size 3
+      tp.decls(1).asInstanceOf[TTopBinding].sym.name shouldBe "_"
+      tp.decls(2).asInstanceOf[TTopBinding].sym.name shouldBe "b"
+    }
+  }
