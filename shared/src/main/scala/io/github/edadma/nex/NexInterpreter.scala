@@ -61,6 +61,15 @@ class Env(val outer: Option[Env]):
     cells(id) = c
     c
 
+  /** Bind an existing cell into this scope under the given id. Used by
+    * the `mut`-parameter call mechanism so the callee's parameter and
+    * the caller's storage share the same Cell — writes through the param
+    * are observed by the caller after the call returns.
+    */
+  def bind(id: Int, cell: Cell): Cell =
+    cells(id) = cell
+    cell
+
   def child: Env = new Env(Some(this))
 
 // ============================================================================
@@ -557,10 +566,17 @@ class NexInterpreter:
           constructStruct(s, args.map(evalExpr(_, env)), p)
         case _ =>
           val cv = evalExpr(callee, env)
-          val av = args.map(evalExpr(_, env))
           cv match
-            case f: VFunc => callFunction(f, av, p)
-            case other    => trap(s"call: not a function: ${formatValue(other)}", p)
+            case uf: VUserFunc =>
+              // Route user-function calls through the mode-aware path so
+              // `mut` parameters get aliased to the caller's storage.
+              // The call-site mode check has already validated that
+              // mut-position args are l-value-rooted.
+              callUserFunctionWithModes(uf, args, callee.tpe, env, p)
+            case bf: VBuiltin =>
+              callFunction(bf, args.map(evalExpr(_, env)), p)
+            case other =>
+              trap(s"call: not a function: ${formatValue(other)}", p)
 
     case TIndex(arr, idx, p, _) =>
       val av = evalExpr(arr, env)
@@ -672,6 +688,52 @@ class NexInterpreter:
         params.zip(args).foreach { case (s, v) => frame.define(s.id, v) }
         try evalExpr(body, frame)
         catch case r: ReturnException => r.value
+
+  /** Mode-aware user-function call. For each `mut` parameter whose
+    * call-site argument is a [[TVarRef]] (or projection thereof) the
+    * callee's parameter Cell is aliased to the caller's storage, so the
+    * callee's `param = expr` writes through to the caller's variable.
+    * Read-mode parameters and non-l-value mut args (which the elaborator's
+    * call-site check forbids in well-formed programs) fall back to the
+    * by-value path.
+    *
+    * Phase 1 supports only direct `TVarRef` mut args. Struct-field /
+    * array-index / tuple-projection mut args (allowed by the elaborator
+    * when rooted at a var/mut) fall back to by-value: the elaborator
+    * check accepted them but full by-ref of those slot kinds wants a
+    * proper LValueRef abstraction and is left for phase 2.
+    */
+  private def callUserFunctionWithModes(
+      f: VUserFunc,
+      args: List[TExpr],
+      calleeTpe: Type,
+      callerEnv: Env,
+      p: Option[scala.util.parsing.input.Position],
+  ): Value =
+    if f.params.size != args.size then
+      trap(s"arity mismatch: function expects ${f.params.size}, got ${args.size}", p)
+
+    val modes: List[ParamMode] = calleeTpe match
+      case TyFunc(ps, _) if ps.size == args.size => ps.map(_._2)
+      case _                                      => List.fill(args.size)(ParamMode.Read)
+
+    val frame = f.env.child
+    f.params.zip(args).zip(modes).foreach { case ((param, argExpr), mode) =>
+      mode match
+        case ParamMode.Mut =>
+          argExpr match
+            case TVarRef(s, _, _) =>
+              callerEnv.lookup(s.id) match
+                case Some(cell) => frame.bind(param.id, cell)
+                case None       => frame.define(param.id, evalExpr(argExpr, callerEnv))
+            case _ =>
+              // Slot-into-struct / array element / tuple-proj — phase 2.
+              frame.define(param.id, evalExpr(argExpr, callerEnv))
+        case ParamMode.Read =>
+          frame.define(param.id, evalExpr(argExpr, callerEnv))
+    }
+    try evalExpr(f.body, frame)
+    catch case r: ReturnException => r.value
 
   private def constructStruct(s: Symbol, args: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     val fs = structFields.getOrElse(s.id, s.tpe match

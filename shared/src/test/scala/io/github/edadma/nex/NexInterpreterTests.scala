@@ -1055,3 +1055,87 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin)
     }
   }
+
+  // ============================================================================
+  // `mut` by-ref runtime semantics — assignments inside the callee write
+  // through to the caller's `var` binding (TVarRef args only in phase 1).
+  // ============================================================================
+
+  "mut by-ref" should {
+
+    "callee assignment to a mut param mutates the caller's var" in {
+      runOut("""
+        |def bump(x: mut integer) = x = x + 1
+        |
+        |def main() =
+        |  var n = 41
+        |  bump(n)
+        |  print(n)
+      """.stripMargin) shouldBe "42\n"
+    }
+
+    "callee can both read AND write the aliased cell" in {
+      runOut("""
+        |def double(x: mut integer) = x = x * 2
+        |
+        |def main() =
+        |  var n = 7
+        |  double(n)
+        |  double(n)
+        |  print(n)
+      """.stripMargin) shouldBe "28\n"
+    }
+
+    "two mut params alias two independent vars" in {
+      runOut("""
+        |def swap(a: mut integer, b: mut integer) =
+        |  val tmp = a
+        |  a = b
+        |  b = tmp
+        |
+        |def main() =
+        |  var x = 1
+        |  var y = 2
+        |  swap(x, y)
+        |  print(x)
+        |  print(y)
+      """.stripMargin) shouldBe "2\n1\n"
+    }
+
+    "mut param forwarded into another mut param reaches the original var" in {
+      runOut("""
+        |def inner(x: mut integer) = x = x + 100
+        |def outer(y: mut integer) = inner(y)
+        |
+        |def main() =
+        |  var n = 5
+        |  outer(n)
+        |  print(n)
+      """.stripMargin) shouldBe "105\n"
+    }
+
+    "read-mode params still copy: caller's val is unchanged after the call" in {
+      runOut("""
+        |def use(x: integer) = x + 1
+        |
+        |def main() =
+        |  val n = 10
+        |  val r = use(n)
+        |  print(n)
+        |  print(r)
+      """.stripMargin) shouldBe "10\n11\n"
+    }
+
+    "mut param with same name as caller's var doesn't collide" in {
+      runOut("""
+        |def bump(n: mut integer) = n = n + 1
+        |
+        |def main() =
+        |  var n = 0
+        |  bump(n)
+        |  bump(n)
+        |  bump(n)
+        |  print(n)
+      """.stripMargin) shouldBe "3\n"
+    }
+  }
