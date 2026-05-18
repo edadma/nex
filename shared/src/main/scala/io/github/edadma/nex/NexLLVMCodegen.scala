@@ -66,6 +66,12 @@ class NexLLVMCodegen:
     */
   private val globalBindings = mutable.Set.empty[Int]
 
+  /** Pool of string literals → `@.str.<N>` global names. Each unique
+    * literal value gets a single global so duplicate literal text isn't
+    * stored twice in the resulting binary.
+    */
+  private val stringPool = mutable.LinkedHashMap.empty[String, String]
+
   /** Compile a program. Returns the full LLVM IR module text. */
   def compile(tp: TProgram): String =
     emitPreamble()
@@ -93,13 +99,60 @@ class NexLLVMCodegen:
         emitFunction(f)
       case _: TTopBinding | _: TStructDecl | _: TModuleDecl | _: TImportDecl =>
         () // top-bindings already emitted as globals; struct/module are metadata
+
+    // Flush the string-literal pool at the END. LLVM IR allows forward
+    // references to module-level identifiers, so a function body that
+    // uses `@.str.N` works even though the constant is defined below.
+    flushStringPool()
+
     out.toString
 
   /** Picks the appropriate `zeroinitializer` token for an LLVM type. */
   private def zeroInitFor(ty: String): String = ty match
     case "double" => "0.0"
     case "i1"     => "false"
+    case "ptr"    => "null"
     case _        => "0"
+
+  /** Add `s` to the literal pool if not already present, returning the
+    * `@.str.<N>` global name as an SSA-usable pointer token. The actual
+    * `@.str.<N> = constant [<len> x i8] c"<escaped>\00"` definitions are
+    * flushed by [[flushStringPool]] right before the user code so they're
+    * defined before any function references them.
+    */
+  private def internStringLiteral(s: String): String =
+    stringPool.getOrElseUpdate(s, s"@.str.${stringPool.size}")
+
+  /** Emit all pooled string-literal globals. Called once between the
+    * preamble and the @-bindings/init-function/user-functions section so
+    * every later reference can resolve.
+    */
+  private def flushStringPool(): Unit =
+    if stringPool.nonEmpty then
+      for (text, name) <- stringPool do
+        val encoded = encodeIRString(text)
+        val len     = encoded._2
+        out.append(s"$name = private unnamed_addr constant [$len x i8] c\"${encoded._1}\"\n")
+      out.append("\n")
+
+  /** Encode a String into LLVM IR's c"..." form. Returns the encoded
+    * string text (without surrounding quotes) and the total byte length
+    * including the implicit trailing NUL. Non-ASCII / control bytes are
+    * `\xx` hex-escaped; the trailing NUL is added as `\00`.
+    */
+  private def encodeIRString(s: String): (String, Int) =
+    val sb = new StringBuilder
+    var bytes = 0
+    for c <- s.getBytes("UTF-8") do
+      val b = c & 0xff
+      if b == '"' || b == '\\' || b < 0x20 || b > 0x7e then
+        sb.append(f"\\$b%02X")
+      else
+        sb.append(b.toChar)
+      bytes += 1
+    sb.append("\\00")
+    bytes += 1
+    (sb.toString, bytes)
 
   /** Runs every top-level binding initializer in declaration order. The
     * function returns void and is called once from `main`'s entry block.
@@ -136,10 +189,15 @@ class NexLLVMCodegen:
         |
         |declare i32 @printf(ptr, ...)
         |
-        |@.fmt_int  = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
-        |@.fmt_real = private unnamed_addr constant [4 x i8] c"%g\0A\00"
-        |@.fmt_bool_t = private unnamed_addr constant [6 x i8] c"true\0A\00"
-        |@.fmt_bool_f = private unnamed_addr constant [7 x i8] c"false\0A\00"
+        |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
+        |@.fmt_real    = private unnamed_addr constant [4 x i8] c"%g\0A\00"
+        |@.fmt_bool_t  = private unnamed_addr constant [6 x i8] c"true\0A\00"
+        |@.fmt_bool_f  = private unnamed_addr constant [7 x i8] c"false\0A\00"
+        |@.fmt_str     = private unnamed_addr constant [4 x i8] c"%s\0A\00"
+        |@.fmt_str_raw = private unnamed_addr constant [3 x i8] c"%s\00"
+        |@.fmt_int_raw = private unnamed_addr constant [5 x i8] c"%lld\00"
+        |@.fmt_real_raw = private unnamed_addr constant [3 x i8] c"%g\00"
+        |@.nl          = private unnamed_addr constant [2 x i8] c"\0A\00"
         |
         |""".stripMargin,
     )
@@ -218,6 +276,18 @@ class NexLLVMCodegen:
     case TRealLit(v, _, _) => formatReal(v)
     case TBoolLit(v, _, _) => if v then "1" else "0"
     case TUnitLit(_)       => "void"
+
+    case TStringLit(s, _, _) =>
+      // String literals lower to a private global; the SSA value is the
+      // global's pointer. Identical literals share a single global.
+      internStringLiteral(s)
+
+    case TInterpStringLit(parts, _, _) =>
+      // For chunk-4 v0, only the print-statement form is fully
+      // supported (see emitPrintCall). At value position, surface a
+      // diagnostic — building the interpolated string into a heap
+      // buffer needs sprintf + malloc.
+      notYet("interpolated string at value position (use print)"); "null"
 
     case TVarRef(s, _, t) =>
       locals.get(s.id) match
@@ -477,19 +547,65 @@ class NexLLVMCodegen:
   // ---------------------------------------------------------------------------
 
   private def emitPrintCall(arg: TExpr): Unit =
-    val v   = emitExpr(arg)
+    arg match
+      // Special-case interpolated strings: emit a printf for each part
+      // and a trailing newline. Avoids needing an in-memory string
+      // builder until we ship real string ops.
+      case TInterpStringLit(parts, _, _) =>
+        for p <- parts do p match
+          case TInterpText(text) =>
+            val ptr = internStringLiteral(text)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $ptr)\n")
+          case TInterpRef(sym) =>
+            emitPrintValue(TVarRef(sym, None, sym.tpe))
+          case TInterpExpr(e) =>
+            emitPrintValue(e)
+          case _: TInterpRaw =>
+            notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+      case _ =>
+        val v = emitExpr(arg)
+        arg.tpe match
+          case TyInteger =>
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 $v)\n")
+          case TyReal =>
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real, double $v)\n")
+          case TyBool =>
+            // Branch on the value: pick `true\n` vs `false\n` format string.
+            val sel = newReg()
+            emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr $sel)\n")
+          case TyString =>
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $v)\n")
+          case other =>
+            notYet(s"print(${other})")
+
+  /** Emits a value-printing printf WITHOUT a trailing newline. Used by
+    * the interpolated-string print path so each interpolated part lands
+    * inline with the surrounding text.
+    */
+  private def emitPrintValue(arg: TExpr): Unit =
+    val v = emitExpr(arg)
     arg.tpe match
       case TyInteger =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 $v)\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int_raw, i64 $v)\n")
       case TyReal =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real, double $v)\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real_raw, double $v)\n")
       case TyBool =>
-        // Branch on the value: pick `true\n` vs `false\n` format string.
         val sel = newReg()
-        emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr $sel)\n")
+        emitLine(s"  $sel = select i1 $v, ptr @.fmt_str_raw, ptr @.fmt_str_raw\n")
+        // Re-use the truth-table format-strings, but without their
+        // trailing newlines.
+        val (tStr, fStr) = ("true", "false")
+        val tPtr = internStringLiteral(tStr)
+        val fPtr = internStringLiteral(fStr)
+        val sel2 = newReg()
+        emitLine(s"  $sel2 = select i1 $v, ptr $tPtr, ptr $fPtr\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel2)\n")
+      case TyString =>
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
       case other =>
-        notYet(s"print(${other})")
+        notYet(s"interpolated print($other)")
 
   // ---------------------------------------------------------------------------
   // Type and binop tables.
@@ -501,6 +617,7 @@ class NexLLVMCodegen:
     case TyReal    => "double"
     case TyBool    => "i1"
     case TyUnit    => "void"
+    case TyString  => "ptr"
     case TyUnknown => "i64" // best-effort placeholder for missing inference
     case other     => notYet(s"type `$other`"); "i64"
 
