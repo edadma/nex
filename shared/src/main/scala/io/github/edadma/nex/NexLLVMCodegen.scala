@@ -645,10 +645,17 @@ class NexLLVMCodegen:
           emitPrintCall(args.head); "void"
         case TVarRef(s, _, _) if s.kind == SymKind.Prelude =>
           emitPreludeCall(s.name, args, e.tpe)
+        case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
+          // Struct constructor: `Point(x, y)` lowers like a tuple
+          // literal — insertvalue chain into the struct's `{ ... }` type.
+          emitStructConstruct(s, args, e.tpe)
         case TVarRef(s, _, calleeT) if s.kind == SymKind.Function =>
           emitUserCall(s, calleeT, args)
         case other =>
           notYet(s"call to ${other.getClass.getSimpleName}"); "0"
+
+    case TField(receiver, name, _, t) =>
+      emitFieldAccess(receiver, name, t)
 
     case TArrayLit(elems, _, t) =>
       emitArrayLit(elems, t)
@@ -1613,6 +1620,71 @@ class NexLLVMCodegen:
         return
     emitPrintTupleValue(v, arg.tpe, tup)
 
+  // ---------------------------------------------------------------------------
+  // Structs. The struct type is materialized as an anonymous LLVM struct
+  // (same shape as tuples — `{ T0, T1, ... }`), since the field order is
+  // declared by the `struct Foo { x, y, ... }` form and is already part of
+  // the TyStruct type. Construction lowers to insertvalue chain; field
+  // access lowers to extractvalue by position.
+  // ---------------------------------------------------------------------------
+
+  /** Lower `StructName(arg0, arg1, ...)`. */
+  private def emitStructConstruct(sym: Symbol, args: List[TExpr], resultT: Type): String =
+    val structTy = llvmType(resultT)
+    val vs = args.map(emitExpr)
+    var acc: String = "undef"
+    for i <- args.indices do
+      val ft = llvmType(args(i).tpe)
+      val next = newReg()
+      emitLine(s"  $next = insertvalue $structTy $acc, $ft ${vs(i)}, $i\n")
+      acc = next
+    acc
+
+  /** Lower `recv.field` — pick out the field's index from the receiver's
+    * TyStruct then emit `extractvalue`.
+    */
+  private def emitFieldAccess(receiver: TExpr, fieldName: String, resultT: Type): String =
+    receiver.tpe match
+      case TyStruct(_, fields) =>
+        val idx = fields.indexWhere(_._1 == fieldName)
+        if idx < 0 then
+          notYet(s"field `$fieldName` not found on struct"); "0"
+        else
+          val rv = emitExpr(receiver)
+          val ty = llvmType(receiver.tpe)
+          val reg = newReg()
+          emitLine(s"  $reg = extractvalue $ty $rv, $idx\n")
+          reg
+      case other =>
+        notYet(s"field access on non-struct type $other"); "0"
+
+  /** Print a struct value as `Name { field=value, field=value }` (no
+    * trailing newline). Used by the print path and tuple/array element
+    * recursion.
+    */
+  private def emitPrintStructValue(v: String, t: Type, name: String, fields: List[(String, Type)]): Unit =
+    val structTy = llvmType(t)
+    val header   = internStringLiteral(s"$name { ")
+    val closer   = internStringLiteral(" }")
+    val eq       = internStringLiteral("=")
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $header)\n")
+    for (((fname, ftype), i) <- fields.zipWithIndex) do
+      if i > 0 then emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_sep)\n")
+      val keyPtr = internStringLiteral(fname)
+      emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $keyPtr)\n")
+      emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $eq)\n")
+      val fv = newReg()
+      emitLine(s"  $fv = extractvalue $structTy $v, $i\n")
+      emitPrintArrayElem(ftype, fv)
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $closer)\n")
+
+  private def emitPrintStruct(arg: TExpr): Unit =
+    val v = emitExpr(arg)
+    arg.tpe match
+      case TyStruct(name, fields) => emitPrintStructValue(v, arg.tpe, name, fields)
+      case other                  =>
+        notYet(s"print struct — expected struct type, got $other")
+
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
       case None =>
@@ -1795,6 +1867,9 @@ class NexLLVMCodegen:
           case TyTuple(_) =>
             emitPrintTuple(arg)
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+          case TyStruct(_, _) =>
+            emitPrintStruct(arg)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
           case _ =>
             val v = emitExpr(arg)
             arg.tpe match
@@ -1839,6 +1914,8 @@ class NexLLVMCodegen:
         emitPrintArray(arg)
       case TyTuple(_) =>
         emitPrintTuple(arg)
+      case TyStruct(_, _) =>
+        emitPrintStruct(arg)
       case other =>
         notYet(s"interpolated print($other)")
 
@@ -2011,6 +2088,8 @@ class NexLLVMCodegen:
         // Inline tuple-element print using insertvalue/extractvalue.
         // Reuses emitPrintArrayElem recursively for each field.
         emitPrintTupleValue(v, t, es)
+      case t @ TyStruct(name, fields) =>
+        emitPrintStructValue(v, t, name, fields)
       case other =>
         notYet(s"print element of type $other")
 
@@ -2047,7 +2126,8 @@ class NexLLVMCodegen:
     case TyUnit         => "void"
     case TyString       => "ptr"
     case TyArray(_,_)   => "ptr"
-    case TyTuple(elems) => elems.map(llvmType).mkString("{ ", ", ", " }")
+    case TyTuple(elems)        => elems.map(llvmType).mkString("{ ", ", ", " }")
+    case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
     case TyUnknown      => "i64" // best-effort placeholder for missing inference
     case other          => notYet(s"type `$other`"); "i64"
 
@@ -2059,13 +2139,31 @@ class NexLLVMCodegen:
     case TyBool => "i8"
     case other  => llvmType(other)
 
-  /** Size in bytes of one element in an array buffer (matches [[storageType]]). */
+  /** Size in bytes of one element in an array buffer (matches
+    * [[storageType]]). For aggregates (tuples, structs) the size is
+    * the sum of field sizes — this assumes every field is naturally
+    * 8-byte aligned, which holds for v0's mix of integer/real/ptr/bool
+    * fields (bool fields are stored as i8 inside arrays but as i1
+    * inside tuples/structs; we round up to 8 for aggregates to keep
+    * the alignment story simple).
+    */
   private def elemSize(elem: Type): Int = elem match
-    case TyInteger => 8
-    case TyReal    => 8
-    case TyBool    => 1
-    case TyString  => 8
-    case _         => 8 // pointer-sized fallback for nested arrays / structs
+    case TyInteger        => 8
+    case TyReal           => 8
+    case TyBool           => 1
+    case TyString         => 8
+    case TyArray(_, _)    => 8 // ptr to descriptor
+    case TyTuple(es)      => es.map(aggregateFieldSize).sum
+    case TyStruct(_, fs)  => fs.map(f => aggregateFieldSize(f._2)).sum
+    case _                => 8
+
+  /** Field-of-aggregate size: scalars and pointers are 8 bytes; bools
+    * inside aggregates are 1 byte rounded to 8 for alignment; nested
+    * aggregates contribute their own elemSize.
+    */
+  private def aggregateFieldSize(t: Type): Int = t match
+    case TyBool => 8 // padded
+    case other  => elemSize(other)
 
   /** Element type of an array Type; emits a diag and returns TyInteger when
     * the given type isn't a TyArray (which would mean the elaborator left the
