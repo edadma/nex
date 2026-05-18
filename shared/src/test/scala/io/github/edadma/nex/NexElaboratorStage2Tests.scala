@@ -622,4 +622,34 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       """.stripMargin)
       errs.exists(e => e.contains("ordered numeric") || e.contains("cannot compare")) shouldBe true
     }
+
+    "TVarRef carries the latest Symbol, not a Stage-1 snapshot (regression)" in {
+      // Same class of bug as the for-loop loopVars stale-Symbol issue:
+      // `setSymType` only updates the symbol table; pre-existing TVarRef
+      // nodes still hold the Stage-1 Symbol snapshot. Stage 2's TVarRef
+      // case refreshes `.tpe` from `currentType(s)` but should also
+      // refresh `.sym` so node walkers reading `ref.sym.tpe` see the
+      // current type.
+      val tp = elab("""
+        |val x = 1 + 2
+        |def f() = x
+      """.stripMargin)
+      val fn = tp.decls.collectFirst { case f: TFunDecl => f }.get
+      val ref = fn.body.asInstanceOf[TVarRef]
+      ref.tpe shouldBe TyInteger
+      ref.sym.tpe shouldBe TyInteger
+    }
+
+    "TInterpRef carries the latest Symbol too" in {
+      // Same staleness fix applied to the `$ident` interpolation form.
+      val tp = elab("""
+        |val n = 3 + 4
+        |def main() = print(s"value=$n")
+      """.stripMargin)
+      val fn = tp.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f }.get
+      val print = fn.body.asInstanceOf[TCall]
+      val interp = print.args.head.asInstanceOf[TInterpStringLit]
+      val ref = interp.parts.collect { case r: TInterpRef => r }.head
+      ref.sym.tpe shouldBe TyInteger
+    }
   }

@@ -546,6 +546,15 @@ class NexElaborator:
     symbols.update(updated)
     updated
 
+  /** Return the latest Symbol for `s.id` from the symbol table, falling
+    * back to `s` if no entry exists. Used to refresh Symbols that were
+    * captured in the typed AST during Stage 1 before their type was
+    * inferred — without this, ref-style nodes (TVarRef, TInterpRef) carry
+    * a stale `.sym.tpe` even after Stage 2 has refined the binding type.
+    */
+  private def refreshSym(s: Symbol): Symbol =
+    symbols.get(s.id).getOrElse(s)
+
   // -- program -------------------------------------------------------------
 
   private def inferProgram(p: TProgram): TProgram =
@@ -607,15 +616,22 @@ class NexElaborator:
       // contain `TInterpExpr(x)` holding a freshly elaborated subtree.
       // Those subtrees need the same Stage-2 inference treatment any
       // other expression gets, or their types stay TyUnknown and the
-      // mut-call-site check skips them.
+      // mut-call-site check skips them. `TInterpRef` also needs a
+      // refresh — its captured Symbol is a Stage-1 snapshot.
       val inferredParts = parts.map {
         case TInterpExpr(x) => TInterpExpr(infExpr(x))
+        case TInterpRef(s)  => TInterpRef(refreshSym(s))
         case other          => other
       }
       TInterpStringLit(inferredParts, p, TyString)
 
     case TVarRef(s, p, _) =>
-      TVarRef(s, p, currentType(s))
+      // Refresh both `.sym` and `.tpe`. Stage 1 captured the symbol
+      // before its type was inferred; if we only refresh `.tpe` then
+      // `ref.sym.tpe` is stale and downstream walkers see the wrong
+      // type. Same bug class as the for-loop loopVars staleness.
+      val freshSym = refreshSym(s)
+      TVarRef(freshSym, p, freshSym.tpe)
 
     case TBinOp(op, l, r, p, _) =>
       val ll = infExpr(l); val rr = infExpr(r)
