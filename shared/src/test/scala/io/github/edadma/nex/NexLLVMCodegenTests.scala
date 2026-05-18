@@ -441,3 +441,129 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
       condLabels.size shouldBe 2
     }
   }
+
+  "arrays (rank-1)" should {
+    "emit the descriptor types and runtime helpers in the preamble" in {
+      val ir = compile("def main() = ()")
+      ir should include("%nex_arr1 = type { i64, i64, ptr }")
+      ir should include("%nex_arr2 = type { i64, i64, i64, ptr }")
+      ir should include("define ptr @__nex_arr1_alloc")
+      ir should include("define void @__nex_arr1_inc")
+      ir should include("define void @__nex_arr1_dec")
+      ir should include("define i64 @__nex_arr1_len")
+      ir should include("define ptr @__nex_arr1_slot")
+    }
+
+    "lower an integer literal `[a, b, c]` to alloc + per-element store" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [10, 20, 30]
+        |  print(arr[0])
+      """.stripMargin)
+      ir should include("@__nex_arr1_alloc(i64 3, i64 8)")
+      // Three element stores into the data buffer
+      val stores = """store i64 \d+, ptr %t\d+""".r.findAllIn(ir).toList
+      stores.size should be >= 3
+    }
+
+    "lower `arr[i]` to a slot helper call + load of the element type" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [1, 2, 3]
+        |  print(arr[1])
+      """.stripMargin)
+      ir should include("call ptr @__nex_arr1_slot")
+      ir should include("load i64, ptr")
+    }
+
+    "lower `arr[i] = v` to a slot helper call + store" in {
+      val ir = compile("""
+        |def main() =
+        |  var arr = [1, 2, 3]
+        |  arr[0] = 99
+      """.stripMargin)
+      ir should include("call ptr @__nex_arr1_slot")
+      ir should include("store i64 99, ptr")
+    }
+
+    "lower `length(arr)` (rank-1) to __nex_arr1_len" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [1, 2, 3]
+        |  print(length(arr))
+      """.stripMargin)
+      ir should include("call i64 @__nex_arr1_len(ptr")
+      ir should include("@.fmt_int")
+    }
+
+    "lower `for x in arr` to a counting flat loop bound by length" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [10, 20, 30]
+        |  for x in arr do
+        |    print(x)
+      """.stripMargin)
+      ir should include("forarr.cond")
+      ir should include("forarr.body")
+      ir should include("forarr.exit")
+      // Bounded by the call to __nex_arr1_len.
+      ir should include("call i64 @__nex_arr1_len")
+      ir should include("call ptr @__nex_arr1_slot")
+    }
+
+    "print(arr) emits [a, b, c]-bracketed loop with `, ` separators" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [1, 2]
+        |  print(arr)
+      """.stripMargin)
+      ir should include("@.arr_open")
+      ir should include("@.arr_close")
+      ir should include("@.arr_sep")
+      ir should include("parr1.cond")
+    }
+
+    "real-element array uses doubles in the buffer" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [1.0, 2.0]
+        |  print(arr[0])
+      """.stripMargin)
+      ir should include("@__nex_arr1_alloc(i64 2, i64 8)")
+      ir should include("store double")
+      ir should include("load double, ptr")
+    }
+
+    "bool-element array stores i8 (with i1->i8 widening on store)" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [true, false, true]
+        |  print(arr[0])
+      """.stripMargin)
+      ir should include("@__nex_arr1_alloc(i64 3, i64 1)")
+      ir should include("zext i1")
+      ir should include("store i8")
+      ir should include("load i8, ptr")
+      ir should include("icmp ne i8")
+    }
+
+    "string-element array stores ptr per slot" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = ["a", "b"]
+        |  print(arr[0])
+      """.stripMargin)
+      ir should include("@__nex_arr1_alloc(i64 2, i64 8)")
+      ir should include("store ptr @.str.")
+    }
+
+    "passing an array to a user function uses `ptr` argument type" in {
+      val ir = compile("""
+        |def first(xs: [integer]) = xs[0]
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(first(a))
+      """.stripMargin)
+      ir should include("define i64 @first(ptr %arg0)")
+    }
+  }

@@ -188,6 +188,15 @@ class NexLLVMCodegen:
       """; Nex LLVM IR module (v0 scaffolding)
         |
         |declare i32 @printf(ptr, ...)
+        |declare ptr @malloc(i64)
+        |declare void @free(ptr)
+        |declare void @abort()
+        |
+        |; --- Array descriptor types (§8.5) -------------------------------------
+        |; rank-1: { refcount, length, data }                     ; 24 bytes
+        |; rank-2: { refcount, rows,   cols, data }               ; 32 bytes
+        |%nex_arr1 = type { i64, i64, ptr }
+        |%nex_arr2 = type { i64, i64, i64, ptr }
         |
         |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
         |@.fmt_real    = private unnamed_addr constant [4 x i8] c"%g\0A\00"
@@ -198,6 +207,209 @@ class NexLLVMCodegen:
         |@.fmt_int_raw = private unnamed_addr constant [5 x i8] c"%lld\00"
         |@.fmt_real_raw = private unnamed_addr constant [3 x i8] c"%g\00"
         |@.nl          = private unnamed_addr constant [2 x i8] c"\0A\00"
+        |@.arr_open    = private unnamed_addr constant [2 x i8] c"[\00"
+        |@.arr_close   = private unnamed_addr constant [2 x i8] c"]\00"
+        |@.arr_sep     = private unnamed_addr constant [3 x i8] c", \00"
+        |@.oob_msg     = private unnamed_addr constant [27 x i8] c"trap: index out of bounds\0A\00"
+        |
+        |; --- Rank-1 runtime helpers -------------------------------------------
+        |
+        |; Allocate a rank-1 array. Returns a fresh %nex_arr1* with refcount=1.
+        |define ptr @__nex_arr1_alloc(i64 %len, i64 %elem_size) {
+        |entry:
+        |  %desc = call ptr @malloc(i64 24)
+        |  %rcp  = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %lp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 1
+        |  store i64 %len, ptr %lp
+        |  %dp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 2
+        |  %bytes = mul i64 %len, %elem_size
+        |  %buf   = call ptr @malloc(i64 %bytes)
+        |  store ptr %buf, ptr %dp
+        |  ret ptr %desc
+        |}
+        |
+        |define void @__nex_arr1_inc(ptr %a) {
+        |entry:
+        |  %is_null = icmp eq ptr %a, null
+        |  br i1 %is_null, label %done, label %inc
+        |inc:
+        |  %rcp = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = add i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |define void @__nex_arr1_dec(ptr %a) {
+        |entry:
+        |  %is_null = icmp eq ptr %a, null
+        |  br i1 %is_null, label %done, label %dec
+        |dec:
+        |  %rcp = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = sub i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  %iz  = icmp eq i64 %new, 0
+        |  br i1 %iz, label %free_it, label %done
+        |free_it:
+        |  %dp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
+        |  %buf = load ptr, ptr %dp
+        |  call void @free(ptr %buf)
+        |  call void @free(ptr %a)
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |; Returns the length of a rank-1 array (the `length` field).
+        |define i64 @__nex_arr1_len(ptr %a) {
+        |entry:
+        |  %lp = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
+        |  %l  = load i64, ptr %lp
+        |  ret i64 %l
+        |}
+        |
+        |; Returns a ptr to the i-th element slot for a rank-1 array of element
+        |; size `elem_size` bytes. Bounds-checks against the array's length and
+        |; aborts via @abort on overflow (after writing a trap message).
+        |define ptr @__nex_arr1_slot(ptr %a, i64 %idx, i64 %elem_size) {
+        |entry:
+        |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %lt  = icmp slt i64 %idx, 0
+        |  %ge  = icmp sge i64 %idx, %len
+        |  %bad = or i1 %lt, %ge
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call i32 (ptr, ...) @printf(ptr @.oob_msg)
+        |  call void @abort()
+        |  unreachable
+        |ok:
+        |  %dp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
+        |  %buf  = load ptr, ptr %dp
+        |  %byte_off = mul i64 %idx, %elem_size
+        |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
+        |  ret ptr %slot
+        |}
+        |
+        |; --- Rank-2 runtime helpers -------------------------------------------
+        |
+        |define ptr @__nex_arr2_alloc(i64 %rows, i64 %cols, i64 %elem_size) {
+        |entry:
+        |  %desc = call ptr @malloc(i64 32)
+        |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
+        |  store i64 %rows, ptr %rp
+        |  %cp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 2
+        |  store i64 %cols, ptr %cp
+        |  %total = mul i64 %rows, %cols
+        |  %bytes = mul i64 %total, %elem_size
+        |  %buf   = call ptr @malloc(i64 %bytes)
+        |  %dp    = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
+        |  store ptr %buf, ptr %dp
+        |  ret ptr %desc
+        |}
+        |
+        |define void @__nex_arr2_inc(ptr %a) {
+        |entry:
+        |  %is_null = icmp eq ptr %a, null
+        |  br i1 %is_null, label %done, label %inc
+        |inc:
+        |  %rcp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = add i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |define void @__nex_arr2_dec(ptr %a) {
+        |entry:
+        |  %is_null = icmp eq ptr %a, null
+        |  br i1 %is_null, label %done, label %dec
+        |dec:
+        |  %rcp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = sub i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  %iz  = icmp eq i64 %new, 0
+        |  br i1 %iz, label %free_it, label %done
+        |free_it:
+        |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+        |  %buf = load ptr, ptr %dp
+        |  call void @free(ptr %buf)
+        |  call void @free(ptr %a)
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |define i64 @__nex_arr2_rows(ptr %a) {
+        |entry:
+        |  %rp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
+        |  %r  = load i64, ptr %rp
+        |  ret i64 %r
+        |}
+        |
+        |define i64 @__nex_arr2_cols(ptr %a) {
+        |entry:
+        |  %cp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+        |  %c  = load i64, ptr %cp
+        |  ret i64 %c
+        |}
+        |
+        |define i64 @__nex_arr2_len(ptr %a) {
+        |entry:
+        |  %rp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
+        |  %r  = load i64, ptr %rp
+        |  %cp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+        |  %c  = load i64, ptr %cp
+        |  %t  = mul i64 %r, %c
+        |  ret i64 %t
+        |}
+        |
+        |define ptr @__nex_arr2_slot(ptr %a, i64 %i, i64 %j, i64 %elem_size) {
+        |entry:
+        |  %rp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
+        |  %r  = load i64, ptr %rp
+        |  %cp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+        |  %c  = load i64, ptr %cp
+        |  %ilt = icmp slt i64 %i, 0
+        |  %ige = icmp sge i64 %i, %r
+        |  %ibad = or i1 %ilt, %ige
+        |  %jlt = icmp slt i64 %j, 0
+        |  %jge = icmp sge i64 %j, %c
+        |  %jbad = or i1 %jlt, %jge
+        |  %bad = or i1 %ibad, %jbad
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call i32 (ptr, ...) @printf(ptr @.oob_msg)
+        |  call void @abort()
+        |  unreachable
+        |ok:
+        |  %flat = mul i64 %i, %c
+        |  %idx  = add i64 %flat, %j
+        |  %dp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+        |  %buf  = load ptr, ptr %dp
+        |  %byte_off = mul i64 %idx, %elem_size
+        |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
+        |  ret ptr %slot
+        |}
+        |
+        |; Returns a ptr to the k-th flat element (k in 0..rows*cols-1).
+        |define ptr @__nex_arr2_flat_slot(ptr %a, i64 %k, i64 %elem_size) {
+        |entry:
+        |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+        |  %buf = load ptr, ptr %dp
+        |  %byte_off = mul i64 %k, %elem_size
+        |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
+        |  ret ptr %slot
+        |}
         |
         |""".stripMargin,
     )
@@ -333,10 +545,18 @@ class NexLLVMCodegen:
       callee match
         case TVarRef(s, _, _) if s.name == "print" && args.size == 1 =>
           emitPrintCall(args.head); "void"
+        case TVarRef(s, _, _) if s.kind == SymKind.Prelude =>
+          emitPreludeCall(s.name, args, e.tpe)
         case TVarRef(s, _, calleeT) if s.kind == SymKind.Function =>
           emitUserCall(s, calleeT, args)
         case other =>
           notYet(s"call to ${other.getClass.getSimpleName}"); "0"
+
+    case TArrayLit(elems, _, t) =>
+      emitArrayLit(elems, t)
+
+    case TIndex(arr, indices, _, t) =>
+      emitIndex(arr, indices, t)
 
     case TIf(cond, thenB, elseOpt, _, t) =>
       emitIf(cond, thenB, elseOpt, t)
@@ -470,7 +690,85 @@ class NexLLVMCodegen:
     iter match
       case TBinOp("..",  lo, hi, _, _) => emitForRange(loopVars, lo, hi, body, inclusive = false)
       case TBinOp("..=", lo, hi, _, _) => emitForRange(loopVars, lo, hi, body, inclusive = true)
-      case _                            => notYet("for over non-range iterable (arrays deferred)")
+      case _ if iter.tpe match { case TyArray(_, _) => true; case _ => false } =>
+        emitForArray(loopVars, iter, body)
+      case _ =>
+        notYet(s"for over iterable of type ${iter.tpe}")
+
+  /** Lower `for x in arr do body` (rank-1) to a flat counting loop. The
+    * iterator expression is evaluated once into a fresh slot; each
+    * iteration loads `data[i]` and binds it to `x`.
+    *
+    * Rank-2 iteration semantics (row-major, element-by-element) is the
+    * same shape but indexes `__nex_arr2_flat_slot`; we'll fold that in
+    * when rank-2 lands.
+    */
+  private def emitForArray(loopVars: List[Symbol], iter: TExpr, body: TExpr): Unit =
+    if loopVars.size != 1 then
+      notYet("for-over-array with tuple destructuring")
+      return
+
+    val rank = arrayRank(iter.tpe)
+    val elem = arrayElem(iter.tpe)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val langT = llvmType(elem)
+
+    // Compute the array ptr once, stash in a slot so the cond-block can
+    // reload it (we don't have phi over array ptrs yet). The length is
+    // also stashed so we don't re-call the helper each iteration.
+    val arrV  = emitExpr(iter)
+    val arrSlot = newReg()
+    emitLine(s"  $arrSlot = alloca ptr\n")
+    emitLine(s"  store ptr $arrV, ptr $arrSlot\n")
+
+    val lenReg = newReg()
+    rank match
+      case 1 => emitLine(s"  $lenReg = call i64 @__nex_arr1_len(ptr $arrV)\n")
+      case 2 => emitLine(s"  $lenReg = call i64 @__nex_arr2_len(ptr $arrV)\n")
+      case other => notYet(s"for over rank-$other array"); return
+
+    val iSlot = newReg()
+    emitLine(s"  $iSlot = alloca i64\n")
+    emitLine(s"  store i64 0, ptr $iSlot\n")
+
+    val loopVar = loopVars.head
+    val xSlot   = newReg()
+    emitLine(s"  $xSlot = alloca $langT\n")
+    locals(loopVar.id) = xSlot
+
+    val condL = freshLabel("forarr.cond")
+    val bodyL = freshLabel("forarr.body")
+    val exitL = freshLabel("forarr.exit")
+
+    emitTerminator(s"  br label %$condL\n")
+    startBlock(condL)
+    val cur = newReg()
+    emitLine(s"  $cur = load i64, ptr $iSlot\n")
+    val ok  = newReg()
+    emitLine(s"  $ok = icmp slt i64 $cur, $lenReg\n")
+    emitTerminator(s"  br i1 $ok, label %$bodyL, label %$exitL\n")
+
+    startBlock(bodyL)
+    val arrCur = newReg()
+    emitLine(s"  $arrCur = load ptr, ptr $arrSlot\n")
+    val slotPtr = newReg()
+    rank match
+      case 1 => emitLine(s"  $slotPtr = call ptr @__nex_arr1_slot(ptr $arrCur, i64 $cur, i64 $esz)\n")
+      case 2 => emitLine(s"  $slotPtr = call ptr @__nex_arr2_flat_slot(ptr $arrCur, i64 $cur, i64 $esz)\n")
+      case _ => ()
+    val v = loadElem(stT, slotPtr, langT)
+    emitLine(s"  store $langT $v, ptr $xSlot\n")
+    emitExpr(body)
+    if currentBlock.isDefined then
+      val cur2 = newReg()
+      emitLine(s"  $cur2 = load i64, ptr $iSlot\n")
+      val next = newReg()
+      emitLine(s"  $next = add i64 $cur2, 1\n")
+      emitLine(s"  store i64 $next, ptr $iSlot\n")
+      emitTerminator(s"  br label %$condL\n")
+
+    startBlock(exitL)
 
   private def emitForRange(
       loopVars: List[Symbol],
@@ -516,6 +814,177 @@ class NexLLVMCodegen:
       emitTerminator(s"  br label %$condL\n")
 
     startBlock(exitL)
+
+  // ---------------------------------------------------------------------------
+  // Arrays — §8.5 ARC descriptors. Rank-1 uses %nex_arr1; rank-2 uses
+  // %nex_arr2. Element buffer layout is row-major (matches the interpreter's
+  // VArray2 flat buf). Each emitted helper takes / returns a `ptr` to the
+  // descriptor.
+  // ---------------------------------------------------------------------------
+
+  /** Lower a `TArrayLit` to an alloc + per-element store. The result is a
+    * fresh array with refcount = 1 (set by the runtime alloc helper).
+    *
+    * Rank-1 case: every elem evaluates to a scalar, store into `data[i]`.
+    *
+    * Rank-2 case: outer `TArrayLit` is a list of inner `TArrayLit`s of the
+    * same length. Rows = outer length; cols = inner length. The flat buffer
+    * is filled row-major: `data[i*cols + j] = elems(i).elems(j)`.
+    */
+  private def emitArrayLit(elems: List[TExpr], t: Type): String =
+    val rank   = arrayRank(t)
+    val elem   = arrayElem(t)
+    val esz    = elemSize(elem)
+    val stType = storageType(elem)
+
+    rank match
+      case 1 =>
+        val len  = elems.size
+        val desc = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $len, i64 $esz)\n")
+        if elems.nonEmpty then
+          val dpr = newReg()
+          emitLine(s"  $dpr = getelementptr inbounds %nex_arr1, ptr $desc, i32 0, i32 2\n")
+          val buf = newReg()
+          emitLine(s"  $buf = load ptr, ptr $dpr\n")
+          for (e, i) <- elems.zipWithIndex do
+            val v    = emitExpr(e)
+            val slot = newReg()
+            emitLine(s"  $slot = getelementptr inbounds $stType, ptr $buf, i64 $i\n")
+            storeElem(stType, v, slot)
+        desc
+
+      case 2 =>
+        // Validate inner shape — every elem should itself be a rank-1
+        // `TArrayLit` of common length. The elaborator's type inference
+        // accepts this shape; surface a clear diag if something else slipped
+        // through.
+        val rowExprs = elems.collect { case TArrayLit(inner, _, _) => inner }
+        if rowExprs.size != elems.size then
+          notYet("rank-2 array literal with non-literal rows")
+          return "null"
+        val rows = elems.size
+        val cols = if rows == 0 then 0 else rowExprs.head.size
+
+        val desc = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr2_alloc(i64 $rows, i64 $cols, i64 $esz)\n")
+        if rows > 0 && cols > 0 then
+          val dpr = newReg()
+          emitLine(s"  $dpr = getelementptr inbounds %nex_arr2, ptr $desc, i32 0, i32 3\n")
+          val buf = newReg()
+          emitLine(s"  $buf = load ptr, ptr $dpr\n")
+          for (row, i) <- rowExprs.zipWithIndex do
+            for (e, j) <- row.zipWithIndex do
+              val v       = emitExpr(e)
+              val flatIdx = i * cols + j
+              val slot    = newReg()
+              emitLine(s"  $slot = getelementptr inbounds $stType, ptr $buf, i64 $flatIdx\n")
+              storeElem(stType, v, slot)
+        desc
+
+      case other =>
+        notYet(s"array literal of rank $other"); "null"
+
+  /** Lower `arr[i]` (rank-1) or `arr[i, j]` (rank-2) to a slot-fetch via the
+    * runtime helper and a load of the stored type. Bounds checks are inside
+    * `__nex_arr*_slot` and abort on overflow.
+    */
+  private def emitIndex(arr: TExpr, indices: List[TExpr], resultT: Type): String =
+    val rank  = arrayRank(arr.tpe)
+    val elem  = arrayElem(arr.tpe)
+    val esz   = elemSize(elem)
+    val stT   = storageType(elem)
+    val arrV  = emitExpr(arr)
+
+    (rank, indices) match
+      case (1, List(idx)) =>
+        val iv   = emitExpr(idx)
+        val slot = newReg()
+        emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $iv, i64 $esz)\n")
+        loadElem(stT, slot, llvmType(elem))
+      case (2, List(i, j)) =>
+        val iv   = emitExpr(i)
+        val jv   = emitExpr(j)
+        val slot = newReg()
+        emitLine(s"  $slot = call ptr @__nex_arr2_slot(ptr $arrV, i64 $iv, i64 $jv, i64 $esz)\n")
+        loadElem(stT, slot, llvmType(elem))
+      case (r, ixs) =>
+        notYet(s"index of rank $r with ${ixs.size} indices"); "0"
+
+  /** Store a value of LLVM type `t` (the *language* type) into a buffer slot
+    * whose stored type is `storageT`. For bool, the i1 value is widened to
+    * an i8 on store. Otherwise this is a straight `store T v, ptr slot`.
+    */
+  private def storeElem(storageT: String, value: String, slot: String): Unit =
+    storageT match
+      case "i8" =>
+        // bool: widen i1 → i8 before storing
+        val widened = newReg()
+        emitLine(s"  $widened = zext i1 $value to i8\n")
+        emitLine(s"  store i8 $widened, ptr $slot\n")
+      case t =>
+        emitLine(s"  store $t $value, ptr $slot\n")
+
+  /** Load from a buffer slot whose stored type is `storageT`, producing a
+    * value of language type `langT`. For bool, the i8 is truncated to i1.
+    */
+  private def loadElem(storageT: String, slot: String, langT: String): String =
+    storageT match
+      case "i8" =>
+        val raw = newReg()
+        emitLine(s"  $raw = load i8, ptr $slot\n")
+        val out = newReg()
+        emitLine(s"  $out = icmp ne i8 $raw, 0\n")
+        out
+      case t =>
+        val r = newReg()
+        emitLine(s"  $r = load $t, ptr $slot\n")
+        r
+
+  // ---------------------------------------------------------------------------
+  // Prelude calls. The elaborator marks built-ins with [[SymKind.Prelude]];
+  // the unrecognised-name path falls back to a `notYet` diag and a zero so
+  // the rest of the IR still parses. Special-cased here:
+  //   - `length(arr)` / `rows(arr)` / `cols(arr)`
+  // Other prelude functions (sqrt, sin, map, reduce, ...) will land in
+  // later chunks.
+  // ---------------------------------------------------------------------------
+
+  private def emitPreludeCall(name: String, args: List[TExpr], resultT: Type): String =
+    (name, args) match
+      case ("length", List(a)) => emitArrayLengthish(a, "len")
+      case ("rows",   List(a)) => emitArrayLengthish(a, "rows")
+      case ("cols",   List(a)) => emitArrayLengthish(a, "cols")
+      case _ =>
+        notYet(s"prelude `$name`/${args.size}"); "0"
+
+  /** Emit a length-ish call (length / rows / cols). The runtime helper
+    * picked depends on the array's static rank.
+    *
+    *   - rank-1 + `len`  → `__nex_arr1_len`
+    *   - rank-1 + `rows` → 1 (no helper call needed)
+    *   - rank-1 + `cols` → length
+    *   - rank-2 + `len`  → `rows * cols`
+    *   - rank-2 + `rows` → `__nex_arr2_rows`
+    *   - rank-2 + `cols` → `__nex_arr2_cols`
+    */
+  private def emitArrayLengthish(arr: TExpr, which: String): String =
+    val rank = arrayRank(arr.tpe)
+    val av   = emitExpr(arr)
+    val r    = newReg()
+    (rank, which) match
+      case (1, "len" | "cols") =>
+        emitLine(s"  $r = call i64 @__nex_arr1_len(ptr $av)\n"); r
+      case (1, "rows") =>
+        "1"
+      case (2, "rows") =>
+        emitLine(s"  $r = call i64 @__nex_arr2_rows(ptr $av)\n"); r
+      case (2, "cols") =>
+        emitLine(s"  $r = call i64 @__nex_arr2_cols(ptr $av)\n"); r
+      case (2, "len") =>
+        emitLine(s"  $r = call i64 @__nex_arr2_len(ptr $av)\n"); r
+      case _ =>
+        notYet(s"$which for rank $rank"); "0"
 
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
@@ -568,14 +1037,38 @@ class NexLLVMCodegen:
     reg
 
   private def emitAssign(target: TExpr, value: TExpr): Unit =
-    val rv = emitExpr(value)
     target match
       case TVarRef(s, _, t) =>
+        val rv = emitExpr(value)
         locals.get(s.id) match
           case Some(slot) => emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
           case None if globalBindings.contains(s.id) =>
             emitLine(s"  store ${llvmType(t)} $rv, ptr @${s.name}\n")
           case None       => notYet(s"assign to non-local `${s.name}`")
+
+      case TIndex(arr, indices, _, _) =>
+        // arr[i] = v / arr[i, j] = v.  Compute slot ptr via the runtime
+        // helper, then store the value into that slot.
+        val rank = arrayRank(arr.tpe)
+        val elem = arrayElem(arr.tpe)
+        val esz  = elemSize(elem)
+        val stT  = storageType(elem)
+        val av   = emitExpr(arr)
+        val slot = newReg()
+        (rank, indices) match
+          case (1, List(i)) =>
+            val iv = emitExpr(i)
+            emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $av, i64 $iv, i64 $esz)\n")
+          case (2, List(i, j)) =>
+            val iv = emitExpr(i)
+            val jv = emitExpr(j)
+            emitLine(s"  $slot = call ptr @__nex_arr2_slot(ptr $av, i64 $iv, i64 $jv, i64 $esz)\n")
+          case (r, ixs) =>
+            notYet(s"assign to index rank $r / ${ixs.size}")
+            return
+        val rv = emitExpr(value)
+        storeElem(stT, rv, slot)
+
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")
 
@@ -638,21 +1131,26 @@ class NexLLVMCodegen:
             notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
       case _ =>
-        val v = emitExpr(arg)
         arg.tpe match
-          case TyInteger =>
-            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 $v)\n")
-          case TyReal =>
-            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real, double $v)\n")
-          case TyBool =>
-            // Branch on the value: pick `true\n` vs `false\n` format string.
-            val sel = newReg()
-            emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
-            emitLine(s"  call i32 (ptr, ...) @printf(ptr $sel)\n")
-          case TyString =>
-            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $v)\n")
-          case other =>
-            notYet(s"print(${other})")
+          case TyArray(_, _) =>
+            // print an array: emit its formatted form + trailing newline.
+            emitPrintArray(arg)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+          case _ =>
+            val v = emitExpr(arg)
+            arg.tpe match
+              case TyInteger =>
+                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int, i64 $v)\n")
+              case TyReal =>
+                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real, double $v)\n")
+              case TyBool =>
+                val sel = newReg()
+                emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
+                emitLine(s"  call i32 (ptr, ...) @printf(ptr $sel)\n")
+              case TyString =>
+                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $v)\n")
+              case other =>
+                notYet(s"print(${other})")
 
   /** Emits a value-printing printf WITHOUT a trailing newline. Used by
     * the interpolated-string print path so each interpolated part lands
@@ -678,8 +1176,167 @@ class NexLLVMCodegen:
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel2)\n")
       case TyString =>
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
+      case TyArray(_, _) =>
+        emitPrintArray(arg)
       case other =>
         notYet(s"interpolated print($other)")
+
+  /** Print a Nex array as the interpreter does:
+    *   rank-1:  [a, b, c]
+    *   rank-2:  [[a, b], [c, d]]
+    * No trailing newline — callers add one if appropriate.
+    *
+    * Implementation: emit a `[` then a counting loop over the elements,
+    * printing each via the per-element `emitPrintArrayElem` helper with
+    * `, ` separators between them, then a `]`. Rank-2 reuses the rank-1
+    * helper for each inner row, but the inner-row "array" we walk is the
+    * outer's row slice — we generate `i*cols+j` indexing inline.
+    */
+  private def emitPrintArray(arr: TExpr): Unit =
+    val rank = arrayRank(arr.tpe)
+    val elem = arrayElem(arr.tpe)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val langT = llvmType(elem)
+    val arrV  = emitExpr(arr)
+
+    rank match
+      case 1 =>
+        emitPrintArr1Inline(arrV, elem, esz, stT, langT)
+      case 2 =>
+        val rowsR = newReg()
+        emitLine(s"  $rowsR = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+        val colsR = newReg()
+        emitLine(s"  $colsR = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_open)\n")
+        val iSlot = newReg()
+        emitLine(s"  $iSlot = alloca i64\n")
+        emitLine(s"  store i64 0, ptr $iSlot\n")
+        val condL = freshLabel("parr2.cond")
+        val bodyL = freshLabel("parr2.body")
+        val exitL = freshLabel("parr2.exit")
+        emitTerminator(s"  br label %$condL\n")
+        startBlock(condL)
+        val i = newReg()
+        emitLine(s"  $i = load i64, ptr $iSlot\n")
+        val ok = newReg()
+        emitLine(s"  $ok = icmp slt i64 $i, $rowsR\n")
+        emitTerminator(s"  br i1 $ok, label %$bodyL, label %$exitL\n")
+        startBlock(bodyL)
+        // print `, ` if i > 0
+        val sepL  = freshLabel("parr2.sep")
+        val noSep = freshLabel("parr2.nosep")
+        val gt0   = newReg()
+        emitLine(s"  $gt0 = icmp sgt i64 $i, 0\n")
+        emitTerminator(s"  br i1 $gt0, label %$sepL, label %$noSep\n")
+        startBlock(sepL)
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_sep)\n")
+        emitTerminator(s"  br label %$noSep\n")
+        startBlock(noSep)
+        // print one row: `[` + per-element loop over j in 0..cols + `]`
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_open)\n")
+        val jSlot = newReg()
+        emitLine(s"  $jSlot = alloca i64\n")
+        emitLine(s"  store i64 0, ptr $jSlot\n")
+        val cL = freshLabel("parr2r.cond")
+        val bL = freshLabel("parr2r.body")
+        val xL = freshLabel("parr2r.exit")
+        emitTerminator(s"  br label %$cL\n")
+        startBlock(cL)
+        val j = newReg()
+        emitLine(s"  $j = load i64, ptr $jSlot\n")
+        val ok2 = newReg()
+        emitLine(s"  $ok2 = icmp slt i64 $j, $colsR\n")
+        emitTerminator(s"  br i1 $ok2, label %$bL, label %$xL\n")
+        startBlock(bL)
+        val sep2L  = freshLabel("parr2r.sep")
+        val noSep2 = freshLabel("parr2r.nosep")
+        val jgt0   = newReg()
+        emitLine(s"  $jgt0 = icmp sgt i64 $j, 0\n")
+        emitTerminator(s"  br i1 $jgt0, label %$sep2L, label %$noSep2\n")
+        startBlock(sep2L)
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_sep)\n")
+        emitTerminator(s"  br label %$noSep2\n")
+        startBlock(noSep2)
+        val slotPtr = newReg()
+        emitLine(s"  $slotPtr = call ptr @__nex_arr2_slot(ptr $arrV, i64 $i, i64 $j, i64 $esz)\n")
+        val v = loadElem(stT, slotPtr, langT)
+        emitPrintArrayElem(elem, v)
+        val nj = newReg()
+        emitLine(s"  $nj = add i64 $j, 1\n")
+        emitLine(s"  store i64 $nj, ptr $jSlot\n")
+        emitTerminator(s"  br label %$cL\n")
+        startBlock(xL)
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_close)\n")
+        val ni = newReg()
+        emitLine(s"  $ni = add i64 $i, 1\n")
+        emitLine(s"  store i64 $ni, ptr $iSlot\n")
+        emitTerminator(s"  br label %$condL\n")
+        startBlock(exitL)
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_close)\n")
+      case _ =>
+        notYet(s"print of rank-$rank array")
+
+  /** Print a rank-1 array given its descriptor SSA value. Walks
+    * `data[0..len)` calling `emitPrintArrayElem` for each, separated by
+    * `, ` and wrapped in `[]`.
+    */
+  private def emitPrintArr1Inline(arrV: String, elem: Type, esz: Int, stT: String, langT: String): Unit =
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_open)\n")
+    val lenR = newReg()
+    emitLine(s"  $lenR = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    val iSlot = newReg()
+    emitLine(s"  $iSlot = alloca i64\n")
+    emitLine(s"  store i64 0, ptr $iSlot\n")
+    val condL = freshLabel("parr1.cond")
+    val bodyL = freshLabel("parr1.body")
+    val exitL = freshLabel("parr1.exit")
+    emitTerminator(s"  br label %$condL\n")
+    startBlock(condL)
+    val i = newReg()
+    emitLine(s"  $i = load i64, ptr $iSlot\n")
+    val ok = newReg()
+    emitLine(s"  $ok = icmp slt i64 $i, $lenR\n")
+    emitTerminator(s"  br i1 $ok, label %$bodyL, label %$exitL\n")
+    startBlock(bodyL)
+    val sepL  = freshLabel("parr1.sep")
+    val noSep = freshLabel("parr1.nosep")
+    val gt0   = newReg()
+    emitLine(s"  $gt0 = icmp sgt i64 $i, 0\n")
+    emitTerminator(s"  br i1 $gt0, label %$sepL, label %$noSep\n")
+    startBlock(sepL)
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_sep)\n")
+    emitTerminator(s"  br label %$noSep\n")
+    startBlock(noSep)
+    val slotPtr = newReg()
+    emitLine(s"  $slotPtr = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $esz)\n")
+    val v = loadElem(stT, slotPtr, langT)
+    emitPrintArrayElem(elem, v)
+    val ni = newReg()
+    emitLine(s"  $ni = add i64 $i, 1\n")
+    emitLine(s"  store i64 $ni, ptr $iSlot\n")
+    emitTerminator(s"  br label %$condL\n")
+    startBlock(exitL)
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_close)\n")
+
+  /** Print one scalar element of a Nex array without a trailing newline. */
+  private def emitPrintArrayElem(elem: Type, v: String): Unit =
+    elem match
+      case TyInteger =>
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_int_raw, i64 $v)\n")
+      case TyReal =>
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_real_raw, double $v)\n")
+      case TyBool =>
+        val tPtr = internStringLiteral("true")
+        val fPtr = internStringLiteral("false")
+        val sel  = newReg()
+        emitLine(s"  $sel = select i1 $v, ptr $tPtr, ptr $fPtr\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel)\n")
+      case TyString =>
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
+      case other =>
+        notYet(s"print element of type $other")
 
   // ---------------------------------------------------------------------------
   // Type and binop tables.
@@ -687,13 +1344,42 @@ class NexLLVMCodegen:
 
   /** Map a Nex type to its LLVM type. */
   private def llvmType(t: Type): String = t match
-    case TyInteger => "i64"
-    case TyReal    => "double"
-    case TyBool    => "i1"
-    case TyUnit    => "void"
-    case TyString  => "ptr"
-    case TyUnknown => "i64" // best-effort placeholder for missing inference
-    case other     => notYet(s"type `$other`"); "i64"
+    case TyInteger    => "i64"
+    case TyReal       => "double"
+    case TyBool       => "i1"
+    case TyUnit       => "void"
+    case TyString     => "ptr"
+    case TyArray(_,_) => "ptr"
+    case TyUnknown    => "i64" // best-effort placeholder for missing inference
+    case other        => notYet(s"type `$other`"); "i64"
+
+  /** Storage type for an array element. `i1` (bool) is stored as `i8` so the
+    * buffer's stride is one byte per element rather than packed bits.
+    * Everything else uses its natural LLVM type.
+    */
+  private def storageType(elem: Type): String = elem match
+    case TyBool => "i8"
+    case other  => llvmType(other)
+
+  /** Size in bytes of one element in an array buffer (matches [[storageType]]). */
+  private def elemSize(elem: Type): Int = elem match
+    case TyInteger => 8
+    case TyReal    => 8
+    case TyBool    => 1
+    case TyString  => 8
+    case _         => 8 // pointer-sized fallback for nested arrays / structs
+
+  /** Element type of an array Type; emits a diag and returns TyInteger when
+    * the given type isn't a TyArray (which would mean the elaborator left the
+    * type stage-1 — should be rare by Stage 3).
+    */
+  private def arrayElem(t: Type): Type = t match
+    case TyArray(e, _) => e
+    case _             => notYet(s"expected array type, got $t"); TyInteger
+
+  private def arrayRank(t: Type): Int = t match
+    case TyArray(_, r) => r
+    case _             => 1
 
   /** Map a Nex binary operator + operand type to (LLVM instruction,
     * result LLVM type). Integer / real overloads are picked here.

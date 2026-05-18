@@ -1488,6 +1488,9 @@ class NexElaborator:
     "to_integer"     -> TyInteger,
     "to_real"        -> TyReal,
     "to_complex"     -> TyComplex,
+    "length"         -> TyInteger,
+    "rows"           -> TyInteger,
+    "cols"           -> TyInteger,
   ).withDefaultValue(TyUnknown)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
