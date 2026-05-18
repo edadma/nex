@@ -251,6 +251,86 @@ class NexFusionTests extends AnyWordSpec with Matchers:
     }
   }
 
+  // ==========================================================================
+  // Prelude map fusion (chunk 3) — `map(arr, x -> body)` inlines lambda body
+  // ==========================================================================
+
+  "map fusion" should {
+
+    "rewrite `map(xs, x -> x * 2)` into a TBlock(TFusedLoop)" in {
+      val body = fBodyAfterFusion("""
+        |def f(xs: [integer]) = map(xs, x -> x * 2)
+      """.stripMargin)
+      body shouldBe a[TBlock]
+      val block = body.asInstanceOf[TBlock]
+      block.result shouldBe a[TFusedLoop]
+      val loop = block.result.asInstanceOf[TFusedLoop]
+      countFusedLoops(loop.body) shouldBe 0
+      // The lambda body `x * 2` should be inlined: body is a TBinOp
+      // whose LHS is no longer a TVarRef to the lambda param (it's
+      // been substituted with `tmp_a[i]`).
+      loop.body shouldBe a[TBinOp]
+    }
+
+    "chain map with element-wise — `map(xs, x -> x * 2) + ys` is one loop" in {
+      val body = fBodyAfterFusion("""
+        |def f(xs: [integer], ys: [integer]) = map(xs, x -> x * 2) + ys
+      """.stripMargin)
+      val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
+      countFusedLoops(loop.body) shouldBe 0
+    }
+
+    "leave `map(xs, f)` alone when f is a TVarRef (not an inline lambda)" in {
+      val body = fBodyAfterFusion("""
+        |def f(xs: [integer]) =
+        |  val g = x -> x * 2
+        |  map(xs, g)
+      """.stripMargin)
+      // The block now contains the val + a TCall — the map call is NOT
+      // rewritten because the arg is a TVarRef, not an inline lambda.
+      // Chunk 3 deliberately doesn't chase named-lambda bindings; that's
+      // a later improvement.
+      val block = body.asInstanceOf[TBlock]
+      val mapCall = block.result.asInstanceOf[TCall]
+      mapCall.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
+    }
+
+    "fused map produces the same output as un-fused map (basic)" in {
+      val src = """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(map(xs, x -> x * 10))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[10, 20, 30, 40]\n"
+    }
+
+    "fused map.sum chain produces the right value" in {
+      // `sum(map(xs, x -> x * 2))` — the map fuses to a TFusedLoop and
+      // sum runs over the result. Interpreter must handle both shapes.
+      val src = """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(sum(map(xs, x -> x * 2)))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "20\n"
+    }
+
+    "fused chain: map result feeds into element-wise" in {
+      // The fused `map(xs, x -> x * 2)` collapses with the outer `+ ys`
+      // into a single loop.
+      val src = """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  val ys = [100, 200, 300]
+        |  print(map(xs, x -> x * 2) + ys)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[102, 204, 306]\n"
+    }
+  }
+
   /** Recursively count TFusedLoop nodes in an expression tree (for chain-
     * inlining assertions). Walks every TExpr variant that can contain
     * children.

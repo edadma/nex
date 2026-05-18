@@ -54,6 +54,17 @@ class NexFusion(symbols: SymbolTable):
       val ss = fuseExpr(s); val aa = fuseExpr(a)
       fuseBroadcast(ss, aa, op, sf, p, t).getOrElse(TBroadcast(ss, aa, op, sf, p, t))
 
+    // Prelude `map(arr, lambda)` with an inline TLambda → fuse to a
+    // single loop with the lambda body inlined. Only fires when the
+    // lambda is an inline TLambda — `map(arr, f)` where `f` is a
+    // TVarRef is left alone (the value behind the binding isn't
+    // visible here without a deferred-resolve map).
+    case TCall(callee @ TVarRef(s, _, _), args, p, t)
+        if s.kind == SymKind.Prelude && s.name == "map" && args.size == 2 =>
+      val arr = fuseExpr(args.head)
+      val fn  = fuseExpr(args(1))
+      fuseMap(arr, fn, p, t).getOrElse(TCall(callee, List(arr, fn), p, t))
+
     // -- recurse ----------------------------------------------------------
     case TBinOp(op, l, r, p, t)        => TBinOp(op, fuseExpr(l), fuseExpr(r), p, t)
     case TUnaryOp(op, x, p, t)         => TUnaryOp(op, fuseExpr(x), p, t)
@@ -146,6 +157,39 @@ class NexFusion(symbols: SymbolTable):
         tpe    = tpe,
       )
     }
+
+  /** Rule 1c: `map(arr, x -> body)` with an inline lambda → fused loop.
+    * The lambda's body is inlined with its single param substituted to
+    * the indexed access on the array temp. If `arr` is itself a fused
+    * subexpression, chunk-2's chain inlining applies via [[sourceOperand]],
+    * so e.g. `map(2 * a + b, x -> x * 10)` collapses to one loop.
+    *
+    * Limited to single-param lambdas in chunk 3 — `map` only takes
+    * `(elem -> U)`. Returns `None` if the lambda arg isn't an inline
+    * TLambda (e.g. `map(xs, f)` where f is a TVarRef).
+    */
+  private def fuseMap(
+    arr: TExpr,
+    fn: TExpr,
+    pos: Option[Position],
+    tpe: Type,
+  ): Option[TExpr] =
+    (fn, elemTypeIfRank1(tpe)) match
+      case (lam: TLambda, Some(_)) if lam.params.size == 1 =>
+        val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
+        val iRef = TVarRef(iSym, pos, TyInteger)
+        val (aBindings, aElem, aLen) = sourceOperand(arr, iSym, iRef, pos)
+        val paramId = lam.params.head.id
+        val body    = subst(lam.body, paramId, aElem)
+        Some(
+          TBlock(
+            items  = aBindings,
+            result = TFusedLoop(iSym, aLen, body, pos, tpe),
+            pos    = pos,
+            tpe    = tpe,
+          )
+        )
+      case _ => None
 
   /** Process one source-array operand of a fused loop. Returns:
     *   - `bindings`: items to splice into the outer TBlock (either a
