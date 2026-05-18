@@ -606,7 +606,20 @@ class NexElaborator:
           case _ =>
             TCall(elabExpr(callee), args.map(elabExpr), pos)
       case IndexExpr(arr, idx) =>
-        TIndex(elabExpr(arr), idx.map(elabExpr), pos)
+        // `:` (AxisAllExpr) only appears inside an index list — Stage 2
+        // detects it and rewrites the surrounding TIndex into a
+        // TSlice2 (rank-2 slice). Anywhere else the parser refuses the
+        // `:` token; if it somehow slipped through, infExpr handles
+        // the orphan case with an error.
+        TIndex(elabExpr(arr), idx.map {
+          case AxisAllExpr() => TAxisAllMark(pos)
+          case e             => elabExpr(e)
+        }, pos)
+
+      case AxisAllExpr() =>
+        // Defensive: `:` outside an index list is never a value.
+        err("`:` is only legal inside an index list (rank-2 slice)", e)
+        TUnitLit(pos)
       case FieldExpr(r, name) =>
         TField(elabExpr(r), name, pos)
       case MethodCallExpr(r, n, args) =>
@@ -1133,7 +1146,7 @@ class NexElaborator:
     // pass through. TFusedLoop is similar — introduced by NexFusion
     // (Stage 4, post-lowering), never present during Stage 2 today,
     // but pass it through defensively in case the pipeline is rerun.
-    case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex => e
+    case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex | _: TSlice | _: TSlice2 | _: TAxisAllMark => e
 
   private def inferBlockItem(i: TBlockItem): TBlockItem = i match
     case TBlockBinding(s, kind, v) =>
@@ -1433,11 +1446,40 @@ class NexElaborator:
             TCall(callee, args, p, TyUnknown)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
-    // Spec §4.14 rank-1 slicing: `arr[lo..hi]` / `arr[lo..=hi]`. The
-    // parser emits these as `TIndex(arr, [TBinOp("..", lo, hi)])` so
-    // we detect the pattern here and rewrite to `TSlice`. The bound
-    // expressions must be integers and the receiver must be rank-1.
+    // Spec §4.14 slicing detection.
+    //
+    // Three shapes get rewritten in this dispatch:
+    //   - `a[lo..hi]` or `a[lo..=hi]` (single range, rank-1 source) →
+    //     `TSlice(arr, lo, hi, inclusive)` rank-1 result.
+    //   - 2-element index list on rank-2 source where any element is
+    //     a range or the `:` axis-all marker → `TSlice2(arr, rowAx,
+    //     colAx)`. Result rank = number of preserved axes (integer
+    //     collapses, range / `:` preserves).
+    //   - everything else → plain `TIndex` (the existing behaviour).
+
+    /** Classify one position in the index list as an axis spec. */
+    def asAxisSpec(e: TExpr): TAxisSpec = e match
+      case _: TAxisAllMark => TAxisAll
+      case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
+        if lo.tpe != TyUnknown && lo.tpe != TyInteger then
+          err(s"slice lower bound must be integer, got ${lo.tpe}", lo.pos)
+        if hi.tpe != TyUnknown && hi.tpe != TyInteger then
+          err(s"slice upper bound must be integer, got ${hi.tpe}", hi.pos)
+        TAxisRange(lo, hi, inclusive = op == "..=")
+      case other =>
+        if other.tpe != TyUnknown && other.tpe != TyInteger then
+          err(s"array index must be integer, got ${other.tpe}", other.pos)
+        TAxisIndex(other)
+
+    /** True iff the index element is a range or axis-all (i.e. would
+      * trigger a slice rewrite). */
+    def isSliceMarker(e: TExpr): Boolean = e match
+      case _: TAxisAllMark                                       => true
+      case TBinOp(op, _, _, _, _) if op == ".." || op == "..=" => true
+      case _                                                     => false
+
     idx match
+      // -- Rank-1 single-range slice --------------------------------
       case List(TBinOp(op, lo, hi, _, _)) if op == ".." || op == "..=" =>
         if lo.tpe != TyUnknown && lo.tpe != TyInteger then
           err(s"slice lower bound must be integer, got ${lo.tpe}", lo.pos)
@@ -1454,10 +1496,44 @@ class NexElaborator:
           case other =>
             err(s"cannot slice value of type $other", p)
             TSlice(arr, lo, hi, inclusive = op == "..=", p, TyUnknown)
+
+      // -- Orphan `:` in single-position index → error -------------
+      case List(_: TAxisAllMark) =>
+        err("`:` requires a rank-2 receiver and a paired axis (e.g. `m[:, 1]`)", p)
+        TUnitLit(p)
+
+      // -- Rank-2 slicing: 2 positions, at least one is a slice marker
+      case List(r, c) if isSliceMarker(r) || isSliceMarker(c) =>
+        val rowAx = asAxisSpec(r)
+        val colAx = asAxisSpec(c)
+        val preservedAxes = List(rowAx, colAx).count {
+          case _: TAxisIndex => false
+          case _             => true
+        }
+        arr.tpe match
+          case TyArray(e, 2) =>
+            val resultT = preservedAxes match
+              case 0 => e
+              case 1 => TyArray(e, 1)
+              case _ => TyArray(e, 2)
+            TSlice2(arr, rowAx, colAx, p, resultT)
+          case TyArray(_, r0) =>
+            err(s"rank-2 slice requires a rank-2 array, got rank $r0", p)
+            TSlice2(arr, rowAx, colAx, p, TyUnknown)
+          case TyUnknown =>
+            TSlice2(arr, rowAx, colAx, p, TyUnknown)
+          case other =>
+            err(s"cannot slice value of type $other", p)
+            TSlice2(arr, rowAx, colAx, p, TyUnknown)
+
+      // -- Plain integer indexing (single or two-index) ------------
       case _ =>
-        idx.foreach { i =>
-          if i.tpe != TyUnknown && i.tpe != TyInteger then
+        idx.foreach {
+          case _: TAxisAllMark =>
+            err("`:` is not legal here — used outside a rank-2 index list", p)
+          case i if i.tpe != TyUnknown && i.tpe != TyInteger =>
             err(s"array index must be integer, got ${i.tpe}", i.pos)
+          case _ => ()
         }
         val ty = arr.tpe match
           case TyArray(e, 1) if idx.size == 1 => e
@@ -1542,6 +1618,14 @@ class NexElaborator:
     case TCall(c, args, p, t)          => TCall(lowerExpr(c), args.map(lowerExpr), p, t)
     case TIndex(a, i, p, t)            => TIndex(lowerExpr(a), i.map(lowerExpr), p, t)
     case TSlice(a, lo, hi, inc, p, t)  => TSlice(lowerExpr(a), lowerExpr(lo), lowerExpr(hi), inc, p, t)
+    case TSlice2(a, rAx, cAx, p, t)    =>
+      def lowAxis(s: TAxisSpec): TAxisSpec = s match
+        case TAxisAll              => TAxisAll
+        case TAxisIndex(e)         => TAxisIndex(lowerExpr(e))
+        case TAxisRange(lo, hi, i) => TAxisRange(lowerExpr(lo), lowerExpr(hi), i)
+      TSlice2(lowerExpr(a), lowAxis(rAx), lowAxis(cAx), p, t)
+    case _: TAxisAllMark =>
+      sys.error("internal: TAxisAllMark survived Stage 2; should have been consumed by inferIndex")
     case TField(r, n, p, t)            => TField(lowerExpr(r), n, p, t)
     case TTupleProj(r, idx, p, t)      => TTupleProj(lowerExpr(r), idx, p, t)
     case TLambda(params, body, p, t)   => TLambda(params, lowerExpr(body), p, t)
@@ -1696,6 +1780,14 @@ class NexElaborator:
       case TIndex(a, idx, _, _)        => walkForMutations(a, reads, names); idx.foreach(i => walkForMutations(i, reads, names))
       case TSlice(a, lo, hi, _, _, _)  =>
         walkForMutations(a, reads, names); walkForMutations(lo, reads, names); walkForMutations(hi, reads, names)
+      case TSlice2(a, rAx, cAx, _, _)  =>
+        walkForMutations(a, reads, names)
+        List(rAx, cAx).foreach {
+          case TAxisIndex(e)         => walkForMutations(e, reads, names)
+          case TAxisRange(lo, hi, _) => walkForMutations(lo, reads, names); walkForMutations(hi, reads, names)
+          case TAxisAll              => ()
+        }
+      case _: TAxisAllMark             => ()
       case TField(r, _, _, _)          => walkForMutations(r, reads, names)
       case TTupleProj(r, _, _, _)      => walkForMutations(r, reads, names)
       case TMethodCall(r, _, args, _,_) => walkForMutations(r, reads, names); args.foreach(a => walkForMutations(a, reads, names))

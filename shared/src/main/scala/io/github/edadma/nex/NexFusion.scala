@@ -125,6 +125,14 @@ class NexFusion(symbols: SymbolTable):
     case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
     case TSlice(a, lo, hi, inc, p, t)  => TSlice(fuseExpr(a), fuseExpr(lo), fuseExpr(hi), inc, p, t)
+    case TSlice2(a, rAx, cAx, p, t)    =>
+      def fuseAxis(s: TAxisSpec): TAxisSpec = s match
+        case TAxisAll              => TAxisAll
+        case TAxisIndex(e)         => TAxisIndex(fuseExpr(e))
+        case TAxisRange(lo, hi, i) => TAxisRange(fuseExpr(lo), fuseExpr(hi), i)
+      TSlice2(fuseExpr(a), fuseAxis(rAx), fuseAxis(cAx), p, t)
+    case _: TAxisAllMark =>
+      sys.error("internal: TAxisAllMark survived to fusion pass; should be Stage-2-only")
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(fuseExpr(x))
@@ -341,6 +349,13 @@ class NexFusion(symbols: SymbolTable):
       else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), cols.map(subst(_, fromId, to)), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(subst(a, fromId, to), subst(i, fromId, to), p, t)
     case TSlice(a, lo, hi, inc, p, t)  => TSlice(subst(a, fromId, to), subst(lo, fromId, to), subst(hi, fromId, to), inc, p, t)
+    case TSlice2(a, rAx, cAx, p, t)    =>
+      def substAxis(s: TAxisSpec): TAxisSpec = s match
+        case TAxisAll              => TAxisAll
+        case TAxisIndex(x)         => TAxisIndex(subst(x, fromId, to))
+        case TAxisRange(lo, hi, i) => TAxisRange(subst(lo, fromId, to), subst(hi, fromId, to), i)
+      TSlice2(subst(a, fromId, to), substAxis(rAx), substAxis(cAx), p, t)
+    case _: TAxisAllMark => e
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(subst(x, fromId, to))

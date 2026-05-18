@@ -199,6 +199,38 @@ case class TSlice(
     tpe:       Type = TyUnknown,
 ) extends TExpr
 
+/** Stage-1-only sentinel marking a `:` axis-all inside an index list.
+  * Survives through `infExpr`'s TIndex case to `inferIndex`, which is
+  * responsible for rewriting the surrounding `TIndex` into a `TSlice2`.
+  * It never appears in a Stage-3 program. The `tpe` is `TyUnknown` —
+  * `:` is not a value.
+  */
+case class TAxisAllMark(pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+
+/** Per-axis spec for a rank-2 slice (spec §4.14). Each axis is either:
+  *   - [[TAxisAll]]: the full extent of this axis (`:`) — preserves rank.
+  *   - [[TAxisIndex]]: a single integer index — collapses this axis.
+  *   - [[TAxisRange]]: a sub-extent (`lo..hi` or `lo..=hi`) — preserves rank.
+  */
+sealed trait TAxisSpec
+case object TAxisAll                                                            extends TAxisSpec
+case class  TAxisIndex(idx: TExpr)                                              extends TAxisSpec
+case class  TAxisRange(lo: TExpr, hi: TExpr, inclusive: Boolean)                extends TAxisSpec
+
+/** Rank-2 slice — `m[axis0, axis1]` per spec §4.14. The result rank
+  * depends on how many axes are preserved (0 = scalar, 1 = rank-1,
+  * 2 = rank-2). Result is always a freshly-owned array. Emitted by
+  * the elaborator's `inferIndex` when a rank-2 receiver is indexed
+  * with a range or axis-all element.
+  */
+case class TSlice2(
+    arr:   TExpr,
+    rowAx: TAxisSpec,
+    colAx: TAxisSpec,
+    pos:   Option[Position] = None,
+    tpe:   Type = TyUnknown,
+) extends TExpr
+
 /** Stage-1 placeholder for `r.name(args)` before we know whether it
   * resolves to field access or function-call sugar (§4.9). Stage 3 lowers.
   */

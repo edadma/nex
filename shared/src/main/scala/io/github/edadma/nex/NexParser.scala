@@ -454,9 +454,18 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     }
 
   lazy val indexTail: PackratParser[ExprAST => ExprAST] =
-    "[" ~> rep1sep(exprNoTuple, ",") <~ "]" ^^ { ixs =>
+    "[" ~> rep1sep(indexElem, ",") <~ "]" ^^ { ixs =>
       (recv: ExprAST) => IndexExpr(recv, ixs)
     }
+
+  /** A single position in an index list. Three shapes:
+    *   - `:` — the rank-2 axis-all marker (spec §4.14 slicing).
+    *   - any other expression (integer, range `lo..hi`, computed bounds).
+    * The `:` form is only legal in index position; the parser doesn't
+    * surface it as a primary expression.
+    */
+  lazy val indexElem: PackratParser[ExprAST] =
+    ":" ^^^ AxisAllExpr() | exprNoTuple
 
   /** `.name` is a field access; `.name(args)` becomes a method-call sugar
     * node so the analyzer can decide field-vs-method per §4.9.

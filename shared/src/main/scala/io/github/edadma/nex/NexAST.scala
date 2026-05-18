@@ -182,6 +182,13 @@ case class CallExpr(callee: ExprAST, args: List[ExprAST]) extends ExprAST
 /** Indexing: `a[i]` (single) or `a[i, j]` (rank-2; Pass 2). */
 case class IndexExpr(arr: ExprAST, indices: List[ExprAST]) extends ExprAST
 
+/** The `:` axis selector — only legal inside an `IndexExpr`'s index list,
+  * marks "all of this axis" for rank-2 slicing (spec §4.14). The parser
+  * accepts it exclusively in that position; using `:` elsewhere is a
+  * parse error.
+  */
+case class AxisAllExpr() extends ExprAST
+
 /** Field access / method call sugar: `a.b` (field) and `a.b(args)` (sugar
   * for `b(a, args)` per §4.9). The parser produces `Field` for the access
   * form and `Call(Field(a, b), args)` is rewritten to `MethodCall(a, b,

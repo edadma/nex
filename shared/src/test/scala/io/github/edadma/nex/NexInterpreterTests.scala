@@ -633,6 +633,63 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "[20, 30, 40]\n"
     }
 
+    "rank-2 slice column with `:` (spec §4.14)" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[:, 1])
+      """.stripMargin) shouldBe "[2, 5]\n"
+    }
+
+    "rank-2 slice row with single integer index" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[0, 0..2])
+      """.stripMargin) shouldBe "[1, 2]\n"
+    }
+
+    "rank-2 slice with row range and full column axis" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[0..2, :])
+      """.stripMargin) shouldBe "[[1, 2, 3], [4, 5, 6]]\n"
+    }
+
+    "rank-2 sub-matrix slice (both axes ranges)" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[0..2, 1..3])
+      """.stripMargin) shouldBe "[[2, 3], [5, 6]]\n"
+    }
+
+    "rank-2 full copy with `m[:, :]`" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  var copy = m[:, :]
+        |  copy[0, 0] = 99
+        |  print(m)
+        |  print(copy)
+      """.stripMargin) shouldBe "[[1, 2], [3, 4]]\n[[99, 2], [3, 4]]\n"
+    }
+
+    "rank-2 slice with closed-range axis" in {
+      runOut("""
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[:, 0..=2])
+      """.stripMargin) shouldBe "[[1, 2, 3], [4, 5, 6]]\n"
+    }
+
+    "`:` outside an index list is a parse error" in {
+      new NexParser().parseProgram("def main() = print(:)") match
+        case Left(_)  => succeed
+        case Right(_) => fail("expected the parser to reject `:` outside an index list")
+    }
+
     "var array index assign" in {
       runOut("""
         |def main() =

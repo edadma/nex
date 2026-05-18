@@ -12,10 +12,17 @@ import scala.collection.mutable
   * matching variant.
   *
   * Arrays are mutable [[mutable.ArrayBuffer]] so that index-assignment
-  * (`a[i] = x`) can update in place. Rank-2 arrays are row-major (row r,
-  * col c lives at `buf(r * cols + c)`) — that's the layout the eventual
-  * fusion pass will assume; column-major can land in a later pass when we
-  * have real performance numbers to compare against.
+  * (`a[i] = x`) can update in place. Rank-2 arrays are INTERNALLY
+  * row-major — element (r, c) lives at `buf(r * cols + c)` — even though
+  * spec §3.3 specifies column-major. The two reconcile via the prelude:
+  * `flatten` and `reshape` (§10.4) are the only externally observable
+  * rank-2 ↔ rank-1 conversions, and both perform an explicit column-major
+  * re-stride so the user sees column-major-equivalent output. Element
+  * access (`m[i, j]`, `m[i]` row slice, transpose, matmul, element-wise
+  * ops) is layout-invariant. The internal row-major choice is purely
+  * implementation-private and will move to column-major when FFI to
+  * LAPACK/BLAS lands — at which point the flatten/reshape paths become
+  * identity instead of re-stride.
   */
 sealed trait Value
 
@@ -613,6 +620,63 @@ class NexInterpreter:
       val av = evalExpr(arr, env)
       val iv = idx.map(evalExpr(_, env))
       indexGet(av, iv, p)
+
+    case TSlice2(arr, rowAx, colAx, p, _) =>
+      // Spec §4.14 rank-2 slice. Each axis is either:
+      //   - TAxisAll: keep the full extent of this axis.
+      //   - TAxisIndex(e): collapse this axis to a single position.
+      //   - TAxisRange(lo, hi, inclusive): keep a sub-extent.
+      // Result rank = number of non-collapsed axes; freshly-owned.
+      val av = evalExpr(arr, env)
+      val (rows, cols, buf) = av match
+        case VArray2(b, r, c) => (r, c, b)
+        case other            => trap(s"rank-2 slice requires a rank-2 array, got ${formatValue(other)}", p)
+
+      def resolveAxis(spec: TAxisSpec, extent: Int, label: String): (Int, Int, Boolean) =
+        // returns (lo, hi_exclusive, collapsed)
+        spec match
+          case TAxisAll => (0, extent, false)
+          case TAxisIndex(e) =>
+            evalExpr(e, env) match
+              case VInt(i) =>
+                if i < 0 || i >= extent then trap(s"$label index $i out of bounds for extent $extent", p)
+                (i.toInt, i.toInt + 1, true)
+              case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
+          case TAxisRange(lo, hi, inclusive) =>
+            (evalExpr(lo, env), evalExpr(hi, env)) match
+              case (VInt(l), VInt(h)) =>
+                val lI = l.toInt
+                val hExcl = if inclusive then h.toInt + 1 else h.toInt
+                if lI < 0 || hExcl > extent || lI > hExcl then
+                  trap(s"$label slice [$lI..${if inclusive then "=" else ""}${h}] out of bounds for extent $extent", p)
+                (lI, hExcl, false)
+              case (l, h) => trap(s"$label slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+
+      val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
+      val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")
+      val outRows = rHi - rLo
+      val outCols = cHi - cLo
+
+      // Materialize the sub-buffer in row-major order (regardless of
+      // spec-§3.3 column-major external storage — that reconciliation
+      // lives in flatten/reshape; here we just produce a fresh array).
+      val out = mutable.ArrayBuffer.empty[Value]
+      var r = rLo
+      while r < rHi do
+        var c = cLo
+        while c < cHi do
+          out += buf(r * cols + c)
+          c += 1
+        r += 1
+
+      (rCollapsed, cCollapsed) match
+        case (true, true)   => out.head                              // both collapsed → scalar (rare via this path)
+        case (true, false)  => VArray1(out)                          // row collapsed → rank-1 of cols
+        case (false, true)  => VArray1(out)                          // col collapsed → rank-1 of rows
+        case (false, false) => VArray2(out, outRows, outCols)
+
+    case _: TAxisAllMark =>
+      trap("internal: TAxisAllMark survived to interpreter; should be Stage-2-only", e.pos)
 
     case TSlice(arr, lo, hi, inclusive, p, _) =>
       // Spec §4.14: rank-1 slice. Half-open `lo..hi` or closed
