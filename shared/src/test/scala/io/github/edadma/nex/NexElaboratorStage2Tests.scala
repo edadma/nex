@@ -62,10 +62,13 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       ySym.tpe shouldBe TyInteger
     }
 
-    "honour an explicit type annotation" in {
+    "honour an explicit type annotation (coerces narrower numeric RHS)" in {
       val tp = elab("val x: real = 1")
       tp.decls.head.asInstanceOf[TTopBinding].sym.tpe shouldBe TyReal
-      rhsOf(tp).tpe shouldBe TyInteger
+      // Int → Real coercion folds the literal at compile time, so the
+      // RHS becomes a TRealLit(1.0) rather than a runtime to_real call.
+      rhsOf(tp).tpe shouldBe TyReal
+      rhsOf(tp) shouldBe a [TRealLit]
     }
 
     "complain when value can't be assigned to declared type" in {
@@ -97,6 +100,133 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
     "complain when div has a non-integer operand" in {
       val errs = elabExpect("val x = 7 div 3.0")
       errs.exists(_.contains("`div` requires integer")) shouldBe true
+    }
+  }
+
+  // ==========================================================================
+  // Numeric coercion at assignment / argument sites
+  //
+  // The elaborator inserts an implicit conversion when a numeric value
+  // is assigned to a wider numeric type: literal int → real folds at
+  // compile time; everything else wraps in a `to_real` / `to_complex`
+  // prelude call so codegen sees a value of the declared type.
+  // ==========================================================================
+
+  "numeric coercion at assignment sites" should {
+    "fold an integer literal to a real literal on val: real = N" in {
+      val tp = elab("val x: real = 42")
+      tp.decls.head.asInstanceOf[TTopBinding].sym.tpe shouldBe TyReal
+      rhsOf(tp) shouldBe a [TRealLit]
+      rhsOf(tp).asInstanceOf[TRealLit].value shouldBe 42.0
+    }
+
+    "wrap a non-literal int RHS in `to_real(...)` when assigning to real" in {
+      // Function call result is a non-literal; goes through the prelude
+      // wrapper rather than the literal-fold path.
+      val tp = elab(
+        """
+          |def two(): integer = 2
+          |val x: real = two()
+        """.stripMargin,
+      )
+      val xBinding = tp.decls.collect { case b: TTopBinding => b }.head
+      xBinding.value shouldBe a [TCall]
+      xBinding.value.tpe shouldBe TyReal
+      val callee = xBinding.value.asInstanceOf[TCall].callee.asInstanceOf[TVarRef].sym
+      callee.name shouldBe "to_real"
+    }
+
+    "wrap an int literal in `to_complex(...)` when assigning to complex" in {
+      // Complex target keeps the wrapper — no complex-literal AST node
+      // to fold into, and clang -O1 collapses the runtime work anyway.
+      val tp = elab("val z: complex = 5")
+      val rhs = rhsOf(tp)
+      rhs shouldBe a [TCall]
+      rhs.tpe shouldBe TyComplex
+      val callee = rhs.asInstanceOf[TCall].callee.asInstanceOf[TVarRef].sym
+      callee.name shouldBe "to_complex"
+    }
+
+    "wrap a real literal in `to_complex(...)` when assigning to complex" in {
+      val tp = elab("val z: complex = 3.14")
+      rhsOf(tp).tpe shouldBe TyComplex
+      val callee = rhsOf(tp).asInstanceOf[TCall].callee.asInstanceOf[TVarRef].sym
+      callee.name shouldBe "to_complex"
+    }
+
+    "reject a string assigned to a real binding" in {
+      val errs = elabExpect("val x: real = \"hi\"")
+      errs.exists(_.contains("cannot assign")) shouldBe true
+    }
+
+    "coerce a function argument when the param is wider than the actual" in {
+      val tp = elab(
+        """
+          |def takeR(x: real): real = x
+          |val r = takeR(7)
+        """.stripMargin,
+      )
+      val rBinding = tp.decls.collect { case b: TTopBinding => b }.head
+      rBinding.value shouldBe a [TCall]
+      val argInsideCall = rBinding.value.asInstanceOf[TCall].args.head
+      // The int literal `7` was folded to a real literal at the call site.
+      argInsideCall shouldBe a [TRealLit]
+    }
+
+    "coerce a struct construction arg when the field is wider" in {
+      val tp = elab(
+        """
+          |struct Vec
+          |  x: real
+          |  y: real
+          |val v = Vec(1, 2)
+        """.stripMargin,
+      )
+      val vBinding = tp.decls.collect { case b: TTopBinding => b }.head
+      val rhs = vBinding.value.asInstanceOf[TCall]
+      rhs.args.foreach(_ shouldBe a [TRealLit])
+    }
+
+    "leave same-type assignments untouched (no spurious wrapper)" in {
+      val tp = elab("val x: integer = 42")
+      rhsOf(tp) shouldBe a [TIntLit]
+    }
+
+    "coerce each element of an annotated array literal" in {
+      val tp = elab("val xs: [real] = [1, 2, 3]")
+      rhsOf(tp).tpe shouldBe TyArray(TyReal, 1)
+      val lit = rhsOf(tp).asInstanceOf[TArrayLit]
+      lit.elems.foreach(_ shouldBe a [TRealLit])
+    }
+
+    "coerce real elements into a [complex] target via per-element to_complex" in {
+      val tp = elab("val xs: [complex] = [1.0, 2.0]")
+      rhsOf(tp).tpe shouldBe TyArray(TyComplex, 1)
+      val lit = rhsOf(tp).asInstanceOf[TArrayLit]
+      lit.elems.foreach { e =>
+        e shouldBe a [TCall]
+        e.tpe shouldBe TyComplex
+        e.asInstanceOf[TCall].callee.asInstanceOf[TVarRef].sym.name shouldBe "to_complex"
+      }
+    }
+
+    "leave already-typed array elements untouched" in {
+      // No annotation; literal types itself as [real].
+      val tp = elab("val xs = [1.0, 2.0, 3.0]")
+      rhsOf(tp).tpe shouldBe TyArray(TyReal, 1)
+      rhsOf(tp).asInstanceOf[TArrayLit].elems.foreach(_ shouldBe a [TRealLit])
+    }
+
+    "rank-2 annotated literal pushes the element type through both layers" in {
+      // [[real]] = rank-2 of real. Inner rows are integer literals that
+      // should fold to real per-element.
+      val tp = elab("val m: [[real]] = [[1, 2], [3, 4]]")
+      rhsOf(tp).tpe shouldBe TyArray(TyReal, 2)
+      val outer = rhsOf(tp).asInstanceOf[TArrayLit]
+      outer.elems.foreach { row =>
+        row shouldBe a [TArrayLit]
+        row.asInstanceOf[TArrayLit].elems.foreach(_ shouldBe a [TRealLit])
+      }
     }
   }
 

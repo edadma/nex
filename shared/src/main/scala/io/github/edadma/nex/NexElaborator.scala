@@ -801,6 +801,29 @@ class NexElaborator:
         case TyArray(_, _) => TArrayLit(Nil, p, expected)
         case _             => infExpr(arg)
 
+    // Non-empty array literal with an expected element type: push the
+    // expected element down into each element via [[inferArg]] (which
+    // recurses, so nested literals and sub-aggregates compose) and then
+    // run each element through [[coerceTo]] so narrower numeric
+    // literals fold up to the expected element type. This makes
+    //   val xs: [complex] = [1.0, 0.0, 1.0, 0.0]
+    // work uniformly without manual `1.0 + 0i` cosmetics.
+    case TArrayLit(elems, p, _) =>
+      expected match
+        case TyArray(elemT, 1) =>
+          val coerced = elems.map { e =>
+            val inferred = inferArg(e, elemT)
+            coerceTo(inferred, elemT)
+          }
+          TArrayLit(coerced, p, TyArray(elemT, 1))
+        case TyArray(elemT, 2) =>
+          // Rank-2 literal — each row is itself a `[elemT]` array, so
+          // recurse with the rank-1 element type.
+          val rowT = TyArray(elemT, 1)
+          val coerced = elems.map(row => inferArg(row, rowT))
+          TArrayLit(coerced, p, TyArray(elemT, 2))
+        case _ => infExpr(arg)
+
     case _ => infExpr(arg)
 
   /** A lambda is "partially inferred" iff at least one param's type in
@@ -841,18 +864,18 @@ class NexElaborator:
     val v2 =
       if declared != TyUnknown then inferArg(b.value, declared)
       else infExpr(b.value)
-    val t = declared match
-      case TyUnknown => v2.tpe
-      case _         => checkAssignable(v2, declared); declared
+    val (vCoerced, t) = declared match
+      case TyUnknown => (v2, v2.tpe)
+      case _         => (coerceTo(v2, declared), declared)
     val sym2 = setSymType(b.sym, t)
-    registerDeferredLambda(sym2, v2)
+    registerDeferredLambda(sym2, vCoerced)
     // Spec §5.3: `const` bindings require a constant expression on the
     // RHS. Track every const Symbol id so later const refs to this one
     // can be recognised, and validate the value tree.
     if b.kind == BindingKind.Const then
       constSymIds += sym2.id
-      validateConstExpr(v2)
-    b.copy(sym = sym2, value = v2)
+      validateConstExpr(vCoerced)
+    b.copy(sym = sym2, value = vCoerced)
 
   /** Symbol ids of top-level `const` bindings — used by
     * [[validateConstExpr]] to allow references between consts.
@@ -944,6 +967,72 @@ class NexElaborator:
           case _                  => err(s"cannot assign value of type $actual to $expected", v.pos)
       case _ =>
         err(s"cannot assign value of type $actual to $expected", v.pos)
+
+  /** Like [[checkAssignable]] but returns the (possibly-coerced) value
+    * instead of just validating. When `v` is narrower than `expected`
+    * and they're both numeric, wrap `v` in the appropriate prelude
+    * conversion (`to_real` / `to_complex`) so downstream codegen sees a
+    * value of the expected type. When no coercion is needed, returns
+    * `v` unchanged; when the assignment is invalid, emits the same
+    * diagnostic as [[checkAssignable]] and returns `v` so elaboration
+    * can continue.
+    *
+    * Used at val/top-binding, assign-target, and function-arg sites so
+    * that mixed-type assignments like `val z: complex = 1.0` or
+    * `f(1)` where `f: (real -> ...)` don't surface to the codegen as
+    * type-mismatched stores.
+    */
+  private def coerceTo(v: TExpr, expected: Type): TExpr =
+    val actual = v.tpe
+    if actual == TyUnknown || expected == TyUnknown then v
+    else if actual == expected then v
+    else (actual, expected) match
+      case (a, b) if isNumeric(a) && isNumeric(b) =>
+        promote(a, b) match
+          case Some(t) if t == b =>
+            // Wrap in `to_<expected>(v)`. The prelude registers these
+            // under [[SymKind.Prelude]] at startup, so they're always
+            // in scope at the root level.
+            synthCoerce(v, b)
+          case _ =>
+            err(s"cannot assign value of type $actual to $expected", v.pos)
+            v
+      case _ =>
+        err(s"cannot assign value of type $actual to $expected", v.pos)
+        v
+
+  /** Wrap `v` in a synthetic call to the appropriate prelude conversion
+    * function. Returns `v` unchanged if no conversion exists for the
+    * target type or if the prelude name can't be resolved (defensive —
+    * registerPrelude always installs these). Uses [[current]] to walk
+    * the scope chain so prelude names resolve from anywhere.
+    *
+    * Constant folding: when `v` is a literal whose promotion result is
+    * also expressible as a literal, fold to the literal directly so
+    * neither the interpreter nor the AOT codegen has to round-trip
+    * through the runtime conversion. Most common case is `val x: real
+    * = 1` → `val x = 1.0` instead of `val x = to_real(1)`.
+    *  - `TIntLit(n) → TyReal`     ⇒ `TRealLit(n.toDouble)`
+    *  - `TBoolLit(b) → TyReal`    is not a valid promotion (rejected by
+    *    [[promote]]), so no fold needed.
+    *  - Promotions targeting `TyComplex` keep the wrapping `TCall` —
+    *    Nex's AST has no complex-literal node, and clang's `-O1`
+    *    constant folder collapses the resulting insertvalue chain into
+    *    an aggregate constant anyway.
+    */
+  private def synthCoerce(v: TExpr, target: Type): TExpr =
+    // Compile-time literal fold for the most common case.
+    (v, target) match
+      case (TIntLit(n, p, _), TyReal) => return TRealLit(n.toDouble, p)
+      case _ => ()
+
+    val fnName = target match
+      case TyReal    => "to_real"
+      case TyComplex => "to_complex"
+      case _         => return v
+    current.lookup(fnName) match
+      case Some(sym) => TCall(TVarRef(sym, v.pos, sym.tpe), List(v), v.pos, target)
+      case None      => v
 
   // -- expressions ---------------------------------------------------------
 
@@ -1149,8 +1238,8 @@ class NexElaborator:
 
     case TAssign(t, v, p, _) =>
       val tt = infExpr(t); val vv = infExpr(v)
-      if tt.tpe != TyUnknown then checkAssignable(vv, tt.tpe)
-      TAssign(tt, vv, p, TyUnit)
+      val vvCoerced = if tt.tpe != TyUnknown then coerceTo(vv, tt.tpe) else vv
+      TAssign(tt, vvCoerced, p, TyUnit)
 
     case TBlock(items, result, p, _) =>
       val its = items.map(inferBlockItem)
@@ -1170,12 +1259,12 @@ class NexElaborator:
       val vv =
         if declared != TyUnknown then inferArg(v, declared)
         else infExpr(v)
-      val t = declared match
-        case TyUnknown => vv.tpe
-        case _         => checkAssignable(vv, declared); declared
+      val (vvCoerced, t) = declared match
+        case TyUnknown => (vv, vv.tpe)
+        case _         => (coerceTo(vv, declared), declared)
       val s2 = setSymType(s, t)
-      registerDeferredLambda(s2, vv)
-      TBlockBinding(s2, kind, vv)
+      registerDeferredLambda(s2, vvCoerced)
+      TBlockBinding(s2, kind, vvCoerced)
     case TBlockExpr(x) => TBlockExpr(infExpr(x))
 
   // -- helpers --------------------------------------------------------------
@@ -1445,9 +1534,10 @@ class NexElaborator:
           case TyStruct(_, fs) =>
             if fs.size != args.size then
               err(s"struct `${s.name}` expects ${fs.size} args, got ${args.size}", p)
+              TCall(callee, args, p, currentType(s))
             else
-              fs.zip(args).foreach { case ((_, ft), a) => checkAssignable(a, ft) }
-            TCall(callee, args, p, currentType(s))
+              val coercedArgs = fs.zip(args).map { case ((_, ft), a) => coerceTo(a, ft) }
+              TCall(callee, coercedArgs, p, currentType(s))
           case _ => TCall(callee, args, p, TyUnknown)
 
       case _ =>
@@ -1455,9 +1545,10 @@ class NexElaborator:
           case TyFunc(params, ret) =>
             if params.size != args.size then
               err(s"function call expects ${params.size} args, got ${args.size}", p)
+              TCall(callee, args, p, ret)
             else
-              params.zip(args).foreach { case ((pt, _), a) => checkAssignable(a, pt) }
-            TCall(callee, args, p, ret)
+              val coercedArgs = params.zip(args).map { case ((pt, _), a) => coerceTo(a, pt) }
+              TCall(callee, coercedArgs, p, ret)
           case _ =>
             // Fallback for prelude functions whose signatures aren't in
             // [[TyFunc]] form yet. We don't refine the param types here
