@@ -1,0 +1,396 @@
+package io.github.edadma.nex
+
+import org.scalatest.matchers.should.Matchers
+import org.scalatest.wordspec.AnyWordSpec
+
+/** Tests for the Pass 2 extensions to NexParser: def declarations with
+  * modes, structs, modules, imports, attributes, if/for/while/return,
+  * block-form lambdas, rank-2 arrays, matmul.
+  */
+class NexParserPass2Tests extends AnyWordSpec with Matchers:
+
+  private def parser = new NexParser
+
+  private def parseProg(src: String): ProgramAST =
+    parser.parseProgram(src) match
+      case Right(p)  => p
+      case Left(err) => fail(s"parse error: $err\nin source:\n$src")
+
+  private def parseExpr(src: String): ExprAST =
+    parser.parseExpression(src) match
+      case Right(e)  => e
+      case Left(err) => fail(s"parse error: $err\nin source:\n$src")
+
+  // ========================================================================
+  // def declarations
+  // ========================================================================
+
+  "def declarations" should {
+    "parse a no-arg single-expression def" in {
+      parseProg("def main() = print()").decls shouldBe List(
+        FunDeclAST("main", Nil, None,
+          CallExpr(VarRefExpr("print"), Nil)),
+      )
+    }
+    "parse a one-arg def with inferred (read) mode" in {
+      parseProg("def square(x: real) = x * x").decls shouldBe List(
+        FunDeclAST("square",
+          List(FunParam("x", NamedType("real"), ParamMode.Read)),
+          None,
+          BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))),
+      )
+    }
+    "parse a def with declared mut parameter" in {
+      parseProg("def fill(v: mut [real], x: real) = x").decls shouldBe List(
+        FunDeclAST("fill",
+          List(
+            FunParam("v", ArrayType(NamedType("real")), ParamMode.Mut),
+            FunParam("x", NamedType("real"), ParamMode.Read),
+          ),
+          None,
+          VarRefExpr("x")),
+      )
+    }
+    "parse explicit return type annotation" in {
+      parseProg("def factorial(n: integer): integer = n").decls shouldBe List(
+        FunDeclAST("factorial",
+          List(FunParam("n", NamedType("integer"), ParamMode.Read)),
+          Some(NamedType("integer")),
+          VarRefExpr("n")),
+      )
+    }
+    "parse a def with a block body" in {
+      val src =
+        """def normalize(v: [real]) =
+          |  val mag = sqrt(sum(v * v))
+          |  v / mag""".stripMargin
+      val Right(p) = parser.parseProgram(src): @unchecked
+      p.decls.head shouldBe a [FunDeclAST]
+      val fn = p.decls.head.asInstanceOf[FunDeclAST]
+      fn.name shouldBe "normalize"
+      fn.body shouldBe a [BlockExpr]
+      val block = fn.body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 1
+      block.items.head shouldBe a [BlockDecl]
+      block.result shouldBe BinOpExpr("/", VarRefExpr("v"), VarRefExpr("mag"))
+    }
+    "parse private modifier" in {
+      parseProg("private def helper(x: real) = x").decls shouldBe List(
+        FunDeclAST("helper",
+          List(FunParam("x", NamedType("real"), ParamMode.Read)),
+          None,
+          VarRefExpr("x"),
+          isPrivate = true),
+      )
+    }
+  }
+
+  // ========================================================================
+  // struct declarations
+  // ========================================================================
+
+  "struct declarations" should {
+    "parse a struct with two fields and an end Name marker" in {
+      val src =
+        """struct Point
+          |  x: real
+          |  y: real
+          |end Point""".stripMargin
+      parseProg(src).decls shouldBe List(
+        StructDeclAST("Point", List(
+          StructField("x", NamedType("real")),
+          StructField("y", NamedType("real")),
+        )),
+      )
+    }
+    "parse a struct without the end marker" in {
+      val src =
+        """struct Pair
+          |  a: integer
+          |  b: integer""".stripMargin
+      parseProg(src).decls shouldBe List(
+        StructDeclAST("Pair", List(
+          StructField("a", NamedType("integer")),
+          StructField("b", NamedType("integer")),
+        )),
+      )
+    }
+    "parse private struct" in {
+      val src =
+        """private struct Hidden
+          |  v: real""".stripMargin
+      parseProg(src).decls shouldBe List(
+        StructDeclAST("Hidden",
+          List(StructField("v", NamedType("real"))),
+          isPrivate = true),
+      )
+    }
+  }
+
+  // ========================================================================
+  // module + import declarations
+  // ========================================================================
+
+  "module / import" should {
+    "parse a module declaration" in {
+      parseProg("module foo.bar").decls shouldBe List(
+        ModuleDeclAST(List("foo", "bar")),
+      )
+    }
+    "parse a bare import" in {
+      parseProg("import math").decls shouldBe List(
+        ImportDeclAST(List("math"), Nil),
+      )
+    }
+    "parse a selective import" in {
+      parseProg("import math.{sqrt, abs}").decls shouldBe List(
+        ImportDeclAST(List("math"), List(
+          ImportSelector("sqrt"),
+          ImportSelector("abs"),
+        )),
+      )
+    }
+    "parse a selective import with as-rename" in {
+      parseProg("import linalg.dense.{Matrix, lu_decompose as lu}").decls shouldBe List(
+        ImportDeclAST(List("linalg", "dense"), List(
+          ImportSelector("Matrix"),
+          ImportSelector("lu_decompose", Some("lu")),
+        )),
+      )
+    }
+  }
+
+  // ========================================================================
+  // attributes
+  // ========================================================================
+
+  "attributes" should {
+    "parse @test on a def (on separate lines)" in {
+      val src =
+        """@test
+          |def test_addition() = 1""".stripMargin
+      parseProg(src).decls shouldBe List(
+        FunDeclAST("test_addition", Nil, None,
+          IntLitExpr(1),
+          attributes = List(Attribute("test"))),
+      )
+    }
+    "parse @strict on a def" in {
+      parseProg("@strict\ndef hot(a: [real]) = a").decls shouldBe List(
+        FunDeclAST("hot",
+          List(FunParam("a", ArrayType(NamedType("real")), ParamMode.Read)),
+          None,
+          VarRefExpr("a"),
+          attributes = List(Attribute("strict"))),
+      )
+    }
+    "parse @test module" in {
+      parseProg("@test module foo.tests").decls shouldBe List(
+        ModuleDeclAST(
+          List("foo", "tests"),
+          isTestOnly = true,
+          attributes = List(Attribute("test")),
+        ),
+      )
+    }
+    "parse @test\\nmodule (newline-separated)" in {
+      parseProg("@test\nmodule foo.tests").decls shouldBe List(
+        ModuleDeclAST(
+          List("foo", "tests"),
+          isTestOnly = true,
+          attributes = List(Attribute("test")),
+        ),
+      )
+    }
+  }
+
+  // ========================================================================
+  // if / for / while / return expressions
+  // ========================================================================
+
+  "if expressions" should {
+    "parse a single-line if/then/else" in {
+      parseExpr("if x then 1 else 2") shouldBe
+        IfExpr(VarRefExpr("x"), IntLitExpr(1), Some(IntLitExpr(2)))
+    }
+    "parse an if without else" in {
+      parseExpr("if x then 1") shouldBe
+        IfExpr(VarRefExpr("x"), IntLitExpr(1), None)
+    }
+    "honor the spec rule: `if a then b else c, d` is `(if a then b else c), d`" in {
+      parseExpr("if a then b else c, d") shouldBe
+        TupleExpr(List(
+          IfExpr(VarRefExpr("a"), VarRefExpr("b"), Some(VarRefExpr("c"))),
+          VarRefExpr("d"),
+        ))
+    }
+  }
+
+  "for expressions" should {
+    "parse a simple for with range" in {
+      parseExpr("for i in 0..n do print(i)") shouldBe
+        ForExpr(
+          VarPat("i"),
+          BinOpExpr("..", IntLitExpr(0), VarRefExpr("n")),
+          CallExpr(VarRefExpr("print"), List(VarRefExpr("i"))),
+        )
+    }
+    "parse for with paren-less tuple destructuring" in {
+      parseExpr("for k, x in enumerate(arr) do print(k)") shouldBe
+        ForExpr(
+          TuplePat(List(VarPat("k"), VarPat("x"))),
+          CallExpr(VarRefExpr("enumerate"), List(VarRefExpr("arr"))),
+          CallExpr(VarRefExpr("print"), List(VarRefExpr("k"))),
+        )
+    }
+  }
+
+  "while expressions" should {
+    "parse a simple while" in {
+      parseExpr("while x > 0 do print(x)") shouldBe
+        WhileExpr(
+          BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0)),
+          CallExpr(VarRefExpr("print"), List(VarRefExpr("x"))),
+        )
+    }
+  }
+
+  "return expressions" should {
+    "parse a return without value" in {
+      parseExpr("return") shouldBe ReturnExpr(None)
+    }
+    "parse a return with value" in {
+      parseExpr("return x + 1") shouldBe
+        ReturnExpr(Some(BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1))))
+    }
+  }
+
+  // ========================================================================
+  // Block-form lambda bodies
+  // ========================================================================
+
+  "block-form lambdas" should {
+    "parse a multi-statement lambda body" in {
+      val src =
+        """x ->
+          |  val y = x * x
+          |  y + 1""".stripMargin
+      parseExpr(src) shouldBe
+        LambdaExpr(List(LambdaParam("x", None)),
+          BlockExpr(
+            List(BlockDecl(ValDeclAST(VarPat("y"), None,
+              BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))))),
+            BinOpExpr("+", VarRefExpr("y"), IntLitExpr(1)),
+          ))
+    }
+  }
+
+  // ========================================================================
+  // Matrix multiplication (@) and rank-2 array literals
+  // ========================================================================
+
+  "matrix multiplication" should {
+    "parse the @ operator at multiplicative precedence" in {
+      parseExpr("A @ v") shouldBe
+        BinOpExpr("@", VarRefExpr("A"), VarRefExpr("v"))
+    }
+    "parse matmul with chaining" in {
+      parseExpr("A @ B @ v") shouldBe
+        BinOpExpr("@",
+          BinOpExpr("@", VarRefExpr("A"), VarRefExpr("B")),
+          VarRefExpr("v"))
+    }
+  }
+
+  "rank-2 array literals (nested)" should {
+    "parse as nested __array calls" in {
+      parseExpr("[[1.0, 2.0], [3.0, 4.0]]") shouldBe
+        CallExpr(VarRefExpr("__array"), List(
+          CallExpr(VarRefExpr("__array"), List(RealLitExpr(1.0), RealLitExpr(2.0))),
+          CallExpr(VarRefExpr("__array"), List(RealLitExpr(3.0), RealLitExpr(4.0))),
+        ))
+    }
+  }
+
+  // ========================================================================
+  // Whole programs from the spec examples
+  // ========================================================================
+
+  "whole-program shapes" should {
+    "parse the hello-world program" in {
+      val src =
+        """def main() =
+          |  print("Hello, Nex!")""".stripMargin
+      val prog = parseProg(src)
+      prog.decls.size shouldBe 1
+      prog.decls.head shouldBe a [FunDeclAST]
+      val fn = prog.decls.head.asInstanceOf[FunDeclAST]
+      fn.name shouldBe "main"
+      fn.params shouldBe Nil
+      fn.body shouldBe CallExpr(VarRefExpr("print"),
+        List(StringLitExpr("Hello, Nex!")))
+    }
+
+    "parse the hypotenuse + main program" in {
+      val src =
+        """def hypotenuse(a: real, b: real) = sqrt(a^2 + b^2)
+          |
+          |def main() =
+          |  print(s"hypotenuse(3, 4) = ${hypotenuse(3.0, 4.0)}")""".stripMargin
+      val prog = parseProg(src)
+      prog.decls.size shouldBe 2
+      prog.decls(0) shouldBe a [FunDeclAST]
+      prog.decls(1) shouldBe a [FunDeclAST]
+      prog.decls(0).asInstanceOf[FunDeclAST].name shouldBe "hypotenuse"
+      prog.decls(1).asInstanceOf[FunDeclAST].name shouldBe "main"
+    }
+
+    "parse a module declaration + imports + a function" in {
+      val src =
+        """module stats
+          |
+          |import math.{sqrt, abs}
+          |
+          |def mean(xs: [real]) = sum(xs) / to_real(length(xs))""".stripMargin
+      val prog = parseProg(src)
+      prog.decls.size shouldBe 3
+      prog.decls(0) shouldBe ModuleDeclAST(List("stats"))
+      prog.decls(1) shouldBe ImportDeclAST(List("math"), List(
+        ImportSelector("sqrt"),
+        ImportSelector("abs"),
+      ))
+      prog.decls(2) shouldBe a [FunDeclAST]
+    }
+
+    "parse an attribute-decorated test function" in {
+      val src =
+        """@test
+          |def test_addition() =
+          |  assert_eq(2 + 2, 4)""".stripMargin
+      val prog = parseProg(src)
+      prog.decls.size shouldBe 1
+      val fn = prog.decls.head.asInstanceOf[FunDeclAST]
+      fn.attributes shouldBe List(Attribute("test"))
+      fn.name shouldBe "test_addition"
+    }
+
+    "parse a struct + a function that uses it" in {
+      val src =
+        """struct Point
+          |  x: real
+          |  y: real
+          |end Point
+          |
+          |def distance(p1: Point, p2: Point) =
+          |  val dx = p1.x - p2.x
+          |  val dy = p1.y - p2.y
+          |  sqrt(dx^2 + dy^2)""".stripMargin
+      val prog = parseProg(src)
+      prog.decls.size shouldBe 2
+      prog.decls(0) shouldBe a [StructDeclAST]
+      prog.decls(1) shouldBe a [FunDeclAST]
+      val s = prog.decls(0).asInstanceOf[StructDeclAST]
+      s.name shouldBe "Point"
+      s.fields.map(_.name) shouldBe List("x", "y")
+    }
+  }

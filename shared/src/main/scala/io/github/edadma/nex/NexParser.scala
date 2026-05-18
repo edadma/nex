@@ -56,12 +56,44 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   // --- Program -----------------------------------------------------------
 
   lazy val program: PackratParser[ProgramAST] =
-    rep(Newline) ~> repsep(decl, rep1(Newline)) <~ rep(Newline) ^^ ProgramAST.apply
+    rep(Newline) ~> repsep(attributedDecl, rep1(Newline)) <~ rep(Newline) ^^ ProgramAST.apply
 
-  // --- Declarations (Pass 1) ----------------------------------------------
+  // --- Attribute prefix --------------------------------------------------
 
-  lazy val decl: PackratParser[DeclAST] =
-    valDecl | varDecl | constDecl
+  /** A declaration optionally preceded by one or more attributes (`@name`).
+    * Attributes may live on the same line as the decl or on prior lines.
+    */
+  lazy val attributedDecl: PackratParser[DeclAST] =
+    rep(attribute <~ rep(Newline)) ~ declBare ^^ {
+      case attrs ~ d => attachAttrs(d, attrs)
+    }
+
+  lazy val attribute: PackratParser[Attribute] =
+    "@" ~> ident ^^ Attribute.apply
+
+  private def attachAttrs(d: DeclAST, attrs: List[Attribute]): DeclAST =
+    if attrs.isEmpty then d else d match
+      case x: ValDeclAST    => x.copy(attributes = attrs)
+      case x: VarDeclAST    => x.copy(attributes = attrs)
+      case x: ConstDeclAST  => x.copy(attributes = attrs)
+      case x: FunDeclAST    => x.copy(attributes = attrs)
+      case x: StructDeclAST => x.copy(attributes = attrs)
+      case x: ModuleDeclAST =>
+        // `@test module foo.bar` — flip isTestOnly when the @test attr is present.
+        x.copy(
+          attributes = attrs,
+          isTestOnly = attrs.exists(_.name == "test") || x.isTestOnly,
+        )
+      case x: ImportDeclAST => x.copy(attributes = attrs)
+
+  // --- Declarations ------------------------------------------------------
+
+  /** All concrete declaration forms. */
+  lazy val declBare: PackratParser[DeclAST] =
+    moduleDecl | importDecl | defDecl | structDecl | valDecl | varDecl | constDecl
+
+  /** A declaration (without leading attributes) — used in block contexts. */
+  lazy val decl: PackratParser[DeclAST] = attributedDecl
 
   lazy val valDecl: PackratParser[DeclAST] =
     "val" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> expr) ^^ {
@@ -77,6 +109,112 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     "const" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> expr) ^^ {
       case pat ~ tyOpt ~ init => ConstDeclAST(pat, tyOpt, init)
     }
+
+  // --- def declarations --------------------------------------------------
+
+  lazy val defDecl: PackratParser[DeclAST] =
+    opt("private") ~ ("def" ~> ident) ~
+      ("(" ~> repsep(funParam, ",") <~ ")") ~
+      opt(":" ~> typeExpr) ~
+      ("=" ~> funBody) ~ opt(trailingEnd) ^^ {
+      case priv ~ name ~ params ~ ret ~ body ~ _ =>
+        FunDeclAST(name, params, ret, body, isPrivate = priv.isDefined)
+    }
+
+  lazy val funParam: PackratParser[FunParam] =
+    ident ~ ":" ~ opt("mut") ~ typeExpr ^^ {
+      case n ~ _ ~ mut ~ t =>
+        FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read)
+    }
+
+  /** Function body: either a single expression on the same line as `=`, or
+    * a Newline-Indent-block-Dedent block on the following indented line(s).
+    */
+  lazy val funBody: PackratParser[ExprAST] =
+    blockBody | expr
+
+  // --- struct declarations -----------------------------------------------
+
+  lazy val structDecl: PackratParser[DeclAST] =
+    opt("private") ~ ("struct" ~> ident) ~ blockOfFields ~ opt(trailingEnd) ^^ {
+      case priv ~ name ~ fields ~ _ =>
+        StructDeclAST(name, fields, isPrivate = priv.isDefined)
+    }
+
+  lazy val blockOfFields: PackratParser[List[StructField]] =
+    Newline ~> Indent ~> repsep(structField, rep1(Newline)) <~ rep(Newline) <~ Dedent
+
+  lazy val structField: PackratParser[StructField] =
+    ident ~ (":" ~> typeExpr) ^^ { case n ~ t => StructField(n, t) }
+
+  // --- module / import declarations --------------------------------------
+
+  lazy val moduleDecl: PackratParser[DeclAST] =
+    "module" ~> dottedName ^^ { path => ModuleDeclAST(path) }
+
+  lazy val dottedName: PackratParser[List[String]] =
+    rep1sep(ident, ".")
+
+  /** `import foo.bar` or `import foo.bar.{x, y as z}`. */
+  lazy val importDecl: PackratParser[DeclAST] =
+    "import" ~> rep1sep(ident, ".") ~ opt("." ~> selectorBlock) ^^ {
+      case path ~ selsOpt =>
+        ImportDeclAST(path, selsOpt.getOrElse(Nil))
+    }
+
+  lazy val selectorBlock: PackratParser[List[ImportSelector]] =
+    "{" ~> repsep(importSelector, ",") <~ "}"
+
+  lazy val importSelector: PackratParser[ImportSelector] =
+    ident ~ opt("as" ~> ident) ^^ {
+      case n ~ alias => ImportSelector(n, alias)
+    }
+
+  // --- end markers -------------------------------------------------------
+
+  /** Optional `end [Name]` or `end [keyword]` trailer after a block. The
+    * parser doesn't enforce that the name matches the construct it closes;
+    * that's the analyzer's job.
+    */
+  lazy val endMarker: PackratParser[Any] =
+    "end" ~> opt(ident | "if" | "for" | "while" | "do" | "def" | "struct" | "module")
+
+  /** End marker preceded by one or more Newlines. Used after a block whose
+    * Dedent already emitted a Newline (since `newlineAfterDedent = true`).
+    */
+  lazy val trailingEnd: PackratParser[Any] =
+    rep1(Newline) ~> endMarker
+
+  // --- Blocks ------------------------------------------------------------
+
+  /** A block body introduced by Newline-Indent. Used as a `def` body, the
+    * body of a block-form lambda, the body of a multi-statement `if` /
+    * `for` / `while` branch.
+    */
+  lazy val blockBody: PackratParser[ExprAST] =
+    Newline ~> Indent ~> block <~ Dedent
+
+  /** Block: one or more decls / exprs separated by newlines. The last item
+    * is the block's result expression. If the block is a single expression
+    * with no preceding items, return it directly (no `BlockExpr` wrapper).
+    * If the last item is a decl, the implicit result is `unit`.
+    */
+  lazy val block: PackratParser[ExprAST] =
+    rep1sep(blockItem, rep1(Newline)) <~ rep(Newline) ^^ { items =>
+      items.last match
+        case Right(e) if items.size == 1 => e
+        case Right(e) =>
+          BlockExpr(items.init.map(toBlockItem), e)
+        case Left(_) =>
+          BlockExpr(items.map(toBlockItem), UnitLitExpr())
+    }
+
+  lazy val blockItem: PackratParser[Either[DeclAST, ExprAST]] =
+    declBare ^^ Left.apply | exprNoTuple ^^ Right.apply
+
+  private def toBlockItem(item: Either[DeclAST, ExprAST]): BlockItem = item match
+    case Left(d)  => BlockDecl(d)
+    case Right(e) => BlockExprItem(e)
 
   // --- Patterns -----------------------------------------------------------
 
@@ -150,13 +288,16 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val exprNoTuple: PackratParser[ExprAST] = arrowExpr
 
   /** Lambdas — `param-shape -> body`. Right-associative: `x -> y -> z`
-    * parses as `x -> (y -> z)`. The body is a single expression in Pass 1.
+    * parses as `x -> (y -> z)`. Body may be a single expression OR a
+    * Newline-Indent block.
     */
   lazy val arrowExpr: PackratParser[ExprAST] =
-    lambdaParamShape ~ ("->" ~> arrowExpr) ^^ {
+    lambdaParamShape ~ ("->" ~> arrowBody) ^^ {
       case ps ~ body => LambdaExpr(ps, body)
     } |
     orExpr
+
+  lazy val arrowBody: PackratParser[ExprAST] = blockBody | arrowExpr
 
   /** The "shape" before a lambda arrow: a single bare identifier, or a
     * parenthesized list of named (optionally typed) parameters.
@@ -269,6 +410,10 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   // --- Primary expressions -----------------------------------------------
 
   lazy val primaryExpr: PackratParser[ExprAST] =
+    ifExpr                                                       |
+    forExpr                                                      |
+    whileExpr                                                    |
+    returnExpr                                                   |
     numericLit       ^^ parseNumeric                             |
     interpStringLit                                              |
     stringLit        ^^ StringLitExpr.apply                      |
@@ -277,6 +422,37 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     arrayLit                                                     |
     parenOrTupleOrUnit                                           |
     ident            ^^ VarRefExpr.apply
+
+  // --- Control-flow expressions ------------------------------------------
+
+  /** `if cond then thenBranch [else elseBranch]`. Branches use `exprNoTuple`
+    * so a trailing `, x` at the outer level binds the if-expression as the
+    * first tuple element rather than extending the else branch (spec §4.3
+    * says comma is the loosest operator).
+    */
+  lazy val ifExpr: PackratParser[ExprAST] =
+    ("if" ~> exprNoTuple) ~ ("then" ~> branchBody) ~ opt("else" ~> branchBody) ~ opt(trailingEnd) ^^ {
+      case cond ~ thenB ~ elseB ~ _ => IfExpr(cond, thenB, elseB)
+    }
+
+  lazy val forExpr: PackratParser[ExprAST] =
+    ("for" ~> patternList) ~ ("in" ~> exprNoTuple) ~ ("do" ~> branchBody) ~ opt(trailingEnd) ^^ {
+      case pat ~ it ~ body ~ _ => ForExpr(pat, it, body)
+    }
+
+  lazy val whileExpr: PackratParser[ExprAST] =
+    ("while" ~> exprNoTuple) ~ ("do" ~> branchBody) ~ opt(trailingEnd) ^^ {
+      case cond ~ body ~ _ => WhileExpr(cond, body)
+    }
+
+  lazy val returnExpr: PackratParser[ExprAST] =
+    "return" ~> opt(exprNoTuple) ^^ ReturnExpr.apply
+
+  /** Branch body — used for `then` / `else` of `if` and `do` of `for` /
+    * `while`. Either a single inline expression or a Newline-Indent block.
+    */
+  lazy val branchBody: PackratParser[ExprAST] =
+    blockBody | exprNoTuple
 
   /** Match the lexer's pre-split [[NexLexer.InterpStringTok]] and convert
     * its parts to AST nodes. The `${...}` body strings are re-parsed using

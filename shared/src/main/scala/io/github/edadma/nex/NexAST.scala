@@ -10,21 +10,78 @@ import scala.util.parsing.input.Positional
 case class ProgramAST(decls: List[DeclAST]) extends Positional
 
 // ============================================================================
-// Declarations (Pass 1: val / var / const only)
+// Declarations
 // ============================================================================
 
-sealed trait DeclAST extends Positional
+sealed trait DeclAST extends Positional:
+  /** Attributes (`@test`, `@strict`, ...) attached to this declaration. */
+  def attributes: List[Attribute]
 
-/** `val pattern [: type] = expr`. The pattern may bind one name (`val x`)
-  * or many via tuple destructuring (`val a, b, c`).
-  */
-case class ValDeclAST(pat: PatternAST, typ: Option[TypeAST], init: ExprAST) extends DeclAST
+/** `val pattern [: type] = expr`. */
+case class ValDeclAST(
+    pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
 
 /** `var pattern [: type] = expr`. */
-case class VarDeclAST(pat: PatternAST, typ: Option[TypeAST], init: ExprAST) extends DeclAST
+case class VarDeclAST(
+    pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
 
 /** `const NAME [: type] = constExpr`. */
-case class ConstDeclAST(pat: PatternAST, typ: Option[TypeAST], init: ExprAST) extends DeclAST
+case class ConstDeclAST(
+    pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+/** `def name(params) [: returnType] = body`. */
+case class FunDeclAST(
+    name:       String,
+    params:     List[FunParam],
+    returnType: Option[TypeAST],
+    body:       ExprAST,
+    isPrivate:  Boolean = false,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+/** A function-declaration parameter. `mode` is `read` (inferred) or `mut`
+  * (declared) per spec §6.4.
+  */
+case class FunParam(name: String, typ: TypeAST, mode: ParamMode)
+
+enum ParamMode:
+  case Read   // inferred default
+  case Mut    // explicit `mut`
+
+/** `struct Name; field: T; ...; end [Name]`. */
+case class StructDeclAST(
+    name:       String,
+    fields:     List[StructField],
+    isPrivate:  Boolean = false,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+case class StructField(name: String, typ: TypeAST) extends Positional
+
+/** `module foo.bar`. The path is the dotted-name sequence. */
+case class ModuleDeclAST(
+    path:       List[String],
+    isTestOnly: Boolean = false,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+/** `import foo.bar.{x, y as z}`. */
+case class ImportDeclAST(
+    path:       List[String],
+    selectors:  List[ImportSelector],
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+case class ImportSelector(name: String, alias: Option[String] = None)
+
+/** Attribute, e.g. `@test`, `@strict`. */
+case class Attribute(name: String) extends Positional
 
 // ============================================================================
 // Patterns (the left-hand side of a binding)
@@ -148,6 +205,22 @@ case class LambdaExpr(params: List[LambdaParam], body: ExprAST) extends ExprAST
 
 /** Tuple expression: `a, b, c` or `(a, b, c)`. Must have ≥ 2 elements. */
 case class TupleExpr(elems: List[ExprAST]) extends ExprAST
+
+// -- Control flow ----------------------------------------------------------
+
+/** `if cond then thenBranch [else elseBranch]`. If `elseBranch` is `None`,
+  * the expression is `unit`-typed.
+  */
+case class IfExpr(cond: ExprAST, thenBranch: ExprAST, elseBranch: Option[ExprAST]) extends ExprAST
+
+/** `for pat in iterable do body`. */
+case class ForExpr(pat: PatternAST, iterable: ExprAST, body: ExprAST) extends ExprAST
+
+/** `while cond do body`. */
+case class WhileExpr(cond: ExprAST, body: ExprAST) extends ExprAST
+
+/** `return [expr]` — early exit from the enclosing function. */
+case class ReturnExpr(value: Option[ExprAST]) extends ExprAST
 
 // -- Block ----------------------------------------------------------------
 
