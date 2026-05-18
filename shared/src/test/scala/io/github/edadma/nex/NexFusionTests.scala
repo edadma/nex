@@ -93,8 +93,8 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
       val bin  = loop.body.asInstanceOf[TBinOp]
       bin.op shouldBe "-"
-      bin.lhs shouldBe a[TIndex]   // array element on the left
-      bin.rhs shouldBe a[TVarRef]  // scalar on the right
+      bin.lhs shouldBe a[TFlatIndex] // array element on the left
+      bin.rhs shouldBe a[TVarRef]    // scalar on the right
     }
 
     "rewrite rank-1 scalar - arr with the right operand order in the body" in {
@@ -104,15 +104,8 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
       val bin  = loop.body.asInstanceOf[TBinOp]
       bin.op shouldBe "-"
-      bin.lhs shouldBe a[TVarRef]  // scalar on the left
-      bin.rhs shouldBe a[TIndex]   // array element on the right
-    }
-
-    "leave rank-2 element-wise alone (chunk 1 is rank-1 only)" in {
-      val body = fBodyAfterFusion("""
-        |def f(a: [[real]], b: [[real]]) = a + b
-      """.stripMargin)
-      body shouldBe a[TElementWise]
+      bin.lhs shouldBe a[TVarRef]    // scalar on the left
+      bin.rhs shouldBe a[TFlatIndex] // array element on the right
     }
 
     "leave TMatMul alone (it's not a fusion target)" in {
@@ -439,12 +432,131 @@ class NexFusionTests extends AnyWordSpec with Matchers:
     }
   }
 
+  // ==========================================================================
+  // Rank-2 fusion (chunk 5) — flat-loop body via TFlatIndex; result wraps
+  // in a rank-2 array via TFusedLoop.cols.
+  // ==========================================================================
+
+  "rank-2 fusion" should {
+
+    "rewrite rank-2 array + array into TBlock(TFusedLoop) with cols set" in {
+      val body = fBodyAfterFusion("""
+        |def f(a: [[real]], b: [[real]]) = a + b
+      """.stripMargin)
+      body shouldBe a[TBlock]
+      val block = body.asInstanceOf[TBlock]
+      block.result shouldBe a[TFusedLoop]
+      val loop = block.result.asInstanceOf[TFusedLoop]
+      loop.tpe shouldBe TyArray(TyReal, 2)
+      loop.cols should not be None
+      // Loop body uses TFlatIndex (rank-agnostic flat access).
+      val bin = loop.body.asInstanceOf[TBinOp]
+      bin.lhs shouldBe a[TFlatIndex]
+      bin.rhs shouldBe a[TFlatIndex]
+    }
+
+    "rewrite rank-2 scalar * array into TBlock(TFusedLoop)" in {
+      val body = fBodyAfterFusion("""
+        |def f(a: [[real]]) = 2.0 * a
+      """.stripMargin)
+      val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
+      loop.tpe shouldBe TyArray(TyReal, 2)
+      loop.cols should not be None
+    }
+
+    "rewrite rank-2 arr - scalar with the right operand order in the body" in {
+      val body = fBodyAfterFusion("""
+        |def f(a: [[integer]]) = a - 1
+      """.stripMargin)
+      val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
+      val bin  = loop.body.asInstanceOf[TBinOp]
+      bin.op shouldBe "-"
+      bin.lhs shouldBe a[TFlatIndex] // element on the left
+      bin.rhs shouldBe a[TVarRef]    // scalar on the right
+    }
+
+    "leave `map(m, lam)` alone for rank-2 source (type-system mismatch)" in {
+      // `map`'s elaborator-result type is hardcoded rank-1 even when the
+      // source is rank-2 (where mapArray preserves shape at runtime).
+      // Fusing under that type would produce a flat rank-1 result that
+      // doesn't match the un-fused runtime shape. NexFusion deliberately
+      // doesn't fuse rank-2 map until the elaborator gets per-source-rank
+      // typing for the prelude HOFs — TODO.
+      val body = fBodyAfterFusion("""
+        |def f(m: [[integer]]) = map(m, x -> x * 2)
+      """.stripMargin)
+      val call = body.asInstanceOf[TCall]
+      call.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
+    }
+
+    "leave TMatMul alone (still not a fusion target)" in {
+      val body = fBodyAfterFusion("""
+        |def f(a: [[real]], b: [[real]]) = a @ b
+      """.stripMargin)
+      body shouldBe a[TMatMul]
+    }
+
+    "rank-2 element-wise add: fused matches un-fused" in {
+      val src = """
+        |def main() =
+        |  val a = [[1, 2], [3, 4]]
+        |  val b = [[10, 20], [30, 40]]
+        |  print(a + b)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[11, 22], [33, 44]]\n"
+    }
+
+    "rank-2 broadcast scalar * matrix: fused matches un-fused" in {
+      val src = """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(10 * m)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[10, 20, 30], [40, 50, 60]]\n"
+    }
+
+    "rank-2 broadcast matrix - scalar (non-commutative): fused matches un-fused" in {
+      val src = """
+        |def main() =
+        |  val m = [[10, 20], [30, 40]]
+        |  print(m - 1)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[9, 19], [29, 39]]\n"
+    }
+
+    "rank-2 chain `2 * a + b` collapses to a single TFusedLoop" in {
+      val body = fBodyAfterFusion("""
+        |def f(a: [[integer]], b: [[integer]]) = 2 * a + b
+      """.stripMargin)
+      val block = body.asInstanceOf[TBlock]
+      block.result shouldBe a[TFusedLoop]
+      val loop = block.result.asInstanceOf[TFusedLoop]
+      loop.cols should not be None
+      countFusedLoops(loop.body) shouldBe 0
+    }
+
+    "rank-2 chain `2 * a + b` runs the same fused and un-fused" in {
+      val src = """
+        |def main() =
+        |  val a = [[1, 2], [3, 4]]
+        |  val b = [[100, 200], [300, 400]]
+        |  print(2 * a + b)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[102, 204], [306, 408]]\n"
+    }
+  }
+
   /** Recursively count TFusedLoop nodes in an expression tree (for chain-
     * inlining assertions). Walks every TExpr variant that can contain
     * children.
     */
   private def countFusedLoops(e: TExpr): Int = e match
-    case TFusedLoop(_, len, body, _, _) => 1 + countFusedLoops(len) + countFusedLoops(body)
+    case TFusedLoop(_, len, body, cols, _, _) => 1 + countFusedLoops(len) + countFusedLoops(body) + cols.map(countFusedLoops).getOrElse(0)
+    case TFlatIndex(a, i, _, _)         => countFusedLoops(a) + countFusedLoops(i)
     case TBinOp(_, l, r, _, _)          => countFusedLoops(l) + countFusedLoops(r)
     case TUnaryOp(_, x, _, _)           => countFusedLoops(x)
     case TJuxtapose(c, b, _, _)         => countFusedLoops(c) + countFusedLoops(b)

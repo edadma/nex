@@ -504,11 +504,12 @@ class NexInterpreter:
     case TMatMul(l, r, p, _) =>
       matMul(evalExpr(l, env), evalExpr(r, env), p)
 
-    case TFusedLoop(loopVar, length, body, p, _) =>
-      // Materialize a rank-1 array by evaluating `body` once per i in
-      // 0..length-1 with `loopVar` bound to i. Introduced by NexFusion;
-      // the un-fused TElementWise/TBroadcast path is still valid and
-      // produces the same result.
+    case TFusedLoop(loopVar, length, body, cols, p, _) =>
+      // Materialize an array by evaluating `body` once per flat i in
+      // 0..length-1 with `loopVar` bound to i. cols=None → rank-1
+      // (VArray1); cols=Some(c) → rank-2 (VArray2(rows=length/c, c)).
+      // Introduced by NexFusion; the un-fused TElementWise/TBroadcast/
+      // map paths are still valid and produce the same result.
       val n = evalExpr(length, env) match
         case VInt(v) => v.toInt
         case other   => trap(s"TFusedLoop: length not an integer, got ${formatValue(other)}", p)
@@ -519,7 +520,26 @@ class NexInterpreter:
         frame.define(loopVar.id, VInt(i.toLong))
         out += evalExpr(body, frame)
         i += 1
-      VArray1(out)
+      cols match
+        case None => VArray1(out)
+        case Some(cExpr) =>
+          val c = evalExpr(cExpr, env) match
+            case VInt(v) => v.toInt
+            case other   => trap(s"TFusedLoop: cols not an integer, got ${formatValue(other)}", p)
+          if c <= 0 then trap(s"TFusedLoop: cols must be positive, got $c", p)
+          VArray2(out, n / c, c)
+
+    case TFlatIndex(arr, idx, p, _) =>
+      // Flat single-element access, rank-agnostic. Used inside fused-loop
+      // bodies so the same loop shape works for rank-1 and rank-2 sources.
+      val av = evalExpr(arr, env)
+      val iv = evalExpr(idx, env) match
+        case VInt(v) => v.toInt
+        case other   => trap(s"TFlatIndex: idx not an integer, got ${formatValue(other)}", p)
+      av match
+        case VArray1(b)       => b(iv)
+        case VArray2(b, _, _) => b(iv)
+        case other            => trap(s"TFlatIndex: not an array: ${formatValue(other)}", p)
 
     case TCall(callee, args, p, _) =>
       // Struct construction: callee is a TypeName symbol.

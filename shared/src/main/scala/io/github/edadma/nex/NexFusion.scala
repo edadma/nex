@@ -33,6 +33,16 @@ class NexFusion(symbols: SymbolTable):
       .find(s => s.kind == SymKind.Prelude && s.name == "length")
       .getOrElse(sys.error("NexFusion: prelude `length` not in symbol table"))
 
+  private lazy val preludeRows: Symbol =
+    symbols.all
+      .find(s => s.kind == SymKind.Prelude && s.name == "rows")
+      .getOrElse(sys.error("NexFusion: prelude `rows` not in symbol table"))
+
+  private lazy val preludeCols: Symbol =
+    symbols.all
+      .find(s => s.kind == SymKind.Prelude && s.name == "cols")
+      .getOrElse(sys.error("NexFusion: prelude `cols` not in symbol table"))
+
   /** Symbol-id → fused TLambda for `val f = x -> body` bindings discovered
     * during the walk. Populated as we process top-level [[TTopBinding]]s in
     * order, and as we walk block items inside function bodies. Consumed by
@@ -112,7 +122,8 @@ class NexFusion(symbols: SymbolTable):
     case TMap(a, f, p, t)              => TMap(fuseExpr(a), fuseExpr(f), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(fuseExpr(a), fuseExpr(i), fuseExpr(f), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(fuseExpr(l), fuseExpr(r), p, t)
-    case TFusedLoop(lv, len, b, p, t)  => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), p, t)
+    case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
+    case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(fuseExpr(x))
@@ -122,11 +133,14 @@ class NexFusion(symbols: SymbolTable):
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
        | _: TUnitLit | _: TVarRef => e
 
-  /** Rule 1a: rank-1 `lhs op rhs` (both arrays) → fused loop. With chain
-    * inlining: each operand that's already a fused subexpression
-    * (`TBlock` wrapping a `TFusedLoop`) has its bindings hoisted to the
+  /** Rule 1a: `lhs op rhs` (both arrays, rank-1 OR rank-2) → fused loop.
+    * For rank-2 the loop is FLAT — single index 0..rows*cols-1 — with the
+    * result wrapped in a [[TFusedLoop]] carrying `cols = Some(c)` so the
+    * interpreter materialises a [[VArray2]] of the right shape. Chain
+    * inlining: each operand that's already a fused subexpression (a
+    * `TBlock` wrapping a `TFusedLoop`) has its bindings hoisted to the
     * outer block and its body inlined in place of `arr[i]` — collapsing
-    * nested fused loops into one.
+    * nested fused loops into one regardless of rank.
     */
   private def fuseElementWise(
     op: String,
@@ -135,24 +149,26 @@ class NexFusion(symbols: SymbolTable):
     pos: Option[Position],
     tpe: Type,
   ): Option[TExpr] =
-    elemTypeIfRank1(tpe).map { elemT =>
+    arrayInfo(tpe).map { case (elemT, rank) =>
       val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
       val iRef = TVarRef(iSym, pos, TyInteger)
-      val (lBindings, lElem, lLen) = sourceOperand(l, iSym, iRef, pos)
-      val (rBindings, rElem, _)    = sourceOperand(r, iSym, iRef, pos)
-      val body                     = TBinOp(op, lElem, rElem, pos, elemT)
+      val (lBindings, lElem, lLen, lCols) = sourceOperand(l, iSym, iRef, pos)
+      val (rBindings, rElem, _, _)        = sourceOperand(r, iSym, iRef, pos)
+      val body                            = TBinOp(op, lElem, rElem, pos, elemT)
+      val cols                            = if rank == 2 then lCols else None
       TBlock(
         items  = lBindings ++ rBindings,
-        result = TFusedLoop(iSym, lLen, body, pos, tpe),
+        result = TFusedLoop(iSym, lLen, body, cols, pos, tpe),
         pos    = pos,
         tpe    = tpe,
       )
     }
 
-  /** Rule 1b: rank-1 broadcast (`scalar op arr` or `arr op scalar`) → fused
-    * loop. `scalarFirst` is preserved so the body builds the operands in
-    * the right order. Chain inlining applies to `arr` (the scalar is
-    * always evaluated once via a temp).
+  /** Rule 1b: broadcast (`scalar op arr` or `arr op scalar`, rank-1 OR
+    * rank-2) → fused loop. `scalarFirst` is preserved so the body builds
+    * the operands in the right order. Chain inlining applies to `arr`
+    * (the scalar is always evaluated once via a temp). For rank-2 the
+    * loop iterates flat and the result wraps in a rank-2 array via cols.
     */
   private def fuseBroadcast(
     scalar: TExpr,
@@ -162,18 +178,19 @@ class NexFusion(symbols: SymbolTable):
     pos: Option[Position],
     tpe: Type,
   ): Option[TExpr] =
-    elemTypeIfRank1(tpe).map { elemT =>
+    arrayInfo(tpe).map { case (elemT, rank) =>
       val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
       val iRef = TVarRef(iSym, pos, TyInteger)
       val sSym = symbols.mint("$fused_s", scalar.tpe, SymKind.Local)
       val sRef = TVarRef(sSym, pos, scalar.tpe)
-      val (aBindings, aElem, aLen) = sourceOperand(arr, iSym, iRef, pos)
+      val (aBindings, aElem, aLen, aCols) = sourceOperand(arr, iSym, iRef, pos)
       val body =
         if scalarFirst then TBinOp(op, sRef, aElem, pos, elemT)
         else                TBinOp(op, aElem, sRef, pos, elemT)
+      val cols = if rank == 2 then aCols else None
       TBlock(
         items  = TBlockBinding(sSym, BindingKind.Val, scalar) :: aBindings,
-        result = TFusedLoop(iSym, aLen, body, pos, tpe),
+        result = TFusedLoop(iSym, aLen, body, cols, pos, tpe),
         pos    = pos,
         tpe    = tpe,
       )
@@ -213,17 +230,29 @@ class NexFusion(symbols: SymbolTable):
       case TVarRef(sym, _, _)                            => lambdaBindings.get(sym.id)
       case _                                             => None
 
-    (resolved, elemTypeIfRank1(tpe)) match
-      case (Some(lam), Some(_)) if lam.params.size == 1 =>
+    // `map`'s elaborator type is always rank-1 (`TyArray(ret, 1)`) — see
+    // `inferPreludeHOFCall` — but the runtime `mapArray` preserves the
+    // source's rank for rank-2 inputs (returns `VArray2`). That makes
+    // `tpe`-driven fusion unsafe for rank-2 sources: a fused loop using
+    // the elaborator's rank-1 type would produce a flat rank-1 result
+    // that doesn't match the un-fused runtime shape. Skip fusing rank-2
+    // `map(...)` until the elaborator types `map` per-source-rank.
+    val arrIsRank2 = arr.tpe match
+      case TyArray(_, 2) => true
+      case _             => false
+
+    (resolved, arrayInfo(tpe)) match
+      case (Some(lam), Some((_, rank))) if lam.params.size == 1 && !arrIsRank2 =>
         val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
         val iRef = TVarRef(iSym, pos, TyInteger)
-        val (aBindings, aElem, aLen) = sourceOperand(arr, iSym, iRef, pos)
+        val (aBindings, aElem, aLen, aCols) = sourceOperand(arr, iSym, iRef, pos)
         val paramId = lam.params.head.id
         val body    = subst(lam.body, paramId, aElem)
+        val cols    = if rank == 2 then aCols else None
         Some(
           TBlock(
             items  = aBindings,
-            result = TFusedLoop(iSym, aLen, body, pos, tpe),
+            result = TFusedLoop(iSym, aLen, body, cols, pos, tpe),
             pos    = pos,
             tpe    = tpe,
           )
@@ -235,38 +264,48 @@ class NexFusion(symbols: SymbolTable):
     *     single new temp binding, or the hoisted bindings from an inner
     *     fused subexpression).
     *   - `elemExpr`: the expression to use in the body in place of
-    *     `arr[outerIdx]`. For a non-fused operand it's `tmp[outerIdx]`;
-    *     for a fused operand it's the inner body with the inner loop
-    *     variable substituted to `outerIdx`.
-    *   - `lenExpr`: the loop's length. Element-wise requires matching
-    *     shapes; we use the first operand's length as the canonical one
-    *     (the second is checked at runtime, future work).
+    *     `arr[outerIdx]`. For a non-fused operand it's `TFlatIndex(tmp,
+    *     outerIdx)`; for a fused operand it's the inner body with the
+    *     inner loop variable substituted to `outerIdx`.
+    *   - `lenExpr`: the loop's total flat length. Rank-1 → `length(tmp)`;
+    *     rank-2 → `rows(tmp) * cols(tmp)`. Element-wise requires matching
+    *     shapes; we use the first operand's length as canonical (the
+    *     second is checked at runtime by the original semantics — future
+    *     work for the fused path).
+    *   - `colsExpr`: `Some(cols(tmp))` if the source is rank-2, `None`
+    *     otherwise. Only used when the OUTER result is rank-2.
     */
   private def sourceOperand(
     e: TExpr,
     outerIdx: Symbol,
     outerIdxRef: TExpr,
     pos: Option[Position],
-  ): (List[TBlockItem], TExpr, TExpr) =
+  ): (List[TBlockItem], TExpr, TExpr, Option[TExpr]) =
     asFusedSource(e) match
-      case Some((innerBindings, innerIdx, innerLen, innerBody)) =>
+      case Some((innerBindings, innerIdx, innerLen, innerCols, innerBody)) =>
         val accessExpr = subst(innerBody, innerIdx.id, outerIdxRef)
         val lenExpr    = subst(innerLen,  innerIdx.id, outerIdxRef)
-        (innerBindings, accessExpr, lenExpr)
+        val colsExpr   = innerCols.map(subst(_, innerIdx.id, outerIdxRef))
+        (innerBindings, accessExpr, lenExpr, colsExpr)
       case None =>
-        val tmp    = symbols.mint("$fused_a", e.tpe, SymKind.Local)
-        val ref    = TVarRef(tmp, pos, e.tpe)
-        val elemT  = elemTypeIfRank1(e.tpe).getOrElse(TyUnknown)
-        val access = TIndex(ref, List(outerIdxRef), pos, elemT)
-        (List(TBlockBinding(tmp, BindingKind.Val, e)), access, lengthOf(ref, pos))
+        val tmp           = symbols.mint("$fused_a", e.tpe, SymKind.Local)
+        val ref           = TVarRef(tmp, pos, e.tpe)
+        val (elemT, rank) = arrayInfo(e.tpe).getOrElse((TyUnknown, 1))
+        val access        = TFlatIndex(ref, outerIdxRef, pos, elemT)
+        val len =
+          if rank == 1 then lengthOf(ref, pos)
+          else TBinOp("*", rowsOf(ref, pos), colsOf(ref, pos), pos, TyInteger)
+        val cols = if rank == 2 then Some(colsOf(ref, pos)) else None
+        (List(TBlockBinding(tmp, BindingKind.Val, e)), access, len, cols)
 
   /** Match the TBlock(bindings, TFusedLoop) shape produced by an earlier
-    * fuseElementWise / fuseBroadcast call. Returns the bindings, inner
-    * loop variable, inner length, and inner body if so; otherwise None.
+    * fuseElementWise / fuseBroadcast / fuseMap call. Returns the bindings,
+    * inner loop variable, inner length, inner cols (None for rank-1, Some
+    * for rank-2), and inner body if so; otherwise None.
     */
-  private def asFusedSource(e: TExpr): Option[(List[TBlockItem], Symbol, TExpr, TExpr)] = e match
-    case TBlock(items, TFusedLoop(lv, len, body, _, _), _, _) =>
-      Some((items, lv, len, body))
+  private def asFusedSource(e: TExpr): Option[(List[TBlockItem], Symbol, TExpr, Option[TExpr], TExpr)] = e match
+    case TBlock(items, TFusedLoop(lv, len, body, cols, _, _), _, _) =>
+      Some((items, lv, len, cols, body))
     case _ => None
 
   /** Capture-free substitution: replace every TVarRef whose Symbol id
@@ -305,11 +344,12 @@ class NexFusion(symbols: SymbolTable):
     case TMap(a, f, p, t)              => TMap(subst(a, fromId, to), subst(f, fromId, to), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(subst(a, fromId, to), subst(i, fromId, to), subst(f, fromId, to), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(subst(l, fromId, to), subst(r, fromId, to), p, t)
-    case TFusedLoop(lv, len, b, p, t)  =>
+    case TFusedLoop(lv, len, b, cols, p, t) =>
       // The inner loop's own loopVar shadows ours (uniquely minted, but
       // be defensive): don't substitute under a binder for the same id.
       if lv.id == fromId then e
-      else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), p, t)
+      else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), cols.map(subst(_, fromId, to)), p, t)
+    case TFlatIndex(a, i, p, t)        => TFlatIndex(subst(a, fromId, to), subst(i, fromId, to), p, t)
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(subst(x, fromId, to))
@@ -326,11 +366,33 @@ class NexFusion(symbols: SymbolTable):
       TyInteger,
     )
 
-  /** Returns `Some(elem)` iff the type is a rank-1 array — otherwise None.
-    * Rank-2 fusion is chunk 3; bool-result fusion (comparison broadcast)
-    * is also rank-1 but the body's TBinOp returns bool — handled by the
-    * same path.
+  /** Build a `rows(arr)` call against the prelude `rows` symbol. Used for
+    * rank-2 sources to compute the total flat element count `rows * cols`. */
+  private def rowsOf(arr: TExpr, pos: Option[Position]): TExpr =
+    TCall(
+      TVarRef(preludeRows, pos, preludeRows.tpe),
+      List(arr),
+      pos,
+      TyInteger,
+    )
+
+  /** Build a `cols(arr)` call against the prelude `cols` symbol. Used for
+    * rank-2 sources both for the flat element count and to thread the
+    * column dimension into [[TFusedLoop.cols]]. */
+  private def colsOf(arr: TExpr, pos: Option[Position]): TExpr =
+    TCall(
+      TVarRef(preludeCols, pos, preludeCols.tpe),
+      List(arr),
+      pos,
+      TyInteger,
+    )
+
+  /** Returns `Some((elem, rank))` iff the type is a rank-1 OR rank-2 array
+    * — otherwise None. Bool-result fusion (comparison broadcast) flows
+    * through the same path; the body's TBinOp returns bool but the result
+    * array still has a known element type.
     */
-  private def elemTypeIfRank1(t: Type): Option[Type] = t match
-    case TyArray(elem, 1) => Some(elem)
+  private def arrayInfo(t: Type): Option[(Type, Int)] = t match
+    case TyArray(elem, 1) => Some((elem, 1))
+    case TyArray(elem, 2) => Some((elem, 2))
     case _                => None

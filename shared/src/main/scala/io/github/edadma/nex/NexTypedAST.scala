@@ -135,19 +135,40 @@ case class TReduce(arr: TExpr, init: TExpr, fn: TExpr, pos: Option[Position] = N
 case class TMatMul(lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
 /** A fused-loop array producer. The result is an array `[body(i) for i in
-  * 0..length]` — `loopVar` is the integer index bound during body evaluation;
-  * `length` is an expression evaluating to TyInteger; `body` evaluates once
-  * per iteration in a scope where `loopVar` resolves to the current i.
+  * 0..length]` — `loopVar` is the integer flat index bound during body
+  * evaluation; `length` is the TOTAL element count (rows*cols for rank-2);
+  * `body` evaluates once per iteration in a scope where `loopVar` resolves
+  * to the current flat index. Source arrays are accessed through
+  * [[TFlatIndex]] so rank-1 and rank-2 share the same loop shape.
+  *
+  *  - `cols = None` (chunks 1–4) — the result is rank-1 (`VArray1`).
+  *  - `cols = Some(c)` (chunk 5) — the result is rank-2 (`VArray2` with
+  *    `rows = length / c`, `cols = c`). The row-major flat layout matches
+  *    [[NexInterpreter.VArray2]]'s storage so a single linear loop fills
+  *    the buffer in-order.
   *
   * Introduced by [[NexFusion]] (Stage 4, opt-in) as the rewrite target for
-  * [[TElementWise]] / [[TBroadcast]] and — eventually — map/reduce/filter
-  * call sites. A fusion pass that combines chains rewrites nested
-  * TFusedLoop expressions into a single loop with merged body.
-  *
-  * Status as of chunk 1: only rank-1 element-wise and broadcast get
-  * rewritten; rank-2 still goes through TElementWise/TBroadcast.
+  * [[TElementWise]] / [[TBroadcast]] / `map(...)` call sites. A fusion
+  * pass that combines chains rewrites nested TFusedLoop expressions into a
+  * single loop with merged body.
   */
-case class TFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+case class TFusedLoop(
+    loopVar: Symbol,
+    length:  TExpr,
+    body:    TExpr,
+    cols:    Option[TExpr] = None,
+    pos:     Option[Position] = None,
+    tpe:     Type = TyUnknown,
+) extends TExpr
+
+/** Flat single-element access into an array regardless of rank — rank-1
+  * indexes directly into the buffer; rank-2 indexes into the row-major
+  * flat buffer (so `a[i*cols + j]` semantics are the caller's job). Used
+  * exclusively by [[NexFusion]] inside [[TFusedLoop]] bodies so the loop
+  * can iterate one flat index across both ranks. The interpreter handles
+  * both `VArray1` and `VArray2` uniformly: `buf(idx)`.
+  */
+case class TFlatIndex(arr: TExpr, idx: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
 // -- Application / projection ----------------------------------------------
 
