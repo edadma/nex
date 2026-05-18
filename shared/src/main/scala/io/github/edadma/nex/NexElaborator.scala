@@ -1093,10 +1093,17 @@ class NexElaborator:
       TCall(callee, List(arr, init, f), p, accT)
 
     case "filter" if args.size == 2 =>
-      val arr   = infExpr(args.head)
+      val arr = infExpr(args.head)
+      // `filter` semantics on rank-2 are ambiguous (filter rows? filter
+      // elements and flatten?); the runtime only handles `VArray1`. Reject
+      // rank-2+ at elaborate time rather than letting it trap later.
+      arr.tpe match
+        case TyArray(_, r) if r > 1 =>
+          err(s"filter requires a rank-1 array, got rank $r", p)
+        case _ =>
       val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
       val f     = inferArg(args(1), TyFunc(List((elemT, ParamMode.Read)), TyBool))
-      TCall(callee, List(arr, f), p, arr.tpe)
+      TCall(callee, List(arr, f), p, TyArray(elemT, 1))
 
     case _ =>
       // Wrong arity for a known HOF — fall back to default inference and

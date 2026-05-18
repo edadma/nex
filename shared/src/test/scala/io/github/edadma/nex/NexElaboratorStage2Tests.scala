@@ -831,6 +831,32 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       call.tpe shouldBe TyArray(TyInteger, 1)
     }
 
+    "`filter` rejects rank-2 source (runtime only handles rank-1)" in {
+      val errs = elabExpect("""
+        |val m  = [[1, 2], [3, 4]]
+        |val ev = filter(m, x -> x % 2 == 0)
+      """.stripMargin)
+      errs.exists(_.contains("filter requires a rank-1 array")) shouldBe true
+    }
+
+    "prelude `map` preserves source rank in its result type (rank-1)" in {
+      val tp = elab("""
+        |val xs = [1, 2, 3]
+        |val ys = map(xs, x -> x * 2)
+      """.stripMargin)
+      val ysBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ys").get
+      ysBind.value.tpe shouldBe TyArray(TyInteger, 1)
+    }
+
+    "prelude `map` preserves source rank in its result type (rank-2)" in {
+      val tp = elab("""
+        |val m  = [[1, 2], [3, 4]]
+        |val ys = map(m, x -> x * 2)
+      """.stripMargin)
+      val ysBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ys").get
+      ysBind.value.tpe shouldBe TyArray(TyInteger, 2)
+    }
+
     "push-down works for `xs.map(x -> ...)` method-call sugar" in {
       // Method-call form goes through the TMethodCall branch in Stage 2.
       // The HOF dispatch synthesizes the equivalent TCall shape (receiver
