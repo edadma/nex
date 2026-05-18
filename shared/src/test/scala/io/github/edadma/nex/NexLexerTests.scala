@@ -19,6 +19,7 @@ class NexLexerTests extends AnyWordSpec with Matchers:
       case t: l.Keyword                => s"K(${t.chars})"
       case t: l.Identifier             => s"ID(${t.chars})"
       case t: l.NumericLit             => s"N(${t.chars})"
+      case t: l.InterpStringTok        => s"S(${escape(t.chars)})"
       case t: l.StringLit              => s"S(${escape(t.chars)})"
       case t: l.ErrorToken             => s"ERR(${t.chars})"
       case t                           => s"UNK(${t.chars})"
