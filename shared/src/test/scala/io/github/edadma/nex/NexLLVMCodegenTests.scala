@@ -72,6 +72,18 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
       ir should include("add i64 1, 2")
       ir should include("sub i64 7, 3")
       ir should include("mul i64 4, 5")
+      // `/` between integers is real-divide in Nex (the elaborator marks
+      // the result TyReal): both sides sitofp'd, then fdiv.
+      ir should include("sitofp i64 20 to double")
+      ir should include("sitofp i64 4 to double")
+      ir should include("fdiv double")
+    }
+
+    "emit sdiv for `div` (integer floor division)" in {
+      val ir = compile("""
+        |def main() = print(20 div 4)
+      """.stripMargin)
+      // `div` stays integer-typed.
       ir should include("sdiv i64 20, 4")
     }
 
@@ -800,5 +812,72 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
       val ir = compile("def main() = print(3.0)")
       // The helper itself contains the `%lld.0` format string.
       ir should include("@.fmt_real_int")
+    }
+  }
+
+  "tuples" should {
+    "lower (a, b) to insertvalue into the right anonymous struct type" in {
+      val ir = compile("""
+        |def main() =
+        |  val p = (10, 20)
+        |  val a, b = p
+        |  print(a)
+      """.stripMargin)
+      // The tuple SSA value is built via two insertvalue calls into
+      // `{ i64, i64 }` undef.
+      ir should include("insertvalue { i64, i64 } undef, i64 10, 0")
+      ir should include regex """insertvalue \{ i64, i64 \} %t\d+, i64 20, 1"""
+    }
+
+    "destructuring uses extractvalue from the receiver's struct type" in {
+      val ir = compile("""
+        |def main() =
+        |  val p = (10, 20)
+        |  val a, b = p
+        |  print(a)
+      """.stripMargin)
+      ir should include regex """extractvalue \{ i64, i64 \} %t\d+, 0"""
+    }
+
+    "destructuring `val a, b = pair` lowers to per-name tuple projections" in {
+      val ir = compile("""
+        |def main() =
+        |  val pair = (10, 20)
+        |  val a, b = pair
+        |  print(a)
+        |  print(b)
+      """.stripMargin)
+      // The elaborator rewrites to two TTupleProj exprs — both should
+      // extract from the pair's struct type.
+      val ev = """extractvalue \{ i64, i64 \} %t\d+, 0""".r.findAllIn(ir).toList
+      val ev1 = """extractvalue \{ i64, i64 \} %t\d+, 1""".r.findAllIn(ir).toList
+      ev should not be empty
+      ev1 should not be empty
+    }
+
+    "heterogeneous tuples use mixed element types in the struct" in {
+      val ir = compile("""
+        |def main() =
+        |  val p = (42, "hi", true)
+        |  print(p)
+      """.stripMargin)
+      // The struct type contains the three llvmType mappings: i64, ptr, i1.
+      ir should include("{ i64, ptr, i1 }")
+    }
+
+    "function returning a tuple has the struct return type in its signature" in {
+      val ir = compile("""
+        |def pair() = (1, 2)
+        |def main() = print(pair())
+      """.stripMargin)
+      ir should include("define { i64, i64 } @pair()")
+      ir should include regex """ret \{ i64, i64 \} %t\d+"""
+    }
+
+    "int / int → real promotes both operands via sitofp before fdiv" in {
+      val ir = compile("def main() = print(7 / 2)")
+      ir should include("sitofp i64 7 to double")
+      ir should include("sitofp i64 2 to double")
+      ir should include("fdiv double")
     }
   }

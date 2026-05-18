@@ -591,10 +591,34 @@ class NexLLVMCodegen:
     case TBinOp("and", l, r, _, _) => emitShortCircuit(l, r, isAnd = true)
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
 
-    case TBinOp(op, l, r, _, _) =>
-      val lv      = emitExpr(l)
-      val rv      = emitExpr(r)
-      val opT     = l.tpe // both sides have the same type for these ops
+    case TBinOp(op, l, r, _, t) =>
+      val lv0 = emitExpr(l)
+      val rv0 = emitExpr(r)
+      // Real-typed result with integer operand(s) needs a sitofp lift
+      // before the actual op runs — covers `int / int → real` (always
+      // a real-divide in Nex) and `int + real` / `real + int` mixes.
+      // For bool-typed result (comparisons), same lift on integer ops
+      // when comparing against a real.
+      val needsRealLift = t == TyReal && (l.tpe == TyInteger || r.tpe == TyInteger)
+      val needsCmpReal  =
+        t == TyBool && (l.tpe == TyReal || r.tpe == TyReal) &&
+        (l.tpe == TyInteger || r.tpe == TyInteger)
+      val (lv, rv, opT) =
+        if needsRealLift || needsCmpReal then
+          val ll = if l.tpe == TyInteger then
+            val r2 = newReg()
+            emitLine(s"  $r2 = sitofp i64 $lv0 to double\n")
+            r2
+          else lv0
+          val rr = if r.tpe == TyInteger then
+            val r2 = newReg()
+            emitLine(s"  $r2 = sitofp i64 $rv0 to double\n")
+            r2
+          else rv0
+          (ll, rr, TyReal)
+        else
+          (lv0, rv0, l.tpe)
+
       val (instr, _) = binOpInst(op, opT)
       val reg     = newReg()
       emitLine(s"  $reg = $instr ${llvmType(opT)} $lv, $rv\n")
@@ -652,6 +676,12 @@ class NexLLVMCodegen:
 
     case TFusedLoop(loopVar, length, body, cols, _, t) =>
       emitFusedLoop(loopVar, length, body, cols, t)
+
+    case TTuple(elems, _, t) =>
+      emitTuple(elems, t)
+
+    case TTupleProj(receiver, idx, _, t) =>
+      emitTupleProj(receiver, idx, t)
 
     case TIf(cond, thenB, elseOpt, _, t) =>
       emitIf(cond, thenB, elseOpt, t)
@@ -1530,6 +1560,59 @@ class NexLLVMCodegen:
     }
     desc
 
+  // ---------------------------------------------------------------------------
+  // Tuples. We use anonymous LLVM struct types — `{ T0, T1, ... }` literals
+  // everywhere — so there's no preamble registration. Tuples are kept
+  // stack-allocated (no heap, no ARC); when stored into a slot we copy the
+  // struct value, and when projected we use `extractvalue`.
+  //
+  // For nested tuples (`(1, (2, 3))`) the inner tuple lives inside the outer
+  // struct's payload — extractvalue/insertvalue work transparently on the
+  // nested layout.
+  // ---------------------------------------------------------------------------
+
+  /** Lower `(e0, e1, ...)`. Builds an undef struct of the tuple's LLVM
+    * type, then folds in each element via `insertvalue`. Returns the
+    * final aggregate as an SSA value.
+    */
+  private def emitTuple(elems: List[TExpr], t: Type): String =
+    val tupTy = llvmType(t)
+    if elems.isEmpty then
+      // The empty tuple `()` is just unit at this point; the elaborator
+      // should never produce a zero-elem TTuple, but treat it gracefully.
+      notYet("empty tuple literal"); "0"
+    else
+      val vs = elems.map(emitExpr)
+      var acc: String = "undef"
+      for i <- elems.indices do
+        val elemTy = llvmType(elems(i).tpe)
+        val next   = newReg()
+        emitLine(s"  $next = insertvalue $tupTy $acc, $elemTy ${vs(i)}, $i\n")
+        acc = next
+      acc
+
+  /** Lower `t.<idx>` — extract field `idx` from a tuple value. */
+  private def emitTupleProj(receiver: TExpr, idx: Int, resultT: Type): String =
+    val recv = emitExpr(receiver)
+    val recvTy = llvmType(receiver.tpe)
+    val reg = newReg()
+    emitLine(s"  $reg = extractvalue $recvTy $recv, $idx\n")
+    reg
+
+  /** Print a tuple value as `(a, b, c)` (no trailing newline). Used by
+    * both the top-level print path and the interpolated-string element
+    * path. The actual loop lives in [[emitPrintTupleValue]] so it can
+    * be re-entered for tuple-of-tuple from inside [[emitPrintArrayElem]].
+    */
+  private def emitPrintTuple(arg: TExpr): Unit =
+    val v   = emitExpr(arg)
+    val tup = arg.tpe match
+      case TyTuple(es) => es
+      case other       =>
+        notYet(s"print tuple — expected tuple type, got $other")
+        return
+    emitPrintTupleValue(v, arg.tpe, tup)
+
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
       case None =>
@@ -1709,6 +1792,9 @@ class NexLLVMCodegen:
             // print an array: emit its formatted form + trailing newline.
             emitPrintArray(arg)
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+          case TyTuple(_) =>
+            emitPrintTuple(arg)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
           case _ =>
             val v = emitExpr(arg)
             arg.tpe match
@@ -1751,6 +1837,8 @@ class NexLLVMCodegen:
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
       case TyArray(_, _) =>
         emitPrintArray(arg)
+      case TyTuple(_) =>
+        emitPrintTuple(arg)
       case other =>
         notYet(s"interpolated print($other)")
 
@@ -1901,7 +1989,10 @@ class NexLLVMCodegen:
     startBlock(exitL)
     emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_close)\n")
 
-  /** Print one scalar element of a Nex array without a trailing newline. */
+  /** Print one element of an aggregate (array element or tuple element)
+    * without a trailing newline. The SSA value `v` must already have
+    * been extracted/loaded by the caller.
+    */
   private def emitPrintArrayElem(elem: Type, v: String): Unit =
     elem match
       case TyInteger =>
@@ -1916,23 +2007,49 @@ class NexLLVMCodegen:
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel)\n")
       case TyString =>
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
+      case t @ TyTuple(es) =>
+        // Inline tuple-element print using insertvalue/extractvalue.
+        // Reuses emitPrintArrayElem recursively for each field.
+        emitPrintTupleValue(v, t, es)
       case other =>
         notYet(s"print element of type $other")
+
+  /** Print a tuple SSA value (struct aggregate) as `(a, b, c)` without
+    * a trailing newline. Factored from [[emitPrintTuple]] so callers
+    * holding an already-loaded struct (e.g., array-of-tuple element
+    * printing) can reuse it.
+    */
+  private def emitPrintTupleValue(v: String, t: Type, es: List[Type]): Unit =
+    val tupTy  = llvmType(t)
+    val openP  = internStringLiteral("(")
+    val closeP = internStringLiteral(")")
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $openP)\n")
+    for (elemT, i) <- es.zipWithIndex do
+      if i > 0 then emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_sep)\n")
+      val elemV = newReg()
+      emitLine(s"  $elemV = extractvalue $tupTy $v, $i\n")
+      emitPrintArrayElem(elemT, elemV)
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $closeP)\n")
 
   // ---------------------------------------------------------------------------
   // Type and binop tables.
   // ---------------------------------------------------------------------------
 
-  /** Map a Nex type to its LLVM type. */
+  /** Map a Nex type to its LLVM type. Tuples lower to anonymous LLVM
+    * struct types literal-style (`{ T0, T1, ... }`); no separate `%name
+    * = type ...` registration is needed because LLVM accepts the
+    * literal at every use site.
+    */
   private def llvmType(t: Type): String = t match
-    case TyInteger    => "i64"
-    case TyReal       => "double"
-    case TyBool       => "i1"
-    case TyUnit       => "void"
-    case TyString     => "ptr"
-    case TyArray(_,_) => "ptr"
-    case TyUnknown    => "i64" // best-effort placeholder for missing inference
-    case other        => notYet(s"type `$other`"); "i64"
+    case TyInteger      => "i64"
+    case TyReal         => "double"
+    case TyBool         => "i1"
+    case TyUnit         => "void"
+    case TyString       => "ptr"
+    case TyArray(_,_)   => "ptr"
+    case TyTuple(elems) => elems.map(llvmType).mkString("{ ", ", ", " }")
+    case TyUnknown      => "i64" // best-effort placeholder for missing inference
+    case other          => notYet(s"type `$other`"); "i64"
 
   /** Storage type for an array element. `i1` (bool) is stored as `i8` so the
     * buffer's stride is one byte per element rather than packed bits.
@@ -2044,7 +2161,8 @@ class NexLLVMCodegen:
       case ("+", TyInteger) => ("add",  "i64")
       case ("-", TyInteger) => ("sub",  "i64")
       case ("*", TyInteger) => ("mul",  "i64")
-      case ("/", TyInteger) => ("sdiv", "i64")
+      case ("/", TyInteger) => ("sdiv", "i64") // unreachable on scalars; / promotes
+      case ("div", TyInteger) => ("sdiv", "i64") // truncation toward zero (≠ floor)
       case ("%", TyInteger) => ("srem", "i64")
       case ("+", TyReal)    => ("fadd", "double")
       case ("-", TyReal)    => ("fsub", "double")
