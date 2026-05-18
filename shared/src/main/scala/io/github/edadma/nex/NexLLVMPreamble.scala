@@ -18,6 +18,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare ptr @malloc(i64)
         |declare void @free(ptr)
         |declare void @abort()
+        |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
         |; --- Array descriptor types (§8.5) -------------------------------------
         |; rank-1: { refcount, length, data }                     ; 24 bytes

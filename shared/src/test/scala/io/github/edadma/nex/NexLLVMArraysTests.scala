@@ -130,7 +130,9 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
         |  val a = [10, 20, 30]
         |  print(first(a))
       """.stripMargin)
-      ir should include("define i64 @first(ptr %arg0)")
+      // Array params carry `noalias` (Nex's uniqueness type system
+      // guarantees `[T]` references don't alias).
+      ir should include("define i64 @first(ptr noalias %arg0)")
     }
   }
 
@@ -161,7 +163,7 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
         |def main() = print(first([10]))
       """.stripMargin)
       // `first` should dec both tmp and xs before its ret.
-      ir should include("@first(ptr %arg0)")
+      ir should include("@first(ptr noalias %arg0)")
       // At least two dec calls inside `first` (tmp and xs).
       val firstBody = ir.substring(ir.indexOf("@first("), ir.indexOf("@main()"))
       val decs = "__nex_arr1_dec".r.findAllIn(firstBody).toList
@@ -366,6 +368,120 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
       val ir = compile("def main() = print(3.0)")
       // The helper itself contains the `%lld.0` format string.
       ir should include("@.fmt_real_int")
+    }
+  }
+
+  "Tier-1 perf cluster (bounds-check elimination + memcpy + noalias)" should {
+    "emitClone uses @llvm.memcpy instead of a per-element loop" in {
+      val ir = compile("""
+        |def main() =
+        |  var xs = [1, 2, 3]
+        |  var ys = xs       // var-to-var array bind triggers an auto-clone (§8.3)
+        |  print(xs[0] + ys[0])
+      """.stripMargin)
+      ir should include("declare void @llvm.memcpy.p0.p0.i64")
+      ir should include regex """call void @llvm.memcpy.p0.p0.i64\(ptr %t\d+, ptr %t\d+, i64 %t\d+, i1 false\)"""
+    }
+
+    // Helper: extract the IR lines BETWEEN the body-label definition
+    // and the next exit/cond-label definition. Anchor on `label:`
+    // lines (trailing colon) rather than `label %name` references so
+    // the surrounding `br` terminators don't confuse the slice.
+    def bodyOf(ir: String, prefix: String): String =
+      val labelDef = (s: String) => s.startsWith(prefix + ".body.") && s.endsWith(":")
+      val terminator = (s: String) => s.endsWith(":") && !labelDef(s)
+      ir.linesIterator
+        .dropWhile(l => !labelDef(l))
+        .drop(1)  // skip the body-label line itself
+        .takeWhile(l => !terminator(l))
+        .mkString("\n")
+
+    "an element-wise array op emits direct GEP, not __nex_arr1_slot" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3, 4]
+        |  val b = [10, 20, 30, 40]
+        |  print(a + b)
+      """.stripMargin)
+      val ewBody = bodyOf(ir, "ew")
+      ewBody should not include "__nex_arr1_slot"
+      ewBody should include("getelementptr inbounds")
+    }
+
+    "hof.map body has no __nex_arr1_slot call (bounds-check eliminated)" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5]
+        |  print(map(xs, x -> x + 1))
+      """.stripMargin)
+      val mapBody = bodyOf(ir, "hof.map")
+      mapBody should not include "__nex_arr1_slot"
+      mapBody should include("getelementptr inbounds")
+    }
+
+    "hof.reduce body uses direct GEP for source load" in {
+      val ir = compile("""
+        |def main() = print(reduce([1, 2, 3, 4], 0, (a, x) -> a + x))
+      """.stripMargin)
+      val reduceBody = bodyOf(ir, "hof.reduce")
+      reduceBody should not include "__nex_arr1_slot"
+    }
+
+    "hof.filter body uses direct GEP for both load and conditional store" in {
+      val ir = compile("""
+        |def main() = print(filter([1, 2, 3, 4, 5], x -> x > 2))
+      """.stripMargin)
+      val filterBody = bodyOf(ir, "hof.filter")
+      filterBody should not include "__nex_arr1_slot"
+    }
+
+    "fill body uses direct GEP" in {
+      val ir = compile("def main() = print(fill(8, 0))")
+      val fillBody = bodyOf(ir, "fill")
+      fillBody should not include "__nex_arr1_slot"
+    }
+
+    "zeros body uses direct GEP" in {
+      val ir = compile("def main() = print(zeros(8))")
+      val zBody = bodyOf(ir, "constfill")
+      zBody should not include "__nex_arr1_slot"
+    }
+
+    "scalar element access via `xs[i]` STILL bounds-checks (not in a counted-loop context)" in {
+      // Regression guard: the optimization must not bypass bounds
+      // checks for arbitrary index expressions. Random integer indices
+      // need to keep their checks.
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  val k = 2
+        |  print(xs[k])
+      """.stripMargin)
+      ir should include("__nex_arr1_slot")
+    }
+
+    "array-typed function parameters get noalias on the user fn signature" in {
+      val ir = compile("""
+        |def two(a: [integer], b: [integer]) = a[0] + b[0]
+        |def main() = print(two([1, 2], [3, 4]))
+      """.stripMargin)
+      ir should include("@two(ptr noalias %arg0, ptr noalias %arg1)")
+    }
+
+    "array-typed lambda parameters get noalias on the synthetic lambda signature" in {
+      val ir = compile("""
+        |def callIt(f: ([integer] -> integer), xs: [integer]) = f(xs)
+        |def main() = print(callIt(xs -> xs[0], [42]))
+      """.stripMargin)
+      ir should include regex """define i64 @__nex_lambda_\d+\(ptr %env, ptr noalias %arg0\)"""
+    }
+
+    "scalar-typed parameters do NOT get noalias (only ptr-typed array params)" in {
+      val ir = compile("""
+        |def addI(a: integer, b: integer): integer = a + b
+        |def main() = print(addI(3, 4))
+      """.stripMargin)
+      ir should not include "noalias %arg"
     }
   }
 

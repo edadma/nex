@@ -470,45 +470,45 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * into a fresh allocation. Source's owning share is released.
     */
   protected def emitClone(arr: TExpr, resultT: Type): String =
+    // Tier-1 perf optimization: lower deep-copy to a single
+    // `@llvm.memcpy.p0.p0.i64` instead of a per-element store loop.
+    // The src and dst buffers are guaranteed non-aliasing (the
+    // destination came from a fresh malloc); LLVM constant-folds
+    // the size when the length is statically known.
     val elem = arrayElem(arr.tpe)
-    val stE  = storageType(elem)
-    val langE = llvmType(elem)
     val esz  = elemSize(elem)
 
-    val src   = emitExpr(arr)
-    val desc  = allocLike(src, arr.tpe, elem)
-    val len   = flatLengthOf(src, arr.tpe)
-    val sBuf  = bufPtr(src, arr.tpe)
-    val oBuf  = bufPtr(desc, resultT)
+    val src  = emitExpr(arr)
+    val desc = allocLike(src, arr.tpe, elem)
+    val len  = flatLengthOf(src, arr.tpe)
+    val sBuf = bufPtr(src, arr.tpe)
+    val oBuf = bufPtr(desc, resultT)
 
-    emitCountingLoop(len, "clone") { i =>
-      val sSlot = newReg()
-      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $sBuf, i64 $i\n")
-      val v = loadElem(stE, sSlot, langE)
-      val oSlot = newReg()
-      emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $oBuf, i64 $i\n")
-      storeElem(stE, v, oSlot)
-    }
+    val bytes = newReg()
+    emitLine(s"  $bytes = mul i64 $len, $esz\n")
+    emitLine(s"  call void @llvm.memcpy.p0.p0.i64(ptr $oBuf, ptr $sBuf, i64 $bytes, i1 false)\n")
 
     emitArrDec(src, arr.tpe)
     desc
 
   /** Lower [[TFlatIndex]] — single flat-index access regardless of rank.
-    * Used inside [[TFusedLoop]] bodies. Result is the loaded element
-    * (a scalar of the array's element type).
+    * Used inside [[TFusedLoop]] bodies (introduced by the fusion pass),
+    * where the index is the loop counter and the bound is the source
+    * array's own length. Both invariants are encoded in the AST shape
+    * — fusion never produces a TFlatIndex against an unrelated index
+    * — so the bounds check would always succeed. Skip it: emit a
+    * direct GEP+load on the data buffer instead of the bounds-checked
+    * `__nex_arr*_slot` helper. Tier-1 perf optimization.
     */
   protected def emitFlatIndex(arr: TExpr, idx: TExpr, resultT: Type): String =
-    val elem = arrayElem(arr.tpe)
-    val esz  = elemSize(elem)
-    val stE  = storageType(elem)
+    val elem  = arrayElem(arr.tpe)
+    val stE   = storageType(elem)
     val langE = llvmType(elem)
-    val av   = emitExpr(arr)
-    val iv   = emitExpr(idx)
-    val slot = newReg()
-    arrayRank(arr.tpe) match
-      case 1 => emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $av, i64 $iv, i64 $esz)\n")
-      case 2 => emitLine(s"  $slot = call ptr @__nex_arr2_flat_slot(ptr $av, i64 $iv, i64 $esz)\n")
-      case other => notYet(s"flat index of rank $other"); return "0"
+    val av    = emitExpr(arr)
+    val iv    = emitExpr(idx)
+    val buf   = bufPtr(av, arr.tpe)
+    val slot  = newReg()
+    emitLine(s"  $slot = getelementptr inbounds $stE, ptr $buf, i64 $iv\n")
     val v = loadElem(stE, slot, langE)
     emitArrDec(av, arr.tpe)
     v

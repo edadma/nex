@@ -219,9 +219,14 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     currentIsMain     = false
 
     val retLLT = llvmType(info.retType)
+    // Same `noalias` treatment as ordinary user functions — see the
+    // matching comment in NexLLVMCodegen.emitFunction. The env pointer
+    // is not marked noalias because nested closures can share the
+    // outer env (the lambda captures route through it).
     val paramSig =
       ("ptr %env" :: info.params.zipWithIndex.map { case (p, i) =>
-        s"${llvmType(p.tpe)} %arg$i"
+        val attr = if isArrayType(p.tpe) then " noalias" else ""
+        s"${llvmType(p.tpe)}$attr %arg$i"
       }).mkString(", ")
 
     out.append(s"define $retLLT @${info.llvmName}($paramSig) {\n")

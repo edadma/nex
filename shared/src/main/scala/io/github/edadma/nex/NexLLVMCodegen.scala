@@ -120,9 +120,18 @@ class NexLLVMCodegen
     currentReturnType = f.returnType
     currentIsMain     = isMain
 
+    // Array-typed params get `noalias` because Nex's uniqueness type
+    // system (§8) guarantees `[T]` references don't alias each other.
+    // Telling LLVM unlocks more aggressive load/store reordering and
+    // auto-vectorization. Safe even for the ARC regime: the descriptor
+    // pointer is per-binding, so two array params with the same
+    // underlying buffer would have failed the uniqueness analysis.
     val paramSig =
       f.params.zipWithIndex
-        .map { case (p, i) => s"${llvmType(p.tpe)} %arg$i" }
+        .map { case (p, i) =>
+          val attr = if isArrayType(p.tpe) then " noalias" else ""
+          s"${llvmType(p.tpe)}$attr %arg$i"
+        }
         .mkString(", ")
 
     out.append(s"define $retLLT @$funcId($paramSig) {\n")

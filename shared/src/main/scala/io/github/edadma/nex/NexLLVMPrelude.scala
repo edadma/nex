@@ -393,7 +393,6 @@ protected trait NexLLVMPrelude extends NexLLVMState:
 
     val srcElem = arrayElem(arr.tpe)
     val resElem = arrayElem(resultT)
-    val srcEsz  = elemSize(srcElem)
     val resEsz  = elemSize(resElem)
     val srcStT  = storageType(srcElem)
     val srcLLT  = llvmType(srcElem)
@@ -406,15 +405,20 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
     val res     = newReg()
     emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $len, i64 $resEsz)\n")
+    // Tier-1 perf: hoist both buffer pointers out of the loop and
+    // index via direct GEP. Both bounds are provably safe — `i` ranges
+    // over `0..len` and both arrays have length `len` by construction.
+    val srcBuf  = bufPtr(arrV, arr.tpe)
+    val dstBuf  = bufPtr(res, resultT)
 
     emitCountingLoop(len, "hof.map") { i =>
       val srcSlot = newReg()
-      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $srcEsz)\n")
+      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
       val elem    = loadElem(srcStT, srcSlot, srcLLT)
       val y       = newReg()
       emitLine(s"  $y = call $resLLT (ptr, $srcLLT) $fnPtr(ptr $envPtr, $srcLLT $elem)\n")
       val dstSlot = newReg()
-      emitLine(s"  $dstSlot = call ptr @__nex_arr1_slot(ptr $res, i64 $i, i64 $resEsz)\n")
+      emitLine(s"  $dstSlot = getelementptr inbounds $resStT, ptr $dstBuf, i64 $i\n")
       storeElem(resStT, y, dstSlot)
     }
 
@@ -431,7 +435,6 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       return "0"
 
     val srcElem = arrayElem(arr.tpe)
-    val srcEsz  = elemSize(srcElem)
     val srcStT  = storageType(srcElem)
     val srcLLT  = llvmType(srcElem)
     val accLLT  = llvmType(resultT)
@@ -444,10 +447,12 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  store $accLLT $iv, ptr $accSlot\n")
     val len  = newReg()
     emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    // Tier-1 perf: hoist srcBuf and index directly.
+    val srcBuf  = bufPtr(arrV, arr.tpe)
 
     emitCountingLoop(len, "hof.reduce") { i =>
       val srcSlot = newReg()
-      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $srcEsz)\n")
+      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
       val elem    = loadElem(srcStT, srcSlot, srcLLT)
       val accCur  = newReg()
       emitLine(s"  $accCur = load $accLLT, ptr $accSlot\n")
@@ -486,10 +491,14 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val countSlot = newReg()
     emitLine(s"  $countSlot = alloca i64\n")
     emitLine(s"  store i64 0, ptr $countSlot\n")
+    // Tier-1 perf: hoist buffer pointers; both indices are provably
+    // in-bounds (`i` ∈ 0..len; `cur` ∈ 0..i ≤ len).
+    val srcBuf  = bufPtr(arrV, arr.tpe)
+    val dstBuf  = bufPtr(res, resultT)
 
     emitCountingLoop(len, "hof.filter") { i =>
       val srcSlot = newReg()
-      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $esz)\n")
+      emitLine(s"  $srcSlot = getelementptr inbounds $stT, ptr $srcBuf, i64 $i\n")
       val v       = loadElem(stT, srcSlot, langT)
       val keep    = newReg()
       emitLine(s"  $keep = call i1 (ptr, $langT) $fnPtr(ptr $envPtr, $langT $v)\n")
@@ -500,7 +509,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       val cur = newReg()
       emitLine(s"  $cur = load i64, ptr $countSlot\n")
       val dst = newReg()
-      emitLine(s"  $dst = call ptr @__nex_arr1_slot(ptr $res, i64 $cur, i64 $esz)\n")
+      emitLine(s"  $dst = getelementptr inbounds $stT, ptr $dstBuf, i64 $cur\n")
       storeElem(stT, v, dst)
       val nx  = newReg()
       emitLine(s"  $nx = add i64 $cur, 1\n")
@@ -560,10 +569,12 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val vVal  = emitExpr(v)
     val arr   = newReg()
     emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+    // Tier-1 perf: hoist data-buffer pointer once and index directly.
+    val buf   = bufPtr(arr, resultT)
 
     emitCountingLoop(nVal, "fill") { i =>
       val slot = newReg()
-      emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $arr, i64 $i, i64 $esz)\n")
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
       storeElem(stT, vVal, slot)
     }
 
@@ -584,10 +595,12 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val nVal = emitExpr(n)
     val arr  = newReg()
     emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+    // Tier-1 perf: hoist buf and index directly.
+    val buf  = bufPtr(arr, resultT)
 
     emitCountingLoop(nVal, "constfill") { i =>
       val slot = newReg()
-      emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $arr, i64 $i, i64 $esz)\n")
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
       storeElem(stT, constStr, slot)
     }
 
