@@ -44,4 +44,14 @@ The sections above walk through the language. Start with [Spec](/spec/v0/) for t
 
 ## Status
 
-v0 design is settled. Implementation in progress. Built with Scala 3, cross-compiled to JVM / JavaScript / Native via Scala.js and Scala Native.
+v0 is shipped end-to-end. The AOT compiler produces native binaries (LLVM IR → `clang -O1`) for the entire v0 surface: scalar arithmetic, arrays (rank-1 and rank-2) with ARC and slicing, element-wise + broadcast + slice + clone + fused loops, tuples and structs, lambdas and closures (val + var capture), prelude scalar math + assertions, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Compiled output is byte-for-byte verified against the reference interpreter on every commit (≈ 690 unit tests).
+
+```bash
+# Run a program with the tree-walking interpreter:
+nex run examples/fft/main.nex
+# Compile to a native binary (Mac arm64 verified end-to-end):
+nex compile examples/fft/main.nex
+./examples/fft/main
+```
+
+Built with Scala 3, cross-compiled to JVM / JavaScript / Native via Scala.js and Scala Native. The AOT compile path requires `clang` on `$PATH`.

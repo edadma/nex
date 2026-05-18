@@ -1048,3 +1048,66 @@ This style is appropriate when:
 - The support code is itself testing-specific and would be noise in the regular module
 
 The cost of a `@test` module: it can only see *public* members of the modules it imports. If you need to test `private` helpers, use inline `@test` functions in the same module instead (as in Example 8).
+
+## 16. FFT (Cooley-Tukey, radix-2, N = 8)
+
+A recursive discrete Fourier transform that showcases Nex's complex number support: every operation in the body is on `complex`, the array literal coerces real values element-wise into the `[complex]` target, and the AOT path matches the interpreter on Mac arm64.
+
+```nex
+def fft2(x: [complex]): [complex] =
+  [x[0] + x[1], x[0] - x[1]]
+
+def fft4(x: [complex]): [complex] =
+  val even = fft2([x[0], x[2]])
+  val odd  = fft2([x[1], x[3]])
+  val t0 = odd[0]               // w_0 = 1
+  val t1 = -i * odd[1]          // w_1 = e^(-π/2 · i) = -i
+  [
+    even[0] + t0, even[1] + t1,
+    even[0] - t0, even[1] - t1
+  ]
+
+def fft8(x: [complex]): [complex] =
+  val even = fft4([x[0], x[2], x[4], x[6]])
+  val odd  = fft4([x[1], x[3], x[5], x[7]])
+  val w0 = cos(0.0)             + sin(0.0)             * i
+  val w1 = cos(-pi / 4.0)       + sin(-pi / 4.0)       * i
+  val w2 = cos(-pi / 2.0)       + sin(-pi / 2.0)       * i
+  val w3 = cos(-3.0 * pi / 4.0) + sin(-3.0 * pi / 4.0) * i
+  val t0 = w0 * odd[0]
+  val t1 = w1 * odd[1]
+  val t2 = w2 * odd[2]
+  val t3 = w3 * odd[3]
+  [
+    even[0] + t0, even[1] + t1, even[2] + t2, even[3] + t3,
+    even[0] - t0, even[1] - t1, even[2] - t2, even[3] - t3
+  ]
+
+def main() =
+  val x: [complex] = [
+    1.0, 1.0, 1.0, 1.0,
+    0.0, 0.0, 0.0, 0.0
+  ]
+  val y = fft8(x)
+  print("FFT of [1, 1, 1, 1, 0, 0, 0, 0]:")
+  for k in 0..8 do
+    print(y[k])
+```
+
+Output (DC term is the sum of inputs; real input gives `Y[k] = conj(Y[N-k])`):
+
+```
+FFT of [1, 1, 1, 1, 0, 0, 0, 0]:
+4.0+0.0i
+1.0-2.41421i
+0.0+0.0i
+1.0-0.414214i
+0.0+0.0i
+1+0.414214i
+0.0+0.0i
+1+2.41421i
+```
+
+The full source lives at `examples/fft/main.nex`.
+
+Sizes are hard-wired (1, 2, 4, 8) because v0 doesn't yet have a `fill(n, value)` / `zeros(n)` primitive for building variable-length complex arrays. A general FFT slots in once that lands.

@@ -20,6 +20,16 @@ def normalize(v: [real]) =
   else v / mag
 ```
 
+## Status
+
+v0 is shipped end-to-end. The AOT compiler produces native Mac arm64 binaries (LLVM IR → `clang -O1`) for the entire v0 surface: scalar arithmetic, arrays + ARC + slicing + fusion, tuples and structs, lambdas + closures (val + var capture), the prelude scalar math and assertion family, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Every commit verifies the AOT output byte-for-byte against the reference tree-walking interpreter (≈ 690 unit tests).
+
+```bash
+sbt "nexJVM/runMain io.github.edadma.nex.run run     examples/fft/main.nex"
+sbt "nexJVM/runMain io.github.edadma.nex.run compile examples/fft/main.nex"
+./examples/fft/main
+```
+
 ## See [nexlang.org](https://nexlang.org) for the full documentation.
 
 - [Language specification](https://nexlang.org/spec/v0/)
