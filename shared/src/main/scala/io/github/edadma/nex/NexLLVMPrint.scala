@@ -296,6 +296,11 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitPrintTupleValue(v, t, es)
       case t @ TyStruct(name, fields) =>
         emitPrintStructValue(v, t, name, fields)
+      case TyComplex =>
+        // Already-loaded `{ double, double }` value — reuse the
+        // top-level complex print path which handles the sign /
+        // abs(im) / `i` suffix matching the interpreter.
+        emitPrintComplex(v)
       case other =>
         notYet(s"print element of type $other")
 

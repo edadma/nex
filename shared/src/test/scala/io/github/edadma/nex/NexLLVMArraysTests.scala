@@ -368,3 +368,35 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("@.fmt_real_int")
     }
   }
+
+  "recursive functions returning arrays" should {
+    // Regression: `inferFun` used to set the function's TyFunc only
+    // AFTER inferring its body, so a recursive TVarRef captured a
+    // stale TyUnknown and the codegen emitted `call i64 @fft(...)`
+    // instead of `call ptr @fft(...)`. Pre-setting the symbol type
+    // before infExpr fixed it.
+
+    "recursive call returns ptr, not i64, for array-returning fns" in {
+      val ir = compile("""
+        |def recArr(n: integer): [integer] =
+        |  if n == 0 then [42]
+        |  else recArr(n - 1)
+        |def main() = print(recArr(3))
+      """.stripMargin)
+      // The definition has `define ptr @recArr(...)` and the recursive
+      // call site must match: `call ptr @recArr(...)`.
+      ir should include("define ptr @recArr")
+      ir should include regex """call ptr @recArr\(i64 %t\d+\)"""
+    }
+
+    "recursive call returning [complex] uses ptr in both define and call sites" in {
+      val ir = compile("""
+        |def chain(n: integer): [complex] =
+        |  if n == 0 then [0 + 0i]
+        |  else chain(n - 1)
+        |def main() = print(chain(2))
+      """.stripMargin)
+      ir should include("define ptr @chain")
+      ir should include regex """call ptr @chain\(i64 %t\d+\)"""
+    }
+  }

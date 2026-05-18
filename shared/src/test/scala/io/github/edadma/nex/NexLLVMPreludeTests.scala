@@ -344,3 +344,86 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("fcmp oge double")
     }
   }
+
+  "prelude array construction (§10.5)" should {
+    "fill(n, v: integer) allocates a length-n rank-1 array and stores v in each slot" in {
+      val ir = compile("def main() = print(fill(4, 7))")
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 4, i64 8\)"""
+      ir should include("store i64 7")
+    }
+
+    "fill uses the `fill.cond` / `fill.body` / `fill.exit` loop prefix" in {
+      val ir = compile("def main() = print(fill(4, 7))")
+      ir should include("fill.cond")
+      ir should include("fill.body")
+      ir should include("fill.exit")
+    }
+
+    "fill(n, v: real) uses 8-byte slots and stores doubles" in {
+      val ir = compile("def main() = print(fill(3, 3.14))")
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 3, i64 8\)"""
+      // The stored value is a double constant.
+      ir should include("store double")
+    }
+
+    "fill(n, v: complex) uses 16-byte slots and stores `{ double, double }`" in {
+      val ir = compile("def main() = print(fill(5, 1.0 + 2.0 * i))")
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 5, i64 16\)"""
+      ir should include("store { double, double }")
+    }
+
+    "fill evaluates `v` once outside the loop, not per iteration" in {
+      // The complex value `1.0 + 2.0 * i` builds up via several
+      // insertvalue ops. They should appear ONCE in main (before the
+      // loop), not inside the body block. We approximate by counting
+      // insertvalue ops in main — a per-iteration build would show up
+      // inside the fill.body block and inflate the count well beyond
+      // the constant-size builder chain (~6-7 ops).
+      val ir = compile("def main() = print(fill(5, 1.0 + 2.0 * i))")
+      val mainBody = ir.linesIterator
+        .dropWhile(l => !l.startsWith("define i32 @main"))
+        .takeWhile(l => !l.startsWith("}"))
+        .mkString("\n")
+      val insertCount =
+        "insertvalue \\{ double, double \\}".r.findAllMatchIn(mainBody).size
+      // 6 insertvalues for the constant builder chain (undef→re→im for
+      // each of the 3 sub-expressions: `2.0`, `2.0 * i`, `1.0 + 2.0*i`).
+      // The loop body adds one `store { double, double }` per iter but
+      // NO insertvalues — so this count is stable regardless of n.
+      insertCount should be <= 10
+    }
+
+    "fill(n: integer-variable, v) uses the variable length at runtime" in {
+      val ir = compile("""
+        |def main() =
+        |  val n = 10
+        |  print(fill(n, 0))
+      """.stripMargin)
+      // `n` loaded then passed to alloc.
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 %t\d+, i64 8\)"""
+    }
+
+    "zeros(n) is fill(n, 0) — emits @__nex_arr1_alloc with elem_size 8 + a const-fill loop" in {
+      val ir = compile("def main() = print(zeros(6))")
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 6, i64 8\)"""
+      ir should include("constfill.cond")
+      ir should include("store i64 0")
+    }
+
+    "ones(n) stores 1 in each slot" in {
+      val ir = compile("def main() = print(ones(4))")
+      ir should include("store i64 1")
+    }
+
+    "fill produces a writable array (var binding can mutate slots)" in {
+      val ir = compile("""
+        |def main() =
+        |  var xs = fill(5, 0)
+        |  xs[2] = 99
+      """.stripMargin)
+      // We just check that the allocation went through fill and that
+      // we get a slot pointer for the store at index 2.
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 5, i64 8\)"""
+      ir should include regex """call ptr @__nex_arr1_slot\(ptr %t\d+, i64 2, i64 8\)"""
+    }
+  }

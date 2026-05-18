@@ -147,6 +147,46 @@ protected trait NexLLVMPrelude extends NexLLVMState:
           case other =>
             notYet(s"to_complex from $other"); "0"
 
+      // §10.7 to_real(x) — widen any numeric to double.
+      case ("to_real", List(x)) =>
+        x.tpe match
+          case TyReal    => emitExpr(x)
+          case TyInteger =>
+            val xv = emitExpr(x)
+            val rv = newReg()
+            emitLine(s"  $rv = sitofp i64 $xv to double\n")
+            rv
+          case TyComplex =>
+            // Convention: real part of a complex value (matches the
+            // interpreter, which uses `asReal` returning the real
+            // component of a complex).
+            val xv = emitExpr(x)
+            val re = newReg()
+            emitLine(s"  $re = extractvalue { double, double } $xv, 0\n")
+            re
+          case other =>
+            notYet(s"to_real from $other"); "0.0"
+
+      // §10.7 to_integer(x) — truncate to i64.
+      case ("to_integer", List(x)) =>
+        x.tpe match
+          case TyInteger => emitExpr(x)
+          case TyReal =>
+            val xv  = emitExpr(x)
+            val reg = newReg()
+            emitLine(s"  $reg = fptosi double $xv to i64\n")
+            reg
+          case TyComplex =>
+            // Truncate the real part — same convention as to_real(complex).
+            val xv  = emitExpr(x)
+            val re  = newReg()
+            emitLine(s"  $re = extractvalue { double, double } $xv, 0\n")
+            val reg = newReg()
+            emitLine(s"  $reg = fptosi double $re to i64\n")
+            reg
+          case other =>
+            notYet(s"to_integer from $other"); "0"
+
       // sign(x) returns -1, 0, or +1 — integer or real result follows arg.
       case ("sign", List(x)) =>
         x.tpe match
@@ -203,6 +243,15 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("map",    List(arr, fn))           => emitMapCall(arr, fn, resultT)
       case ("reduce", List(arr, init, fn))     => emitReduceCall(arr, init, fn, resultT)
       case ("filter", List(arr, fn))           => emitFilterCall(arr, fn, resultT)
+
+      // §10.5 array construction. `fill(n, v)` allocates a fresh rank-1
+      // array of length `n` with every slot set to `v`; element type
+      // comes from `v.tpe` and was already propagated into resultT by
+      // the elaborator. `zeros(n)` / `ones(n)` are convenience wrappers
+      // that lower through fill with a 0 / 1 integer constant.
+      case ("fill",  List(n, v))               => emitFillCall(n, v, resultT)
+      case ("zeros", List(n))                  => emitConstFill(n, "0", TyInteger, resultT)
+      case ("ones",  List(n))                  => emitConstFill(n, "1", TyInteger, resultT)
 
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
@@ -485,3 +534,61 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val ep = newReg()
     emitLine(s"  $ep = extractvalue { ptr, ptr } $cl, 1\n")
     (fp, ep)
+
+  // ---------------------------------------------------------------------------
+  // §10.5 array construction — `fill(n, v)`, `zeros(n)`, `ones(n)`.
+  //
+  // Each emits an allocation followed by a counted store loop. The
+  // value is evaluated ONCE outside the loop and reused across slots —
+  // matches the interpreter's `mutable.ArrayBuffer.fill(n)(v)` semantics
+  // (no per-element re-evaluation).
+  // ---------------------------------------------------------------------------
+
+  /** Emit `fill(n, v)` — allocate a rank-1 array of length `n` and
+    * store `v` into every slot. Rank-2 form (`fill((rows, cols), v)`)
+    * is not yet supported in codegen and surfaces a notYet diag.
+    */
+  private def emitFillCall(n: TExpr, v: TExpr, resultT: Type): String =
+    if arrayRank(resultT) != 1 then
+      notYet(s"fill(rank-${arrayRank(resultT)})")
+      return "null"
+
+    val elem  = arrayElem(resultT)
+    val esz   = elemSize(elem)
+    val stT   = storageType(elem)
+    val nVal  = emitExpr(n)
+    val vVal  = emitExpr(v)
+    val arr   = newReg()
+    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+
+    emitCountingLoop(nVal, "fill") { i =>
+      val slot = newReg()
+      emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $arr, i64 $i, i64 $esz)\n")
+      storeElem(stT, vVal, slot)
+    }
+
+    arr
+
+  /** Emit a fill-with-constant for `zeros(n)` / `ones(n)`. The constant
+    * is materialised as an LLVM literal (no separate SSA), and the loop
+    * shape matches [[emitFillCall]].
+    */
+  private def emitConstFill(n: TExpr, constStr: String, elemT: Type, resultT: Type): String =
+    if arrayRank(resultT) != 1 then
+      notYet(s"zeros/ones rank-${arrayRank(resultT)}")
+      return "null"
+
+    val elem = arrayElem(resultT)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val nVal = emitExpr(n)
+    val arr  = newReg()
+    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+
+    emitCountingLoop(nVal, "constfill") { i =>
+      val slot = newReg()
+      emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $arr, i64 $i, i64 $esz)\n")
+      storeElem(stT, constStr, slot)
+    }
+
+    arr

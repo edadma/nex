@@ -1049,52 +1049,55 @@ This style is appropriate when:
 
 The cost of a `@test` module: it can only see *public* members of the modules it imports. If you need to test `private` helpers, use inline `@test` functions in the same module instead (as in Example 8).
 
-## 16. FFT (Cooley-Tukey, radix-2, N = 8)
+## 16. FFT (Cooley-Tukey, radix-2, any power-of-2 N)
 
-A recursive discrete Fourier transform that showcases Nex's complex number support: every operation in the body is on `complex`, the array literal coerces real values element-wise into the `[complex]` target, and the AOT path matches the interpreter on Mac arm64.
+A recursive discrete Fourier transform that showcases Nex's complex number support, the prelude `fill(n, v)` array constructor, and per-element array-literal coercion. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
 
 ```nex
-def fft2(x: [complex]): [complex] =
-  [x[0] + x[1], x[0] - x[1]]
+def fft(x: [complex]): [complex] =
+  val n = length(x)
+  if n == 1 then return x
 
-def fft4(x: [complex]): [complex] =
-  val even = fft2([x[0], x[2]])
-  val odd  = fft2([x[1], x[3]])
-  val t0 = odd[0]               // w_0 = 1
-  val t1 = -i * odd[1]          // w_1 = e^(-π/2 · i) = -i
-  [
-    even[0] + t0, even[1] + t1,
-    even[0] - t0, even[1] - t1
-  ]
+  val half = n div 2
 
-def fft8(x: [complex]): [complex] =
-  val even = fft4([x[0], x[2], x[4], x[6]])
-  val odd  = fft4([x[1], x[3], x[5], x[7]])
-  val w0 = cos(0.0)             + sin(0.0)             * i
-  val w1 = cos(-pi / 4.0)       + sin(-pi / 4.0)       * i
-  val w2 = cos(-pi / 2.0)       + sin(-pi / 2.0)       * i
-  val w3 = cos(-3.0 * pi / 4.0) + sin(-3.0 * pi / 4.0) * i
-  val t0 = w0 * odd[0]
-  val t1 = w1 * odd[1]
-  val t2 = w2 * odd[2]
-  val t3 = w3 * odd[3]
-  [
-    even[0] + t0, even[1] + t1, even[2] + t2, even[3] + t3,
-    even[0] - t0, even[1] - t1, even[2] - t2, even[3] - t3
-  ]
+  // Split into even/odd-indexed sub-arrays. `fill(half, 0.0 + 0i)`
+  // gives us a writable rank-1 complex buffer of the right size.
+  var even = fill(half, 0.0 + 0i)
+  var odd  = fill(half, 0.0 + 0i)
+  for k in 0..half do
+    even[k] = x[2 * k]
+    odd[k]  = x[2 * k + 1]
+
+  val ef = fft(even)
+  val of = fft(odd)
+
+  // Cooley-Tukey butterfly: Y[k]      = E[k] + W^k · O[k]
+  //                        Y[k+N/2]   = E[k] - W^k · O[k]   for k ∈ [0, N/2)
+  var y = fill(n, 0.0 + 0i)
+  for k in 0..half do
+    val angle = -2.0 * pi * to_real(k) / to_real(n)
+    val w     = cos(angle) + sin(angle) * i
+    val t     = w * of[k]
+    y[k]        = ef[k] + t
+    y[k + half] = ef[k] - t
+  y
 
 def main() =
+  // The `: [complex]` annotation pushes the element type into each
+  // literal, so the real values 0.0 / 1.0 coerce per-element via
+  // `to_complex(...)`.
   val x: [complex] = [
     1.0, 1.0, 1.0, 1.0,
     0.0, 0.0, 0.0, 0.0
   ]
-  val y = fft8(x)
+  val y = fft(x)
+  val n = length(y)
   print("FFT of [1, 1, 1, 1, 0, 0, 0, 0]:")
-  for k in 0..8 do
+  for k in 0..n do
     print(y[k])
 ```
 
-Output (DC term is the sum of inputs; real input gives `Y[k] = conj(Y[N-k])`):
+Output (DC term `Y[0]` is the sum of inputs; real input gives `Y[k] = conj(Y[N-k])` for k > 0):
 
 ```
 FFT of [1, 1, 1, 1, 0, 0, 0, 0]:
@@ -1108,6 +1111,4 @@ FFT of [1, 1, 1, 1, 0, 0, 0, 0]:
 1+2.41421i
 ```
 
-The full source lives at `examples/fft/main.nex`.
-
-Sizes are hard-wired (1, 2, 4, 8) because v0 doesn't yet have a `fill(n, value)` / `zeros(n)` primitive for building variable-length complex arrays. A general FFT slots in once that lands.
+The full source lives at `examples/fft/main.nex`. Change `x` to any power-of-2 length and the same code transforms it.

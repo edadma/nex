@@ -846,17 +846,20 @@ class NexElaborator:
     case t: TImportDecl  => t
 
   private def inferFun(f: TFunDecl): TFunDecl =
+    // Pre-register the function's TyFunc shape BEFORE inferring its
+    // body so any recursive `TVarRef` to `f.sym` inside the body
+    // resolves to the right return type. The declared return type is
+    // used directly if present; otherwise we register TyUnknown for
+    // the return and the second `setSymType` below refines it after
+    // the body is inferred.
+    val params = f.params.map(p => (currentType(p), paramModes.getOrElse(p.id, ParamMode.Read)))
+    setSymType(f.sym, TyFunc(params, f.returnType))
+
     val body2 = infExpr(f.body)
     val ret =
       if f.returnType != TyUnknown then f.returnType
       else body2.tpe
-    val sym2 = setSymType(
-      f.sym,
-      TyFunc(
-        f.params.map(p => (currentType(p), paramModes.getOrElse(p.id, ParamMode.Read))),
-        ret,
-      ),
-    )
+    val sym2 = setSymType(f.sym, TyFunc(params, ret))
     f.copy(sym = sym2, body = body2, returnType = ret)
 
   private def inferTopBinding(b: TTopBinding): TTopBinding =
@@ -1621,6 +1624,24 @@ class NexElaborator:
           case Some(TyComplex) => TyComplex
           case Some(t)         => t
           case None            => TyUnknown
+      // §10.5 construction. `fill(n, v)` shape depends on n's type:
+      //   - `n: integer`            → `[T]`  where T = v.tpe
+      //   - `n: (integer, integer)` → `[[T]]`
+      // Without an arg-type-aware path, the default `TyUnknown` would
+      // make `print(fill(8, 0+0i))` silently drop the value.
+      case "fill" if args.size == 2 =>
+        val elemT = args(1).tpe
+        args.head.tpe match
+          case TyInteger                              => TyArray(elemT, 1)
+          case TyTuple(List(TyInteger, TyInteger))    => TyArray(elemT, 2)
+          case _                                       => TyUnknown
+      // `zeros` / `ones` always produce integer arrays in the
+      // interpreter; the rank is determined by the arg shape.
+      case "zeros" | "ones" if args.size == 1 =>
+        args.head.tpe match
+          case TyInteger                              => TyArray(TyInteger, 1)
+          case TyTuple(List(TyInteger, TyInteger))    => TyArray(TyInteger, 2)
+          case _                                       => TyUnknown
       case _ => preludeReturnType(name)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
