@@ -1,0 +1,6 @@
+def main() =
+  val xs = [1, 2, 3, 4, 5]
+  val sq = xs.map(x -> x * x)
+  val total = sum(sq)
+  print(s"squares = $sq")
+  print(s"sum = $total")

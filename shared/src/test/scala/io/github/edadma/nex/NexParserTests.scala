@@ -161,6 +161,44 @@ class NexParserTests extends AnyWordSpec with Matchers:
     "treat real × identifier as juxtaposition" in {
       parseExpr("2.0pi") shouldBe JuxtaposeExpr(RealLitExpr(2.0), VarRefExpr("pi"))
     }
+    "parse `5 - 2` as binary subtraction, not `5 * (-2)` (regression)" in {
+      parseExpr("5 - 2") shouldBe BinOpExpr("-", IntLitExpr(5), IntLitExpr(2))
+    }
+    "parse `3 - 4i` as `3 - 4i`, with juxt on the RHS of binary -" in {
+      parseExpr("3 - 4i") shouldBe
+        BinOpExpr("-",
+          IntLitExpr(3),
+          JuxtaposeExpr(IntLitExpr(4), VarRefExpr("i")))
+    }
+    "still reject juxtaposition through a unary minus" in {
+      // `3 -x` is `3 - x`, NOT `3 * (-x)` (juxt body forbids unary prefix).
+      parseExpr("3 -x") shouldBe BinOpExpr("-", IntLitExpr(3), VarRefExpr("x"))
+    }
+    "fold `-4i` into a signed juxt coefficient" in {
+      parseExpr("-4i") shouldBe JuxtaposeExpr(IntLitExpr(-4), VarRefExpr("i"))
+    }
+    "fold `-2.5pi` into a signed real juxt coefficient" in {
+      parseExpr("-2.5pi") shouldBe JuxtaposeExpr(RealLitExpr(-2.5), VarRefExpr("pi"))
+    }
+    "fold `-3(x + 1)` into a signed juxt coefficient over a paren body" in {
+      parseExpr("-3(x + 1)") shouldBe
+        JuxtaposeExpr(IntLitExpr(-3),
+          BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1)))
+    }
+    "parse `5 - 4i` as `5 - 4i`, NOT `5 + (-4i)` (binary - wins at addExpr level)" in {
+      parseExpr("5 - 4i") shouldBe
+        BinOpExpr("-",
+          IntLitExpr(5),
+          JuxtaposeExpr(IntLitExpr(4), VarRefExpr("i")))
+    }
+    "parse `-2^2` as `(-2)^2`, NOT `-(2^2)` (unary - tighter than ^)" in {
+      // Spec §4.3: unary `-` is precedence 3, `^` is precedence 4. The
+      // signed-juxt alternative can't capture `-2^2` because its juxtBody
+      // demands a postfixExpr — `^...` doesn't match — so the parse falls
+      // through to `powExpr` where `^` binds outside the unary minus.
+      parseExpr("-2^2") shouldBe
+        BinOpExpr("^", UnaryOpExpr("-", IntLitExpr(2)), IntLitExpr(2))
+    }
   }
 
   // ========================================================================
@@ -353,6 +391,24 @@ class NexParserTests extends AnyWordSpec with Matchers:
         ValDeclAST(VarPat("y"), None, IntLitExpr(2)),
         ConstDeclAST(VarPat("Z"), None, IntLitExpr(3)),
       )
+    }
+    "parse val with an indented-block body (same shape as def)" in {
+      val src =
+        """val total =
+          |  val a = 1
+          |  val b = 2
+          |  a + b""".stripMargin
+      val Right(prog) = new NexParser().parseProgram(src): @unchecked
+      prog.decls.head shouldBe a [ValDeclAST]
+      prog.decls.head.asInstanceOf[ValDeclAST].init shouldBe a [BlockExpr]
+    }
+    "parse var with an indented-block body" in {
+      val src =
+        """var counter =
+          |  val seed = 7
+          |  seed * 2""".stripMargin
+      val Right(prog) = new NexParser().parseProgram(src): @unchecked
+      prog.decls.head.asInstanceOf[VarDeclAST].init shouldBe a [BlockExpr]
     }
   }
 

@@ -96,19 +96,25 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val decl: PackratParser[DeclAST] = attributedDecl
 
   lazy val valDecl: PackratParser[DeclAST] =
-    "val" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> expr) ^^ {
+    "val" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
       case pat ~ tyOpt ~ init => ValDeclAST(pat, tyOpt, init)
     }
 
   lazy val varDecl: PackratParser[DeclAST] =
-    "var" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> expr) ^^ {
+    "var" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
       case pat ~ tyOpt ~ init => VarDeclAST(pat, tyOpt, init)
     }
 
   lazy val constDecl: PackratParser[DeclAST] =
-    "const" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> expr) ^^ {
+    "const" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
       case pat ~ tyOpt ~ init => ConstDeclAST(pat, tyOpt, init)
     }
+
+  /** RHS of a val/var/const binding: same shape as a `def` body — either a
+    * single inline expression after `=`, or a Newline-Indent block.
+    */
+  lazy val bindingBody: PackratParser[ExprAST] =
+    blockBody | expr
 
   // --- def declarations --------------------------------------------------
 
@@ -366,10 +372,32 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     *
     * Per §4.3 + §4.4, juxtaposition has higher precedence than `*` / `/` but
     * lower than `^`, so `2x^3` = `2 * (x^3)` and `1/2x` = `1 / (2 * x)`.
+    *
+    * The body is `juxtBody`, not `powExpr`, so the body cannot start with a
+    * unary prefix. Otherwise `3 - 4` would parse as `3 * (-4)`: `numericLit`
+    * matches `3`, then `powExpr → unaryExpr → "-" ~> postfixExpr` would eat
+    * the binary `-` plus `4`.
+    *
+    * The second alternative — `"-" ~> numericLit ~ juxtBody` — handles a
+    * signed coefficient: `-4i` parses as `JuxtaposeExpr(-4, i)`. It only
+    * fires when `juxtBody` actually matches, so `-4` standalone (no body)
+    * still parses through the `powExpr` fallback as `UnaryOp("-", 4)`, and
+    * `-2^2` still parses as `(-2)^2 = 4` (juxtBody can't match `^...` since
+    * postfixExpr won't accept a leading `^`).
     */
   lazy val juxtExpr: PackratParser[ExprAST] =
-    numericLit ~ powExpr ^^ { case n ~ b => JuxtaposeExpr(parseNumeric(n), b) } |
+    numericLit ~ juxtBody ^^ { case n ~ b => JuxtaposeExpr(parseNumeric(n), b) } |
+    "-" ~> numericLit ~ juxtBody ^^ { case n ~ b => JuxtaposeExpr(negateNumeric(n), b) } |
     powExpr
+
+  /** Power expression with unary prefix forbidden. Used only as the body of
+    * juxtaposition — see `juxtExpr`.
+    */
+  lazy val juxtBody: PackratParser[ExprAST] =
+    postfixExpr ~ opt("^" ~> powExpr) ^^ {
+      case e ~ None    => e
+      case e ~ Some(r) => BinOpExpr("^", e, r)
+    }
 
   /** `^` is right-associative: `a ^ b ^ c` = `a ^ (b ^ c)`. */
   lazy val powExpr: PackratParser[ExprAST] =
@@ -526,6 +554,16 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       RealLitExpr(raw.toDouble)
     else
       IntLitExpr(java.lang.Long.parseLong(raw))
+
+  /** Same as `parseNumeric` but fronts the literal with a unary minus. Used
+    * by the signed-coefficient juxt alternative so `-4i` folds to a single
+    * `IntLitExpr(-4)` coefficient instead of `UnaryOp("-", IntLit(4))`.
+    */
+  private def negateNumeric(raw: String): ExprAST =
+    parseNumeric(raw) match
+      case IntLitExpr(n)  => IntLitExpr(-n)
+      case RealLitExpr(r) => RealLitExpr(-r)
+      case other          => UnaryOpExpr("-", other)
 
   // The interpolated-string body is split inside the lexer using parser
   // combinators (see NexLexer.interpBodyChunk); the parser just consumes

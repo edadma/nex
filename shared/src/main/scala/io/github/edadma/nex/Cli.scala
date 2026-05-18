@@ -45,6 +45,26 @@ object Cli:
             .text("Source file to parse."),
         ),
 
+      cmd("elaborate")
+        .action((_, c) => c.copy(command = "elaborate"))
+        .text("Parse and elaborate (name resolution); print the typed AST.")
+        .children(
+          arg[String]("<file>")
+            .required()
+            .action((x, c) => c.copy(file = x))
+            .text("Source file to elaborate."),
+        ),
+
+      cmd("run")
+        .action((_, c) => c.copy(command = "run"))
+        .text("Parse, elaborate, and execute the program.")
+        .children(
+          arg[String]("<file>")
+            .required()
+            .action((x, c) => c.copy(file = x))
+            .text("Source file to run."),
+        ),
+
       checkConfig { c =>
         if c.command.isEmpty then failure("no subcommand given (try `nex help`)")
         else success
@@ -59,14 +79,21 @@ object Cli:
       case None      => 1 // scopt already printed an error
       case Some(cfg) =>
         try cfg.command match
-          case "tokens" => doTokens(cfg.file); 0
-          case "parse"  => doParse(cfg.file)
-          case other    =>
+          case "tokens"    => doTokens(cfg.file); 0
+          case "parse"     => doParse(cfg.file)
+          case "elaborate" => doElaborate(cfg.file)
+          case "run"       => doRun(cfg.file)
+          case other       =>
             Console.err.println(s"nex: unknown command '$other'")
             1
-        catch case e: Throwable =>
-          Console.err.println(s"nex: ${e.getMessage}")
-          1
+        catch
+          case t: NexTrap =>
+            val where = t.pos.map(p => s"${p.line}:${p.column}: ").getOrElse("")
+            Console.err.println(s"nex: ${where}trap: ${t.msg}")
+            1
+          case e: Throwable =>
+            Console.err.println(s"nex: ${e.getMessage}")
+            1
 
   // -- Command implementations --------------------------------------------
 
@@ -84,6 +111,34 @@ object Cli:
       case Left(err) =>
         Console.err.println(s"nex: parse error:\n$err")
         1
+
+  private def doElaborate(file: String): Int =
+    val source = readFile(file)
+    new NexParser().parseProgram(source) match
+      case Left(err)  => Console.err.println(s"nex: parse error:\n$err"); 1
+      case Right(ast) =>
+        new NexElaborator().elaborate(ast) match
+          case Right(tp) =>
+            pprint.pprintln(tp)
+            0
+          case Left(errs) =>
+            Console.err.println("nex: elaboration errors:")
+            errs.foreach(e => Console.err.println(s"  ${e.toString}"))
+            1
+
+  private def doRun(file: String): Int =
+    val source = readFile(file)
+    new NexParser().parseProgram(source) match
+      case Left(err)  => Console.err.println(s"nex: parse error:\n$err"); 1
+      case Right(ast) =>
+        new NexElaborator().elaborate(ast) match
+          case Left(errs) =>
+            Console.err.println("nex: elaboration errors:")
+            errs.foreach(e => Console.err.println(s"  ${e.toString}"))
+            1
+          case Right(tp) =>
+            new NexInterpreter().runProgram(tp)
+            0
 
   /** Hard-coded for now; in v1 we'll wire it to build.sbt's `version`. */
   private def buildVersion: String = "0.0.1"
