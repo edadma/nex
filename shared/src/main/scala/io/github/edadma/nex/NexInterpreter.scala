@@ -108,38 +108,47 @@ class NexInterpreter:
     * top-level expressions (if any) suffice as the program's effect.
     */
   def runProgram(p: TProgram): Value =
+    initializeProgram(p)
+    findMain(p) match
+      case Some(sym) =>
+        val cell = globalEnv.lookup(sym.id).get
+        callFunction(cell.v.asInstanceOf[VFunc], Nil, None)
+      case None => VUnit
+
+  /** Initialize the program — bind all top-level decls (Pass A) and run
+    * every top-level initializer (Pass B for top-bindings). Doesn't call
+    * `main`. Public so the test runner can set up the environment and
+    * then call test functions individually.
+    */
+  def initializeProgram(p: TProgram): Unit =
     registerPrelude(p)
 
-    // Pass A: bind every top-level def/struct/binding name to a cell so
-    // mutual recursion works (closures captured during pass A pick up
-    // the right cells in pass B).
     val deferred = mutable.ListBuffer.empty[() => Unit]
     for d <- p.decls do d match
       case f: TFunDecl =>
         val cell = globalEnv.define(f.sym.id, VUnit)
         deferred += (() => cell.v = VUserFunc(f.params, f.body, globalEnv))
       case s: TStructDecl =>
-        // Cache the resolved field list so `constructStruct` can read it
-        // back at call time (the Symbol.tpe embedded in TVarRef may be
-        // the pre-resolution snapshot).
         structFields(s.sym.id) = s.fields
         globalEnv.define(s.sym.id, VStruct(s.sym.name, mutable.LinkedHashMap.empty))
       case b: TTopBinding =>
-        // RHS is evaluated in source order; bind a cell up-front so
-        // references in this binding's own RHS would resolve (and trap
-        // since the cell still holds VUnit).
         val cell = globalEnv.define(b.sym.id, VUnit)
         deferred += (() => cell.v = evalExpr(b.value, globalEnv))
       case _: TModuleDecl | _: TImportDecl => ()
 
     for run <- deferred do run()
 
-    // If there is a `main` def, call it with no args.
-    findMain(p) match
-      case Some(sym) =>
-        val cell = globalEnv.lookup(sym.id).get
-        callFunction(cell.v.asInstanceOf[VFunc], Nil, None)
-      case None => VUnit
+  /** Call a previously-registered top-level function by Symbol id with no
+    * arguments. Used by the test runner to invoke each `@test` function
+    * after [[initializeProgram]]. Throws `NexTrap` if the function traps.
+    */
+  def callNullary(sym: Symbol): Value =
+    globalEnv.lookup(sym.id) match
+      case Some(cell) =>
+        cell.v match
+          case f: VFunc => callFunction(f, Nil, None)
+          case other    => throw new NexTrap(s"`${sym.name}` is not a function: ${formatValue(other)}", None)
+      case None => throw new NexTrap(s"`${sym.name}` is not bound in the global environment", None)
 
   private def findMain(p: TProgram): Option[Symbol] =
     p.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f.sym }

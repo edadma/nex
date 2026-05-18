@@ -1,0 +1,13 @@
+def add(a: integer, b: integer) = a + b
+
+@test
+def test_add_commutes() =
+  assert_eq(add(2, 3), add(3, 2))
+
+@test
+def test_add_identity() =
+  assert_eq(add(5, 0), 5)
+
+@test
+def test_failing_example() =
+  assert_eq(add(1, 1), 3)

@@ -65,6 +65,16 @@ object Cli:
             .text("Source file to run."),
         ),
 
+      cmd("test")
+        .action((_, c) => c.copy(command = "test"))
+        .text("Discover and run every `@test`-annotated function in the project.")
+        .children(
+          arg[String]("<file>")
+            .required()
+            .action((x, c) => c.copy(file = x))
+            .text("Project entry file (its directory is the project root)."),
+        ),
+
       checkConfig { c =>
         if c.command.isEmpty then failure("no subcommand given (try `nex help`)")
         else success
@@ -83,6 +93,7 @@ object Cli:
           case "parse"     => doParse(cfg.file)
           case "elaborate" => doElaborate(cfg.file)
           case "run"       => doRun(cfg.file)
+          case "test"      => doTest(cfg.file)
           case other       =>
             Console.err.println(s"nex: unknown command '$other'")
             1
@@ -123,6 +134,56 @@ object Cli:
       case Right(tp) =>
         new NexInterpreter().runProgram(tp)
         0
+
+  /** Walk the elaborated project for every `@test`-annotated nullary
+    * function, run each one in isolation (fresh interpreter so module-
+    * init side effects and top-level `var` mutations don't bleed
+    * across tests), and report pass/fail with a one-line summary.
+    *
+    * Per spec §6.9: tests pass by returning normally, fail by trapping.
+    * The runner catches `NexTrap` and prints its message + position;
+    * any unrecognised throwable also fails the test (defensive).
+    */
+  private def doTest(file: String): Int =
+    loadAndElaborate(file) match
+      case Left(rc) => rc
+      case Right(tp) =>
+        val tests = tp.decls.collect {
+          case f: TFunDecl if f.attributes.contains("test") && f.params.isEmpty => f
+        }
+        if tests.isEmpty then
+          println("no `@test` functions found.")
+          return 0
+
+        var passed = 0
+        var failed = 0
+        val start  = System.nanoTime
+        for f <- tests do
+          val tStart = System.nanoTime
+          try
+            val interp = new NexInterpreter()
+            interp.initializeProgram(tp)
+            interp.callNullary(f.sym)
+            val ms = (System.nanoTime - tStart) / 1_000_000
+            println(f"  ok    ${f.sym.name}%-40s ($ms%4d ms)")
+            passed += 1
+          catch
+            case t: NexTrap =>
+              val where = t.pos.map(p => s" at ${p.line}:${p.column}").getOrElse("")
+              val ms    = (System.nanoTime - tStart) / 1_000_000
+              println(f"  FAIL  ${f.sym.name}%-40s ($ms%4d ms)")
+              println(s"        ${t.msg}$where")
+              failed += 1
+            case e: Throwable =>
+              val ms = (System.nanoTime - tStart) / 1_000_000
+              println(f"  FAIL  ${f.sym.name}%-40s ($ms%4d ms)")
+              println(s"        unexpected exception: ${e.getMessage}")
+              failed += 1
+
+        val totalMs = (System.nanoTime - start) / 1_000_000
+        println()
+        println(s"$passed passed, $failed failed (${tests.size} total, ${totalMs} ms)")
+        if failed == 0 then 0 else 1
 
   /** Load + elaborate a project starting from `entryFile`. The project
     * root is the directory containing the entry file; imports resolve as
