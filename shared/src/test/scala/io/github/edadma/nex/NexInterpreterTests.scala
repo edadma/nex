@@ -1504,3 +1504,49 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "999\n"
     }
   }
+
+  // ============================================================================
+  // Top-level initialization order
+  // ============================================================================
+
+  "top-level initialization" should {
+
+    "allows a top-level val to call a function declared later in source order" in {
+      // Per §6.7, forward references between functions are allowed
+      // (no forward declarations required). The interpreter must
+      // initialize ALL function cells BEFORE running any binding
+      // initializer, so a top-level `val x = f()` works even when `def
+      // f` is declared after.
+      runOut("""
+        |val x: integer = compute()
+        |
+        |def compute(): integer = 42
+        |
+        |def main() = print(x)
+      """.stripMargin) shouldBe "42\n"
+    }
+
+    "supports mutual recursion between top-level functions" in {
+      runOut("""
+        |def is_even(n: integer): bool =
+        |  if n == 0 then true else is_odd(n - 1)
+        |
+        |def is_odd(n: integer): bool =
+        |  if n == 0 then false else is_even(n - 1)
+        |
+        |def main() =
+        |  print(is_even(4))
+        |  print(is_odd(7))
+      """.stripMargin) shouldBe "true\ntrue\n"
+    }
+
+    "supports top-level val that depends on a function" in {
+      runOut("""
+        |def square(n: integer): integer = n * n
+        |
+        |val s: integer = square(7)
+        |
+        |def main() = print(s)
+      """.stripMargin) shouldBe "49\n"
+    }
+  }

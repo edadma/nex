@@ -139,20 +139,27 @@ class NexInterpreter:
   def initializeProgram(p: TProgram): Unit =
     registerPrelude(p)
 
-    val deferred = mutable.ListBuffer.empty[() => Unit]
+    // Two-stage initialization so top-level val/var/const initializers
+    // can call any top-level function regardless of source order. All
+    // function cells get their VUserFunc values FIRST; THEN binding
+    // initializers run. Without this split, a `val x = f()` declared
+    // ahead of `def f() = ...` would observe `f` as VUnit and trap.
+    val funcInits    = mutable.ListBuffer.empty[() => Unit]
+    val bindingInits = mutable.ListBuffer.empty[() => Unit]
     for d <- p.decls do d match
       case f: TFunDecl =>
         val cell = globalEnv.define(f.sym.id, VUnit)
-        deferred += (() => cell.v = VUserFunc(f.params, f.body, globalEnv))
+        funcInits += (() => cell.v = VUserFunc(f.params, f.body, globalEnv))
       case s: TStructDecl =>
         structFields(s.sym.id) = s.fields
         globalEnv.define(s.sym.id, VStruct(s.sym.name, mutable.LinkedHashMap.empty))
       case b: TTopBinding =>
         val cell = globalEnv.define(b.sym.id, VUnit)
-        deferred += (() => cell.v = evalExpr(b.value, globalEnv))
+        bindingInits += (() => cell.v = evalExpr(b.value, globalEnv))
       case _: TModuleDecl | _: TImportDecl => ()
 
-    for run <- deferred do run()
+    funcInits.foreach(_())
+    bindingInits.foreach(_())
 
   /** Call a previously-registered top-level function by Symbol id with no
     * arguments. Used by the test runner to invoke each `@test` function
