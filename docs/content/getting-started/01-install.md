@@ -34,7 +34,7 @@ The first `sbt` invocation downloads dependencies (several minutes). After that 
 
 The AOT compile path is verified end-to-end on **Mac arm64**. Linux x86_64 and Linux aarch64 should work — the codegen emits portable LLVM IR and shells out to whatever clang finds — but neither is exercised on every commit. Report any platform-specific issues.
 
-The interpreter (`nex run`, `nex test`) runs anywhere the JVM does, including Windows.
+The interpreter (`nex run`, `nex test`) runs anywhere the JVM does, including Windows. The same code path also builds for Scala.js (Node) and Scala Native — every commit runs the full ~700-test suite on all three targets — so embedding the interpreter in a browser playground or a static binary is straightforward when the need arises.
 
 ## Next step
 

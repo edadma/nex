@@ -11,7 +11,7 @@ The Nex implementation runs two execution paths in parallel and treats their dis
 
 ## Three layers of testing
 
-- **Unit tests on every subsystem.** Lexer, parser, three elaborator stages, interpreter, codegen, prelude. Roughly 700 tests on the JVM target; every commit runs the full suite.
+- **Unit tests on every subsystem.** Lexer, parser, three elaborator stages, interpreter, codegen, prelude. Roughly 700 tests, all of which pass on all three CLI targets (JVM, Scala.js, Scala Native); every commit runs the full suite.
 - **IR pattern checks.** Codegen tests assert against expected LLVM IR fragments — both that the right instructions are emitted and that the fusion pass actually produced a single loop where it claimed to. This catches regressions where the IR drifts shape but still happens to execute correctly.
 - **End-to-end interpreter/AOT parity.** A program is run twice — once through the interpreter, once through the AOT binary — and the two stdouts are compared byte-for-byte. Documented exception: the AOT path emits `%g`-formatted reals at 6 significant figures, while the interpreter emits 17; for irrational outputs the trailing digits diverge.
 

@@ -12,11 +12,11 @@ Other Unix targets (Linux x86_64, Linux arm64) should work given a working `clan
 
 ## CLI builds
 
-The Nex compiler is cross-compiled to three targets via Scala 3:
+The Nex compiler is cross-compiled to three targets via Scala 3, and the full unit-test suite (~700 tests) passes identically on all three on every commit. Filesystem operations route through the [`path`](https://github.com/edadma/path) library so the module loader runs the same code on JVM filesystems, Node's `fs`, and Native via `java.nio.file`.
 
 - **JVM** — primary development target. The full CLI (`tokens`, `parse`, `elaborate`, `run`, `test`, `compile`) lives here; the JVM is the only target that exercises the AOT path because it shells out to `clang`.
-- **Scala.js** — the interpreter compiles cleanly and runs in the browser. Useful for embedded playgrounds; no `compile` subcommand because there's no `clang` to shell out to.
-- **Scala Native** — same story as Scala.js. Compiles, interprets; no AOT path.
+- **Scala.js (Node)** — the interpreter and module loader work the same as JVM. `nex run` / `nex test` are functional; no `compile` subcommand because there's no `clang` to shell out to.
+- **Scala Native** — same story as Scala.js. `nex run` / `nex test` work; no AOT path.
 
 ## Planned
 
