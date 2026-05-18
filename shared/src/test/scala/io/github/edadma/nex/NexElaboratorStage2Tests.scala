@@ -906,6 +906,26 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       ysBind.value.tpe shouldBe TyArray(TyInteger, 2)
     }
 
+    "spec §4.13: empty `[]` without a type annotation is an error" in {
+      val errs = elabExpect("val x = []")
+      errs.exists(_.contains("empty array literal requires a type annotation")) shouldBe true
+    }
+
+    "spec §4.13: empty `[]` with a type annotation infers the annotated element type" in {
+      val tp = elab("val xs: [real] = []")
+      val bind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "xs").get
+      bind.value.tpe shouldBe TyArray(TyReal, 1)
+    }
+
+    "spec §4.13: empty `[]` works when passed to a typed function parameter" in {
+      val tp = elab("""
+        |def sum_all(xs: [real]) = 0.0
+        |val r = sum_all([])
+      """.stripMargin)
+      val bind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "r").get
+      bind.value.tpe shouldBe TyReal
+    }
+
     "push-down works for `xs.map(x -> ...)` method-call sugar" in {
       // Method-call form goes through the TMethodCall branch in Stage 2.
       // The HOF dispatch synthesizes the equivalent TCall shape (receiver

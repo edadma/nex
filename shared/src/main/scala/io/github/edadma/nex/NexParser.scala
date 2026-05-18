@@ -96,18 +96,18 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val decl: PackratParser[DeclAST] = attributedDecl
 
   lazy val valDecl: PackratParser[DeclAST] =
-    "val" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
-      case pat ~ tyOpt ~ init => ValDeclAST(pat, tyOpt, init)
+    opt("private") ~ ("val" ~> patternList) ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
+      case priv ~ pat ~ tyOpt ~ init => ValDeclAST(pat, tyOpt, init, isPrivate = priv.isDefined)
     }
 
   lazy val varDecl: PackratParser[DeclAST] =
-    "var" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
-      case pat ~ tyOpt ~ init => VarDeclAST(pat, tyOpt, init)
+    opt("private") ~ ("var" ~> patternList) ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
+      case priv ~ pat ~ tyOpt ~ init => VarDeclAST(pat, tyOpt, init, isPrivate = priv.isDefined)
     }
 
   lazy val constDecl: PackratParser[DeclAST] =
-    "const" ~> patternList ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
-      case pat ~ tyOpt ~ init => ConstDeclAST(pat, tyOpt, init)
+    opt("private") ~ ("const" ~> patternList) ~ opt(":" ~> typeExpr) ~ ("=" ~> bindingBody) ^^ {
+      case priv ~ pat ~ tyOpt ~ init => ConstDeclAST(pat, tyOpt, init, isPrivate = priv.isDefined)
     }
 
   /** RHS of a val/var/const binding: same shape as a `def` body — either a

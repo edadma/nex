@@ -20,18 +20,21 @@ sealed trait DeclAST extends Positional:
 /** `val pattern [: type] = expr`. */
 case class ValDeclAST(
     pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    isPrivate: Boolean = false,
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
 
 /** `var pattern [: type] = expr`. */
 case class VarDeclAST(
     pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    isPrivate: Boolean = false,
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
 
 /** `const NAME [: type] = constExpr`. */
 case class ConstDeclAST(
     pat: PatternAST, typ: Option[TypeAST], init: ExprAST,
+    isPrivate: Boolean = false,
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
 

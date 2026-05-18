@@ -259,17 +259,21 @@ class NexElaborator:
         case v: ValDeclAST =>
           val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
           topSyms(d) = ss
-          // Top-level val/var/const have no `private` keyword in v0 — all
-          // are exported (synthetic `$tuple` temps are excluded by name).
-          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+          // `private val` is module-local and never exported; the
+          // synthetic `$tuple` temps from destructuring are also excluded
+          // by name. Other named bindings are public per spec §9.4.
+          if !v.isPrivate then
+            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
         case v: VarDeclAST =>
           val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
           topSyms(d) = ss
-          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+          if !v.isPrivate then
+            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
         case c: ConstDeclAST =>
           val ss = topBindingSyms(c.pat, SymKind.TopLevel, c)
           topSyms(d) = ss
-          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+          if !c.isPrivate then
+            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
         case _: ImportDeclAST | _: ModuleDeclAST =>
           ()
 
@@ -407,9 +411,9 @@ class NexElaborator:
       syms: List[Symbol],
   ): List[TTopBinding] =
     val (typAnn, init, p) = d match
-      case ValDeclAST(_, t, e, _)   => (t, e, d.pos)
-      case VarDeclAST(_, t, e, _)   => (t, e, d.pos)
-      case ConstDeclAST(_, t, e, _) => (t, e, d.pos)
+      case ValDeclAST(_, t, e, _, _)   => (t, e, d.pos)
+      case VarDeclAST(_, t, e, _, _)   => (t, e, d.pos)
+      case ConstDeclAST(_, t, e, _, _) => (t, e, d.pos)
       case _                         => sys.error("non-binding passed to elabTopBinding")
     val value = elabExpr(init)
     if kind == BindingKind.Var then syms.foreach(s => mutableSymIds += s.id)
@@ -442,9 +446,9 @@ class NexElaborator:
     */
   private def elabBlockBinding(d: DeclAST): List[TBlockItem] =
     val (pat, typAnn, init, kind) = d match
-      case ValDeclAST(p, t, e, _)   => (p, t, e, BindingKind.Val)
-      case VarDeclAST(p, t, e, _)   => (p, t, e, BindingKind.Var)
-      case ConstDeclAST(p, t, e, _) => (p, t, e, BindingKind.Const)
+      case ValDeclAST(p, t, e, _, _)   => (p, t, e, BindingKind.Val)
+      case VarDeclAST(p, t, e, _, _)   => (p, t, e, BindingKind.Var)
+      case ConstDeclAST(p, t, e, _, _) => (p, t, e, BindingKind.Const)
       case _ =>
         err("only val/var/const declarations are allowed inside blocks", d)
         (WildcardPat(), None, UnitLitExpr(), BindingKind.Val)
@@ -720,6 +724,15 @@ class NexElaborator:
           TVarRef(freshSym, p, refined.tpe)
         case _ => infExpr(arg)
 
+    // Empty array literal with an expected array type: take the expected
+    // element/rank rather than running through `infExpr` (which would
+    // error per spec §4.13's "annotation required" rule). This is the
+    // happy path for `val x: [real] = []` / `f([])` where f wants `[T]`.
+    case TArrayLit(Nil, p, _) =>
+      expected match
+        case TyArray(_, _) => TArrayLit(Nil, p, expected)
+        case _             => infExpr(arg)
+
     case _ => infExpr(arg)
 
   /** A lambda is "partially inferred" iff at least one param's type in
@@ -922,6 +935,15 @@ class NexElaborator:
     case TTuple(elems, p, _) =>
       val es = elems.map(infExpr)
       TTuple(es, p, TyTuple(es.map(_.tpe)))
+
+    case TArrayLit(Nil, p, _) =>
+      // Spec §4.13: empty rank-1 literals require a type annotation. If
+      // we reached `infExpr` for an empty literal that means no expected
+      // type was pushed in — emit an error so the user is told to annotate.
+      // [[inferArg]] handles the `val x: [real] = []` happy path before
+      // this case ever fires.
+      err("empty array literal requires a type annotation (e.g. `val x: [real] = []`)", p)
+      TArrayLit(Nil, p, TyArray(TyUnknown, 1))
 
     case TArrayLit(elems, p, _) =>
       val es = elems.map(infExpr)

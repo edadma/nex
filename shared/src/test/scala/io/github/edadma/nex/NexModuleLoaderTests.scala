@@ -114,4 +114,66 @@ class NexModuleLoaderTests extends AnyWordSpec with Matchers:
       val modules = new NexModuleLoader(root).loadFrom(entry)
       modules.left.toOption.get.exists(_.contains("does not match")) shouldBe true
     }
+
+    "import a struct type and its constructor across modules (spec §9.4)" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import geom.{Point}\ndef main() = print(Point(3.0, 4.0).x)\n",
+        "geom/types.nex"  -> "module geom\nstruct Point\n  x: real\n  y: real\nend\n",
+      ))
+      runProject(entry).trim shouldBe "3.0"
+    }
+
+    "private struct is invisible to importing modules (spec §9.4)" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import geom.{Hidden}\ndef main() = print(0)\n",
+        "geom/types.nex"  -> "module geom\nprivate struct Hidden\n  x: real\nend\n",
+      ))
+      val root    = pathDirname(entry)
+      val modules = new NexModuleLoader(root).loadFrom(entry).getOrElse(fail("loader"))
+      val result  = new NexElaborator().elaborateProject(modules)
+      result.left.toOption.get.exists(_.toString.contains("no public member `Hidden`")) shouldBe true
+    }
+
+    "private val is invisible to importing modules" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import lib.{secret}\ndef main() = print(secret)\n",
+        "lib/c.nex"       -> "module lib\nprivate val secret = 42\n",
+      ))
+      val root    = pathDirname(entry)
+      val modules = new NexModuleLoader(root).loadFrom(entry).getOrElse(fail("loader"))
+      val result  = new NexElaborator().elaborateProject(modules)
+      result.left.toOption.get.exists(_.toString.contains("no public member `secret`")) shouldBe true
+    }
+
+    "public val from another module is visible" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import lib.{answer}\ndef main() = print(answer)\n",
+        "lib/c.nex"       -> "module lib\nval answer = 42\n",
+      ))
+      runProject(entry).trim shouldBe "42"
+    }
+
+    "private const is invisible to importing modules" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"  -> "import lib.{MAGIC}\ndef main() = print(MAGIC)\n",
+        "lib/c.nex" -> "module lib\nprivate const MAGIC = 99\n",
+      ))
+      val root    = pathDirname(entry)
+      val modules = new NexModuleLoader(root).loadFrom(entry).getOrElse(fail("loader"))
+      val result  = new NexElaborator().elaborateProject(modules)
+      result.left.toOption.get.exists(_.toString.contains("no public member `MAGIC`")) shouldBe true
+    }
+
+    "mark a module with `@test module` as test-only (spec §9.6)" in {
+      // The loader records `isTestOnly` per spec §9.6. The CLI uses
+      // this flag to filter test fixtures out of `nex run` builds.
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"              -> "import test_fixtures.{helper}\ndef main() = print(helper())\n",
+        "test_fixtures/fix.nex" -> "@test module test_fixtures\ndef helper() = 42\n",
+      ))
+      val root    = pathDirname(entry)
+      val modules = new NexModuleLoader(root).loadFrom(entry).getOrElse(fail("loader"))
+      modules.find(_.path == List("test_fixtures")).get.isTestOnly shouldBe true
+      modules.find(_.path == Nil).get.isTestOnly shouldBe false
+    }
   }

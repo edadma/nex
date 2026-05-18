@@ -187,7 +187,7 @@ object Cli:
     * any unrecognised throwable also fails the test (defensive).
     */
   private def doTest(file: String): Int =
-    loadAndElaborate(file) match
+    loadAndElaborate(file, includeTestOnly = true) match
       case Left(rc) => rc
       case Right(tp) =>
         val tests = tp.decls.collect {
@@ -231,15 +231,28 @@ object Cli:
     * root is the directory containing the entry file; imports resolve as
     * subdirectories of that root (per spec §9). Returns the elaborated
     * TProgram or an exit code (after printing the relevant errors).
+    *
+    * @param includeTestOnly  When false (the `nex run` / `nex compile`
+    *   case), modules whose any file declares `@test module ...` are
+    *   stripped from the loader's result per spec §9.6 — test fixtures
+    *   should not appear in non-test builds. When true (`nex test`),
+    *   every module is kept so the runner can discover `@test`
+    *   functions in regular and test-only modules alike.
     */
-  private def loadAndElaborate(entryFile: String): Either[Int, TProgram] =
+  private def loadAndElaborate(
+      entryFile: String,
+      includeTestOnly: Boolean = false,
+  ): Either[Int, TProgram] =
     val projectRoot = pathDirname(entryFile)
     new NexModuleLoader(projectRoot).loadFrom(entryFile) match
       case Left(errs) =>
         Console.err.println("nex: module loading errors:")
         errs.foreach(e => Console.err.println(s"  $e"))
         Left(1)
-      case Right(modules) =>
+      case Right(allModules) =>
+        val modules =
+          if includeTestOnly then allModules
+          else allModules.filterNot(_.isTestOnly)
         new NexElaborator().elaborateProject(modules) match
           case Right(tp) => Right(tp)
           case Left(errs) =>
