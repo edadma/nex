@@ -448,4 +448,137 @@ class NexElaboratorStage3Tests extends AnyWordSpec with Matchers:
       """.stripMargin)
       tp.decls should not be empty
     }
+
+    "rank-2 var-array uniqueness is enforced the same way" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  var m = [[1, 2], [3, 4]]
+        |  val f = () -> m[0, 0]
+        |  val g = () -> m[1, 1]
+      """.stripMargin)
+      errs should have size 1
+      errs.head should include("already captured")
+    }
+
+    "closure inside a for loop body counts as a capture once per closure value" in {
+      // The closure inside `for` is constructed once per iteration —
+      // the SAME TLambda node is reachable in the AST exactly once, so
+      // the uniqueness check sees a single capture. (A second TLambda
+      // in the loop body capturing the same binding would still error,
+      // which the next test verifies.)
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  for i in [1, 2, 3] do
+        |    val f = () -> a[i]
+        |    print(f())
+      """.stripMargin)
+      tp.decls should not be empty
+    }
+
+    "two captures in different control-flow branches still both count" in {
+      val errs = elabExpect("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  val f = if 1 > 0 then () -> a[0] else () -> a[1]
+        |  print(f())
+      """.stripMargin)
+      errs should have size 1
+      errs.head should include("already captured")
+    }
+  }
+
+  // ==========================================================================
+  // §8.3 — verify TClone is inserted at the AST level
+  // ==========================================================================
+
+  "auto-clone AST shape (§8.3)" should {
+
+    /** Find every TClone descendant under `e`. */
+    def findClones(e: TExpr): List[TClone] =
+      val out = scala.collection.mutable.ListBuffer.empty[TClone]
+      def go(x: TExpr): Unit =
+        x match
+          case c: TClone => out += c
+          case _         => ()
+        x match
+          case TBlock(items, r, _, _) =>
+            items.foreach {
+              case TBlockBinding(_, _, v) => go(v)
+              case TBlockExpr(y)          => go(y)
+            }
+            go(r)
+          case TCall(callee, args, _, _)   => go(callee); args.foreach(go)
+          case TBinOp(_, l, r, _, _)       => go(l); go(r)
+          case TUnaryOp(_, y, _, _)        => go(y)
+          case TIf(c, t, el, _, _)         => go(c); go(t); el.foreach(go)
+          case TFor(_, it, body, _, _)     => go(it); go(body)
+          case TWhile(c, b, _, _)          => go(c); go(b)
+          case TReturn(v, _, _)            => v.foreach(go)
+          case TAssign(t, v, _, _)         => go(t); go(v)
+          case TIndex(a, i, _, _)          => go(a); i.foreach(go)
+          case TLambda(_, body, _, _)      => go(body)
+          case TArrayLit(es, _, _)         => es.foreach(go)
+          case TTuple(es, _, _)            => es.foreach(go)
+          case TClone(a, _, _)             => go(a)
+          case _                           => ()
+      go(e)
+      out.toList
+
+    /** Pull a function's body out of a TProgram by name. */
+    def funBody(tp: TProgram, name: String): TExpr =
+      tp.decls.collectFirst {
+        case f: TFunDecl if f.sym.name == name => f.body
+      }.getOrElse(fail(s"function `$name` not found"))
+
+    "var b = a inserts TClone(a) when a is reused later" in {
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  var b = a
+        |  print(a[0])
+        |  print(b[0])
+      """.stripMargin)
+      val clones = findClones(funBody(tp, "main"))
+      clones should have size 1
+      clones.head.arr shouldBe a[TVarRef]
+      clones.head.arr.asInstanceOf[TVarRef].sym.name shouldBe "a"
+    }
+
+    "var b = a does NOT insert TClone when a has no later use" in {
+      val tp = elab("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  var b = a
+        |  print(b[0])
+      """.stripMargin)
+      val clones = findClones(funBody(tp, "main"))
+      clones shouldBe empty
+    }
+
+    "mut-call with later var-use inserts TClone at the arg" in {
+      val tp = elab("""
+        |def zero_first(xs: mut [integer]) = xs[0] = 0
+        |
+        |def main() =
+        |  var a = [10, 20]
+        |  zero_first(a)
+        |  print(a[0])
+      """.stripMargin)
+      val clones = findClones(funBody(tp, "main"))
+      clones should have size 1
+      clones.head.arr.asInstanceOf[TVarRef].sym.name shouldBe "a"
+    }
+
+    "scalar var is NEVER wrapped in TClone" in {
+      val tp = elab("""
+        |def main() =
+        |  var x = 1
+        |  var y = x
+        |  print(x)
+        |  print(y)
+      """.stripMargin)
+      val clones = findClones(funBody(tp, "main"))
+      clones shouldBe empty
+    }
   }

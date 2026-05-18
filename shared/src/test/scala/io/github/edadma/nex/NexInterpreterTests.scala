@@ -1457,4 +1457,50 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(b[2])
       """.stripMargin) shouldBe "5\n10\n15\n"
     }
+
+    "rank-2 element mutation through clone does not affect original" in {
+      // Pins that VArray2's buffer is properly deep-copied: changing an
+      // element through one binding leaves the other rows/cols intact.
+      runOut("""
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6]]
+        |  var n = m
+        |  n[1, 2] = 999
+        |  print(m[1, 2])
+        |  print(n[1, 2])
+        |  print(m[0, 0])
+        |  print(n[0, 0])
+      """.stripMargin) shouldBe "6\n999\n1\n1\n"
+    }
+
+    "function returning var-array doesn't break (clone at return)" in {
+      // `return a` is a move site. If a is also referenced in the same
+      // function body, the return wraps in TClone. For this test, a is
+      // never referenced again after the return so no clone is needed.
+      runOut("""
+        |def make_arr(n: integer) =
+        |  var a = [0, 0, 0]
+        |  a[0] = n
+        |  a
+        |
+        |def main() =
+        |  val xs = make_arr(42)
+        |  print(xs[0])
+      """.stripMargin) shouldBe "42\n"
+    }
+
+    "closure capture of var-array sees mutations through the captured cell" in {
+      // The closure captures `a` by-reference (env-aliasing). Mutating
+      // `a` after the closure is constructed is visible inside the
+      // closure. (This pins the EXISTING capture-by-Cell behaviour, not
+      // a new feature — included to ensure §4.11 single-capture cases
+      // didn't break it.)
+      runOut("""
+        |def main() =
+        |  var a = [1, 2, 3]
+        |  val f = () -> a[0]
+        |  a[0] = 999
+        |  print(f())
+      """.stripMargin) shouldBe "999\n"
+    }
   }
