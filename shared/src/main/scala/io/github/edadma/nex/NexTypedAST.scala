@@ -111,8 +111,17 @@ case class TUnaryOp(op: String, operand: TExpr, pos: Option[Position] = None, tp
   */
 case class TJuxtapose(coeff: TExpr, body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
-// Element-wise array ops as FIRST-CLASS nodes — the fusion pass pattern-
-// matches on these; the eventual LIR lowering unrolls them into loops.
+// Element-wise array ops as FIRST-CLASS nodes — the fusion pass will
+// pattern-match on these and lower a fused chain into a single loop.
+//
+// Status as of v0: TElementWise, TBroadcast, and TMatMul are actively
+// produced by Stage 2 (inferBinOp rewrites arithmetic over array
+// operands). TMap and TReduce are forward-looking *stubs*: the
+// elaborator never constructs them, and the prelude `map` / `reduce`
+// functions currently dispatch through the ordinary TCall path. The
+// stubs are kept (with pass-through cases in lowerExpr and
+// walkForMutations) so the eventual fusion pass can introduce them
+// without a follow-up typed-AST refactor.
 case class TElementWise(op: String, lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TBroadcast(scalar: TExpr, arr: TExpr, op: String, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TMap(arr: TExpr, fn: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
