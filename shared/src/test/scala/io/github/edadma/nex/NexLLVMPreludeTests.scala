@@ -136,3 +136,89 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("call void @abort()")
     }
   }
+
+  "prelude array HOFs (chunk 11)" should {
+    "map(arr, lambda) allocates a result array of the same length" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(map(xs, x -> x * 2))
+      """.stripMargin)
+      // Allocate result first, then loop.
+      ir should include regex """call ptr @__nex_arr1_alloc\(i64 %t\d+, i64 8\)"""
+      // Closure is extracted into fn+env once outside the loop.
+      ir should include regex """extractvalue \{ ptr, ptr \} %t\d+, 0"""
+      ir should include regex """extractvalue \{ ptr, ptr \} %t\d+, 1"""
+      // Loop body dispatches via the chunk-9 indirect call.
+      ir should include regex """call i64 \(ptr, i64\) %t\d+\(ptr %t\d+, i64 %t\d+\)"""
+    }
+
+    "map's per-iteration loop uses the hof.map label prefix" in {
+      val ir = compile("""
+        |def main() = print(map([1, 2, 3], x -> x + 1))
+      """.stripMargin)
+      ir should include("hof.map.cond")
+      ir should include("hof.map.body")
+      ir should include("hof.map.exit")
+    }
+
+    "map(arr, namedClosureVar) loads the closure from its slot then dispatches" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  val f: (integer -> integer) = x -> x * 10
+        |  print(map(xs, f))
+      """.stripMargin)
+      // The bound closure value lives in a `{ ptr, ptr }` alloca; the
+      // HOF loads it, splits it, and calls indirectly inside the loop.
+      ir should include regex """load \{ ptr, ptr \}, ptr %t\d+"""
+      ir should include regex """call i64 \(ptr, i64\) %t\d+\(ptr %t\d+, i64 %t\d+\)"""
+    }
+
+    "reduce(arr, init, lambda) uses an alloca'd accumulator slot" in {
+      val ir = compile("""
+        |def main() = print(reduce([1, 2, 3, 4], 0, (a, x) -> a + x))
+      """.stripMargin)
+      // 2-arg closure with prepended env, so the signature is `(ptr, i64, i64) -> i64`.
+      ir should include regex """call i64 \(ptr, i64, i64\) %t\d+\(ptr %t\d+, i64 %t\d+, i64 %t\d+\)"""
+      ir should include("hof.reduce.cond")
+      ir should include("hof.reduce.body")
+      // alloca for the accumulator slot.
+      ir should include regex """alloca i64"""
+    }
+
+    "filter(arr, predicate) over-allocates then truncates the descriptor length" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5]
+        |  print(filter(xs, x -> x % 2 == 0))
+      """.stripMargin)
+      // Predicate returns i1, so the indirect-call signature is `(ptr, i64) -> i1`.
+      ir should include regex """call i1 \(ptr, i64\) %t\d+\(ptr %t\d+, i64 %t\d+\)"""
+      ir should include("hof.filter.cond")
+      ir should include("hof.filter.body")
+      ir should include("filter.keep")
+      ir should include("filter.skip")
+      // Truncation: store the running count into the descriptor's
+      // length field (field index 1).
+      ir should include regex """getelementptr inbounds %nex_arr1, ptr %t\d+, i32 0, i32 1"""
+    }
+
+    "map on rank-2 surfaces a notYet diagnostic (rank-1 only at v0)" in {
+      val ir = compile("""
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(map(m, x -> x + 1))
+      """.stripMargin)
+      ir should include("not yet supported")
+    }
+
+    "map preserves the result element type (real → real)" in {
+      val ir = compile("""
+        |def main() = print(map([1.0, 2.0, 3.0], x -> x * 2.0))
+      """.stripMargin)
+      // Real elements use 8 bytes per slot, same as integer; but the
+      // indirect call's signature uses `double` types.
+      ir should include regex """call double \(ptr, double\) %t\d+\(ptr %t\d+, double %t\d+\)"""
+    }
+  }

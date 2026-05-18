@@ -168,6 +168,8 @@ protected trait NexLLVMState:
   protected def emitFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, cols: Option[TExpr], resultT: Type): String
   protected def storeElem(storageT: String, value: String, slot: String): Unit
   protected def loadElem(storageT: String, slot: String, langT: String): String
+  protected def emitCountingLoop(len: String, prefix: String)(genBody: String => Unit): Unit
+  protected def bufPtr(desc: String, t: Type): String
 
   protected def emitPreamble(): Unit
   protected def emitInitFunction(bindings: List[TTopBinding]): Unit

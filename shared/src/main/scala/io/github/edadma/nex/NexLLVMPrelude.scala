@@ -117,6 +117,14 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("assert_approx", List(a, b, eps)) =>
         emitAssertApprox(a, b, eps); "void"
 
+      // §10.4 array HOFs — direct inlined loops that dispatch each
+      // iteration through the chunk-9 closure call helper. Works
+      // identically for inline TLambda args and TVarRef closure
+      // bindings (both emit a `{ptr, ptr}` value via emitExpr).
+      case ("map",    List(arr, fn))           => emitMapCall(arr, fn, resultT)
+      case ("reduce", List(arr, init, fn))     => emitReduceCall(arr, init, fn, resultT)
+      case ("filter", List(arr, fn))           => emitFilterCall(arr, fn, resultT)
+
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
 
@@ -229,3 +237,172 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     // Release the owning share we took on the input array.
     emitArrDec(av, arr.tpe)
     result
+
+  // ---------------------------------------------------------------------------
+  // §10.4 array higher-order functions (chunk 11).
+  //
+  // map / reduce / filter all share the same shape:
+  //   1. Evaluate `arr` once into an owning SSA value.
+  //   2. Evaluate the closure-typed `fn` once and split it into
+  //      `{ fn_ptr, env_ptr }` so the loop body can dispatch directly.
+  //   3. Iterate 0..len-1, invoking the closure per element.
+  //   4. dec the source array (we owned a share).
+  //
+  // Rank-1 only for now — rank-2 map would preserve shape but the
+  // interpreter's filter is rank-1 only too, so the spec target is the
+  // rank-1 path. Rank-2 surfaces a `notYet` diag.
+  // ---------------------------------------------------------------------------
+
+  /** Emit `map(arr, fn)` — allocate a result array of the same length
+    * and store each `fn(arr[i])` into it. The closure's `{ptr, ptr}`
+    * value is split into fn_ptr + env_ptr before the loop so the body
+    * only needs an indirect call.
+    */
+  private def emitMapCall(arr: TExpr, fn: TExpr, resultT: Type): String =
+    if arrayRank(arr.tpe) != 1 then
+      notYet(s"map on rank ${arrayRank(arr.tpe)} (only rank-1 supported)")
+      return "0"
+
+    val srcElem = arrayElem(arr.tpe)
+    val resElem = arrayElem(resultT)
+    val srcEsz  = elemSize(srcElem)
+    val resEsz  = elemSize(resElem)
+    val srcStT  = storageType(srcElem)
+    val srcLLT  = llvmType(srcElem)
+    val resStT  = storageType(resElem)
+    val resLLT  = llvmType(resElem)
+
+    val arrV    = emitExpr(arr)
+    val (fnPtr, envPtr) = splitClosure(fn)
+    val len     = newReg()
+    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    val res     = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $len, i64 $resEsz)\n")
+
+    emitCountingLoop(len, "hof.map") { i =>
+      val srcSlot = newReg()
+      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $srcEsz)\n")
+      val elem    = loadElem(srcStT, srcSlot, srcLLT)
+      val y       = newReg()
+      emitLine(s"  $y = call $resLLT (ptr, $srcLLT) $fnPtr(ptr $envPtr, $srcLLT $elem)\n")
+      val dstSlot = newReg()
+      emitLine(s"  $dstSlot = call ptr @__nex_arr1_slot(ptr $res, i64 $i, i64 $resEsz)\n")
+      storeElem(resStT, y, dstSlot)
+    }
+
+    emitArrDec(arrV, arr.tpe)
+    res
+
+  /** Emit `reduce(arr, init, fn)` — fold the array left-to-right
+    * starting from `init`. The accumulator lives in an alloca slot so
+    * we can update-in-place each iteration without phi nodes.
+    */
+  private def emitReduceCall(arr: TExpr, init: TExpr, fn: TExpr, resultT: Type): String =
+    if arrayRank(arr.tpe) != 1 then
+      notYet(s"reduce on rank ${arrayRank(arr.tpe)} (only rank-1 supported)")
+      return "0"
+
+    val srcElem = arrayElem(arr.tpe)
+    val srcEsz  = elemSize(srcElem)
+    val srcStT  = storageType(srcElem)
+    val srcLLT  = llvmType(srcElem)
+    val accLLT  = llvmType(resultT)
+
+    val arrV = emitExpr(arr)
+    val iv   = emitExpr(init)
+    val (fnPtr, envPtr) = splitClosure(fn)
+    val accSlot = newReg()
+    emitLine(s"  $accSlot = alloca $accLLT\n")
+    emitLine(s"  store $accLLT $iv, ptr $accSlot\n")
+    val len  = newReg()
+    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+
+    emitCountingLoop(len, "hof.reduce") { i =>
+      val srcSlot = newReg()
+      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $srcEsz)\n")
+      val elem    = loadElem(srcStT, srcSlot, srcLLT)
+      val accCur  = newReg()
+      emitLine(s"  $accCur = load $accLLT, ptr $accSlot\n")
+      val nextAcc = newReg()
+      emitLine(s"  $nextAcc = call $accLLT (ptr, $accLLT, $srcLLT) $fnPtr(ptr $envPtr, $accLLT $accCur, $srcLLT $elem)\n")
+      emitLine(s"  store $accLLT $nextAcc, ptr $accSlot\n")
+    }
+
+    emitArrDec(arrV, arr.tpe)
+    val finalAcc = newReg()
+    emitLine(s"  $finalAcc = load $accLLT, ptr $accSlot\n")
+    finalAcc
+
+  /** Emit `filter(arr, predicate)` — allocate a worst-case-sized result
+    * array of length(arr), iterate and copy elements where the
+    * predicate returns true, then truncate the descriptor's length
+    * field to the actual count. The over-allocation costs at most a
+    * pointer's-worth of unused memory and avoids a two-pass approach.
+    */
+  private def emitFilterCall(arr: TExpr, fn: TExpr, resultT: Type): String =
+    if arrayRank(arr.tpe) != 1 then
+      notYet(s"filter on rank ${arrayRank(arr.tpe)} (only rank-1 supported)")
+      return "0"
+
+    val elem    = arrayElem(arr.tpe)
+    val esz     = elemSize(elem)
+    val stT     = storageType(elem)
+    val langT   = llvmType(elem)
+
+    val arrV = emitExpr(arr)
+    val (fnPtr, envPtr) = splitClosure(fn)
+    val len  = newReg()
+    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    val res  = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $len, i64 $esz)\n")
+    val countSlot = newReg()
+    emitLine(s"  $countSlot = alloca i64\n")
+    emitLine(s"  store i64 0, ptr $countSlot\n")
+
+    emitCountingLoop(len, "hof.filter") { i =>
+      val srcSlot = newReg()
+      emitLine(s"  $srcSlot = call ptr @__nex_arr1_slot(ptr $arrV, i64 $i, i64 $esz)\n")
+      val v       = loadElem(stT, srcSlot, langT)
+      val keep    = newReg()
+      emitLine(s"  $keep = call i1 (ptr, $langT) $fnPtr(ptr $envPtr, $langT $v)\n")
+      val keepL   = freshLabel("filter.keep")
+      val skipL   = freshLabel("filter.skip")
+      emitTerminator(s"  br i1 $keep, label %$keepL, label %$skipL\n")
+      startBlock(keepL)
+      val cur = newReg()
+      emitLine(s"  $cur = load i64, ptr $countSlot\n")
+      val dst = newReg()
+      emitLine(s"  $dst = call ptr @__nex_arr1_slot(ptr $res, i64 $cur, i64 $esz)\n")
+      storeElem(stT, v, dst)
+      val nx  = newReg()
+      emitLine(s"  $nx = add i64 $cur, 1\n")
+      emitLine(s"  store i64 $nx, ptr $countSlot\n")
+      emitTerminator(s"  br label %$skipL\n")
+      startBlock(skipL)
+    }
+
+    // Truncate the result descriptor's length field to the actual
+    // count. The buffer keeps its over-allocated size but the array's
+    // visible length matches what was retained — matches the
+    // interpreter's `VArray1(out)` shape.
+    val cnt   = newReg()
+    emitLine(s"  $cnt = load i64, ptr $countSlot\n")
+    val lenP  = newReg()
+    emitLine(s"  $lenP = getelementptr inbounds %nex_arr1, ptr $res, i32 0, i32 1\n")
+    emitLine(s"  store i64 $cnt, ptr $lenP\n")
+
+    emitArrDec(arrV, arr.tpe)
+    res
+
+  /** Evaluate a closure-typed expression once and return its
+    * `(fn_ptr, env_ptr)` extracted SSA names. Used by the three HOF
+    * helpers so the loop body only emits one indirect call per
+    * iteration rather than re-extracting per use.
+    */
+  private def splitClosure(fn: TExpr): (String, String) =
+    val cl = emitExpr(fn)
+    val fp = newReg()
+    emitLine(s"  $fp = extractvalue { ptr, ptr } $cl, 0\n")
+    val ep = newReg()
+    emitLine(s"  $ep = extractvalue { ptr, ptr } $cl, 1\n")
+    (fp, ep)
