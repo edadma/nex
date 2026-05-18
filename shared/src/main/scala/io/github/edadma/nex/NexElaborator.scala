@@ -1467,7 +1467,7 @@ class NexElaborator:
             // up from `print` / `assert` / etc.
             val ret = callee match
               case TVarRef(s, _, _) if s.kind == SymKind.Prelude =>
-                preludeReturnType(s.name)
+                preludeReturnTypeFor(s.name, args)
               case _ => TyUnknown
             TCall(callee, args, p, ret)
 
@@ -1491,7 +1491,40 @@ class NexElaborator:
     "length"         -> TyInteger,
     "rows"           -> TyInteger,
     "cols"           -> TyInteger,
+    // §10.2 scalar math — all return real regardless of arg type.
+    "sqrt" -> TyReal, "cbrt" -> TyReal,
+    "exp"  -> TyReal, "log"  -> TyReal, "log2" -> TyReal, "log10" -> TyReal,
+    "sin"  -> TyReal, "cos"  -> TyReal, "tan"  -> TyReal,
+    "asin" -> TyReal, "acos" -> TyReal, "atan" -> TyReal, "atan2" -> TyReal,
+    "sinh" -> TyReal, "cosh" -> TyReal, "tanh" -> TyReal,
+    "asinh"-> TyReal, "acosh"-> TyReal, "atanh"-> TyReal,
+    "floor"-> TyReal, "ceil" -> TyReal, "round"-> TyReal, "trunc" -> TyReal,
+    // §10.3 complex
+    "arg"  -> TyReal,
   ).withDefaultValue(TyUnknown)
+
+  /** Pick a return type for a prelude call. Most names are in
+    * [[preludeReturnType]] directly; [[abs]] / [[sign]] / [[min]] /
+    * [[max]] / [[conj]] depend on argument types, so they branch here.
+    */
+  private def preludeReturnTypeFor(name: String, args: List[TExpr]): Type =
+    name match
+      case "abs" | "sign" =>
+        args.headOption.map(_.tpe) match
+          case Some(TyInteger) => TyInteger
+          case Some(TyReal)    => TyReal
+          case _               => TyUnknown
+      case "min" | "max" =>
+        (args.headOption.map(_.tpe), args.lift(1).map(_.tpe)) match
+          case (Some(TyInteger), Some(TyInteger)) => TyInteger
+          case (Some(TyReal), _) | (_, Some(TyReal)) => TyReal
+          case _ => TyUnknown
+      case "conj" =>
+        args.headOption.map(_.tpe) match
+          case Some(TyComplex) => TyComplex
+          case Some(t)         => t
+          case None            => TyUnknown
+      case _ => preludeReturnType(name)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
     // Spec §4.14 slicing detection.
