@@ -123,7 +123,13 @@ case class TJuxtapose(coeff: TExpr, body: TExpr, pos: Option[Position] = None, t
 // walkForMutations) so the eventual fusion pass can introduce them
 // without a follow-up typed-AST refactor.
 case class TElementWise(op: String, lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
-case class TBroadcast(scalar: TExpr, arr: TExpr, op: String, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+/** Broadcast a scalar across an array element-wise. `scalarFirst` records
+  * which side the scalar was on in the source: `true` for `scalar op arr`,
+  * `false` for `arr op scalar`. Non-commutative ops (`-`, `/`, `%`, `div`,
+  * `^`, `<`, `<=`, `>`, `>=`) depend on this; without it, `xs - 1` would
+  * compute `1 - x` per element.
+  */
+case class TBroadcast(scalar: TExpr, arr: TExpr, op: String, scalarFirst: Boolean = true, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TMap(arr: TExpr, fn: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TReduce(arr: TExpr, init: TExpr, fn: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TMatMul(lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr

@@ -456,6 +456,42 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "[2, 4, 6]\n"
     }
 
+    "broadcast `arr - scalar` preserves operand order (regression)" in {
+      // `xs - 1` must compute `x - 1` per element, NOT `1 - x`. The
+      // elaborator's TBroadcast factory previously dropped operand-
+      // order info, producing `1 - x` for both `xs - 1` and `1 - xs`.
+      runOut("""
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  print(xs - 1)
+      """.stripMargin) shouldBe "[9, 19, 29]\n"
+    }
+
+    "broadcast `scalar - arr` preserves operand order (regression)" in {
+      runOut("""
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  print(100 - xs)
+      """.stripMargin) shouldBe "[90, 80, 70]\n"
+    }
+
+    "broadcast `arr / scalar` preserves operand order (regression)" in {
+      runOut("""
+        |def main() =
+        |  val xs = [10.0, 20.0, 40.0]
+        |  print(xs / 2.0)
+      """.stripMargin) shouldBe "[5.0, 10.0, 20.0]\n"
+    }
+
+    "broadcast `arr < scalar` preserves operand order (regression)" in {
+      // Comparison ops are also non-commutative — same bug class.
+      runOut("""
+        |def main() =
+        |  val xs = [1, 5, 10]
+        |  print(xs < 5)
+      """.stripMargin) shouldBe "[true, false, false]\n"
+    }
+
     "juxtaposition broadcast" in {
       runOut("""
         |def main() =

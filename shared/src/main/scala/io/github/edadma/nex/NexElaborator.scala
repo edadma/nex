@@ -954,9 +954,11 @@ class NexElaborator:
           val resultElem = promote(le, re).getOrElse(le)
           return TElementWise(op, l, r, p, TyArray(resultElem, lr))
         case (Some((_, _)), None) if isNumeric(rt) || rt == TyUnknown =>
-          return TBroadcast(r, l, op, p, lt)
+          // `arr op scalar` — scalar is on the right.
+          return TBroadcast(r, l, op, scalarFirst = false, p, lt)
         case (None, Some((_, _))) if isNumeric(lt) || lt == TyUnknown =>
-          return TBroadcast(l, r, op, p, rt)
+          // `scalar op arr` — scalar is on the left.
+          return TBroadcast(l, r, op, scalarFirst = true, p, rt)
         case _ => ()
 
     // scalar arithmetic
@@ -998,9 +1000,9 @@ class NexElaborator:
       case (Some((_, lr)), Some((_, rr))) if lr == rr =>
         return TElementWise(op, l, r, p, TyArray(TyBool, lr))
       case (Some((_, lr)), None) if isNumeric(rt) || rt == TyUnknown =>
-        return TBroadcast(r, l, op, p, TyArray(TyBool, lr))
+        return TBroadcast(r, l, op, scalarFirst = false, p, TyArray(TyBool, lr))
       case (None, Some((_, rr))) if isNumeric(lt) || lt == TyUnknown =>
-        return TBroadcast(l, r, op, p, TyArray(TyBool, rr))
+        return TBroadcast(l, r, op, scalarFirst = true, p, TyArray(TyBool, rr))
       case _ => ()
     op match
       case "==" | "!=" =>
@@ -1192,8 +1194,8 @@ class NexElaborator:
     case TJuxtapose(c, b, p, t) =>
       val cc = lowerExpr(c); val bb = lowerExpr(b)
       (elemOf(cc.tpe), elemOf(bb.tpe)) match
-        case (None, Some(_)) => TBroadcast(cc, bb, "*", p, bb.tpe)
-        case (Some(_), None) => TBroadcast(bb, cc, "*", p, cc.tpe)
+        case (None, Some(_)) => TBroadcast(cc, bb, "*", scalarFirst = true, p, bb.tpe)
+        case (Some(_), None) => TBroadcast(bb, cc, "*", scalarFirst = false, p, cc.tpe)
         case _               => TBinOp("*", cc, bb, p, t)
 
     // -- method-call dispatch (§4.9) --------------------------------------
@@ -1229,7 +1231,7 @@ class NexElaborator:
       }
       TBlock(its, lowerExpr(r), p, t)
     case TElementWise(op, l, r, p, t)  => TElementWise(op, lowerExpr(l), lowerExpr(r), p, t)
-    case TBroadcast(s, a, op, p, t)    => TBroadcast(lowerExpr(s), lowerExpr(a), op, p, t)
+    case TBroadcast(s, a, op, sf, p, t) => TBroadcast(lowerExpr(s), lowerExpr(a), op, sf, p, t)
     case TMap(a, f, p, t)              => TMap(lowerExpr(a), lowerExpr(f), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(lowerExpr(a), lowerExpr(i), lowerExpr(f), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(lowerExpr(l), lowerExpr(r), p, t)
@@ -1372,7 +1374,7 @@ class NexElaborator:
         }
         walkForMutations(r, reads, names)
       case TElementWise(_, l, r, _, _) => walkForMutations(l, reads, names); walkForMutations(r, reads, names)
-      case TBroadcast(s, a, _, _, _)   => walkForMutations(s, reads, names); walkForMutations(a, reads, names)
+      case TBroadcast(s, a, _, _, _, _) => walkForMutations(s, reads, names); walkForMutations(a, reads, names)
       case TMap(a, f, _, _)            => walkForMutations(a, reads, names); walkForMutations(f, reads, names)
       case TReduce(a, i, f, _, _)      => walkForMutations(a, reads, names); walkForMutations(i, reads, names); walkForMutations(f, reads, names)
       case TMatMul(l, r, _, _)         => walkForMutations(l, reads, names); walkForMutations(r, reads, names)

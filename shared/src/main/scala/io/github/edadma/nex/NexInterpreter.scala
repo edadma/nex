@@ -492,8 +492,8 @@ class NexInterpreter:
     case TElementWise(op, l, r, p, _) =>
       elementWise(op, evalExpr(l, env), evalExpr(r, env), p)
 
-    case TBroadcast(scalar, arr, op, p, _) =>
-      broadcast(op, evalExpr(scalar, env), evalExpr(arr, env), p)
+    case TBroadcast(scalar, arr, op, scalarFirst, p, _) =>
+      broadcast(op, evalExpr(scalar, env), evalExpr(arr, env), scalarFirst, p)
 
     case TMap(arr, fn, _, _) =>
       mapArray(evalExpr(arr, env), evalExpr(fn, env).asInstanceOf[VFunc])
@@ -846,10 +846,15 @@ class NexInterpreter:
         VArray2(a.zip(b).map((x, y) => applyBinOp(op, x, y, p)).to(mutable.ArrayBuffer), r1, c1)
       case _ => trap(s"element-wise `$op`: not arrays", p)
 
-  private def broadcast(op: String, scalar: Value, arr: Value, p: Option[scala.util.parsing.input.Position]): Value =
+  private def broadcast(op: String, scalar: Value, arr: Value, scalarFirst: Boolean, p: Option[scala.util.parsing.input.Position]): Value =
+    // Order matters for non-commutative ops: `xs - 1` is `x - 1` per
+    // element (scalarFirst=false), while `1 - xs` is `1 - x`.
+    def step(x: Value): Value =
+      if scalarFirst then applyBinOp(op, scalar, x, p)
+      else                applyBinOp(op, x, scalar, p)
     arr match
-      case VArray1(b)       => VArray1(b.map(x => applyBinOp(op, scalar, x, p)))
-      case VArray2(b, r, c) => VArray2(b.map(x => applyBinOp(op, scalar, x, p)), r, c)
+      case VArray1(b)       => VArray1(b.map(step))
+      case VArray2(b, r, c) => VArray2(b.map(step), r, c)
       case _                 => trap(s"broadcast: not an array", p)
 
   // --------------------------------------------------------------------------
