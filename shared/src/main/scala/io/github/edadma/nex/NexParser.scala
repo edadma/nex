@@ -135,9 +135,16 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   /** Function body: either a single expression on the same line as `=`, or
     * a Newline-Indent-block-Dedent block on the following indented line(s).
+    *
+    * Accepts an `assignment` between the two so `def bump(x: mut T) = x = e`
+    * parses. Assignment is otherwise only legal at block-item position;
+    * letting it ride here removes the awkward "must wrap in a one-line
+    * indented block" workaround for one-line `mut`-mutating bodies. Order
+    * matters: `assignment` requires a `=` in the lookahead and bails out
+    * cleanly for normal expression bodies before `expr` runs.
     */
   lazy val funBody: PackratParser[ExprAST] =
-    blockBody | expr
+    blockBody | assignment | expr
 
   // --- struct declarations -----------------------------------------------
 

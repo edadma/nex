@@ -413,6 +413,47 @@ class NexParserTests extends AnyWordSpec with Matchers:
   }
 
   // ========================================================================
+  // def function body shapes
+  // ========================================================================
+
+  "def function body" should {
+    "parse a plain inline expression body" in {
+      val Right(prog) =
+        new NexParser().parseProgram("def f(x: integer) = x * x"): @unchecked
+      val fn = prog.decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))
+    }
+    "parse an inline assignment body — `def bump(x: mut T) = x = x + 1`" in {
+      val Right(prog) =
+        new NexParser().parseProgram("def bump(x: mut integer) = x = x + 1"): @unchecked
+      val fn = prog.decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1)),
+      )
+    }
+    "parse an inline assignment body to a field" in {
+      val Right(prog) =
+        new NexParser().parseProgram("def reset(b: mut Box) = b.v = 0"): @unchecked
+      val fn = prog.decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe AssignExpr(
+        FieldExpr(VarRefExpr("b"), "v"),
+        IntLitExpr(0),
+      )
+    }
+    "still parse the indented-block body form" in {
+      val src =
+        """def bump(x: mut integer) =
+          |  x = x + 1""".stripMargin
+      val Right(prog) = new NexParser().parseProgram(src): @unchecked
+      prog.decls.head.asInstanceOf[FunDeclAST].body shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1)),
+      )
+    }
+  }
+
+  // ========================================================================
   // Cross-cutting small program shapes
   // ========================================================================
 
