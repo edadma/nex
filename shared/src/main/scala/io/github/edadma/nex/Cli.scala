@@ -113,32 +113,36 @@ object Cli:
         1
 
   private def doElaborate(file: String): Int =
-    val source = readFile(file)
-    new NexParser().parseProgram(source) match
-      case Left(err)  => Console.err.println(s"nex: parse error:\n$err"); 1
-      case Right(ast) =>
-        new NexElaborator().elaborate(ast) match
-          case Right(tp) =>
-            pprint.pprintln(tp)
-            0
-          case Left(errs) =>
-            Console.err.println("nex: elaboration errors:")
-            errs.foreach(e => Console.err.println(s"  ${e.toString}"))
-            1
+    loadAndElaborate(file) match
+      case Right(tp) => pprint.pprintln(tp); 0
+      case Left(rc)  => rc
 
   private def doRun(file: String): Int =
-    val source = readFile(file)
-    new NexParser().parseProgram(source) match
-      case Left(err)  => Console.err.println(s"nex: parse error:\n$err"); 1
-      case Right(ast) =>
-        new NexElaborator().elaborate(ast) match
+    loadAndElaborate(file) match
+      case Left(rc)  => rc
+      case Right(tp) =>
+        new NexInterpreter().runProgram(tp)
+        0
+
+  /** Load + elaborate a project starting from `entryFile`. The project
+    * root is the directory containing the entry file; imports resolve as
+    * subdirectories of that root (per spec §9). Returns the elaborated
+    * TProgram or an exit code (after printing the relevant errors).
+    */
+  private def loadAndElaborate(entryFile: String): Either[Int, TProgram] =
+    val projectRoot = pathDirname(entryFile)
+    new NexModuleLoader(projectRoot).loadFrom(entryFile) match
+      case Left(errs) =>
+        Console.err.println("nex: module loading errors:")
+        errs.foreach(e => Console.err.println(s"  $e"))
+        Left(1)
+      case Right(modules) =>
+        new NexElaborator().elaborateProject(modules) match
+          case Right(tp) => Right(tp)
           case Left(errs) =>
             Console.err.println("nex: elaboration errors:")
             errs.foreach(e => Console.err.println(s"  ${e.toString}"))
-            1
-          case Right(tp) =>
-            new NexInterpreter().runProgram(tp)
-            0
+            Left(1)
 
   /** Hard-coded for now; in v1 we'll wire it to build.sbt's `version`. */
   private def buildVersion: String = "0.0.1"

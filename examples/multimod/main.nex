@@ -1,0 +1,8 @@
+import helpers.{square, addone}
+
+def main() =
+  val xs = [1, 2, 3, 4]
+  val sq = xs.map(square)
+  val plus = xs.map(addone)
+  print(sq)
+  print(plus)

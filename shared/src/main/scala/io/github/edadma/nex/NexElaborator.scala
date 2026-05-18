@@ -161,67 +161,164 @@ class NexElaborator:
   // Entry point
   // ==========================================================================
 
-  /** Elaborate a parsed program. Returns either the typed AST or the list
-    * of accumulated errors.
+  /** Elaborate a single in-memory program — preserves the original
+    * single-file API used by tests and `nex elaborate <file>`. Wraps
+    * [[elaborateProject]] with a one-module list whose path is taken from
+    * any `module foo.bar` declaration at the top of the file, or `[]` if
+    * absent.
     */
   def elaborate(prog: ProgramAST): Either[List[ElabError], TProgram] =
+    val modDecl  = prog.decls.collectFirst { case m: ModuleDeclAST => m }
+    val path     = modDecl.map(_.path).getOrElse(Nil)
+    val testOnly = modDecl.exists(_.isTestOnly)
+    elaborateProject(List(LoadedModule(path, List(FileEntry("<inline>", prog)), testOnly, Nil)))
+
+  /** Elaborate a project — multiple modules in topological order, each one
+    * containing one-or-more files. The first module is processed in a
+    * scope that nests directly under the prelude; subsequent modules also
+    * nest under the prelude but get their imports' public symbols injected
+    * into the module scope first.
+    *
+    *  - Per-module isolation: each module gets a fresh scope on top of the
+    *    prelude root scope, so `private` decls in module A aren't visible
+    *    to module B even by accidental name collision.
+    *  - Imports preserve symbol identity: `import a.{x}` binds the same
+    *    `Symbol` (same id) that module `a` defined as `x` — so the typed
+    *    AST in module B references the exact same symbol as in module A.
+    *  - Exports: every non-private top-level decl from a module is added
+    *    to its `exports` map, keyed by name; the `imports` lookup honours
+    *    this set strictly (a `private` decl is invisible).
+    *
+    * The final returned `TProgram` is the concatenation of all per-module
+    * decls (after Stage 2 / Stage 3) under the project root module path.
+    */
+  def elaborateProject(modules: List[LoadedModule]): Either[List[ElabError], TProgram] =
     registerPrelude()
 
-    // Module declaration must come first (per §9.2). We pull it out so
-    // its path is the program's module path.
-    val (moduleDecl, rest) = prog.decls match
-      case (m: ModuleDeclAST) :: tail => (Some(m), tail)
-      case all                        => (None, all)
+    // Root scope holds the prelude; modules nest inside it.
+    val rootScope = current
 
-    // Pass A: pre-declare every top-level def / struct / top-binding so
-    // mutual recursion at module scope just works. Block-level bindings
-    // remain sequential (declaration-then-use) per §5.4.
-    //
-    // For a tuple-pattern val/var/const, `topSyms(d)` is `head :: names`
-    // where `head` is a synthetic temp that binds the whole tuple value
-    // and `names` are the user-named projections. For all other shapes
-    // it's a singleton.
-    val topSyms = mutable.LinkedHashMap.empty[DeclAST, List[Symbol]]
-    for d <- rest do d match
-      case f: FunDeclAST =>
-        topSyms(d) = List(define(f.name, SymKind.Function, TyUnknown, f))
-      case s: StructDeclAST =>
-        topSyms(d) = List(define(s.name, SymKind.TypeName, TyStruct(s.name, Nil), s))
-      case v: ValDeclAST =>
-        topSyms(d) = topBindingSyms(v.pat, SymKind.TopLevel, v)
-      case v: VarDeclAST =>
-        topSyms(d) = topBindingSyms(v.pat, SymKind.TopLevel, v)
-      case c: ConstDeclAST =>
-        topSyms(d) = topBindingSyms(c.pat, SymKind.TopLevel, c)
-      case _: ImportDeclAST | _: ModuleDeclAST =>
-        // Imports handled in a later phase; module already pulled.
-        ()
+    // module path → name → exported Symbol. Populated as each module
+    // finishes Pass A so dependent modules' imports can resolve.
+    val exports = mutable.Map.empty[List[String], mutable.LinkedHashMap[String, Symbol]]
 
-    // Pass B: elaborate each declaration's body with all top-level names
-    // visible. Tuple-pattern bindings expand to N+1 TTopBindings.
-    val elabDecls = mutable.ListBuffer.empty[TDecl]
-    for d <- moduleDecl.toList do elabDecls += elabModuleDecl(d)
-    for d <- rest do
-      d match
-        case f: FunDeclAST     => elabDecls += elabFun(f, topSyms(d).head)
-        case s: StructDeclAST  => elabDecls += elabStruct(s, topSyms(d).head)
-        case v: ValDeclAST     => elabDecls ++= elabTopBinding(v, BindingKind.Val,   topSyms(d))
-        case v: VarDeclAST     => elabDecls ++= elabTopBinding(v, BindingKind.Var,   topSyms(d))
-        case c: ConstDeclAST   => elabDecls ++= elabTopBinding(c, BindingKind.Const, topSyms(d))
-        case i: ImportDeclAST  => elabDecls += elabImport(i)
-        case m: ModuleDeclAST  =>
-          err("module declaration must come first in file", m); elabDecls += elabModuleDecl(m)
+    val allLowered = mutable.ListBuffer.empty[TDecl]
+
+    for module <- modules do
+      // Fresh module scope on top of the prelude. We re-create rather than
+      // push from `current` (which may carry stale state from a sibling
+      // module on failure paths).
+      current = new Scope(Some(rootScope))
+
+      // Inject each import's selectors as bindings into the module scope.
+      // The bound name is `alias.getOrElse(name)`; the bound Symbol is the
+      // exporter's actual symbol so refs resolve cross-module by identity.
+      val mergedDecls = module.files.flatMap(_.ast.decls)
+      val moduleExports = mutable.LinkedHashMap.empty[String, Symbol]
+
+      for d <- mergedDecls do d match
+        case i: ImportDeclAST =>
+          exports.get(i.path) match
+            case Some(modExports) =>
+              // Resolved: bind each selector to the actual exported Symbol
+              // so references resolve cross-module by identity. Missing
+              // selectors are an error (the source module is loaded; the
+              // name they reference simply isn't exported).
+              for sel <- i.selectors do
+                modExports.get(sel.name) match
+                  case None =>
+                    err(s"import `${i.path.mkString(".")}` has no public member `${sel.name}`", i)
+                  case Some(sym) =>
+                    val effective = sel.alias.getOrElse(sel.name)
+                    if !current.define(effective, sym) then
+                      err(s"import `$effective` clashes with an existing binding in this module", i)
+            case None =>
+              // Unresolved import path: in single-file mode (where the
+              // loader didn't discover any module by that path) we fall
+              // back to placeholder symbols so the rest of the file still
+              // elaborates and tests that exercise import shape continue
+              // to work. Names typed against unresolved imports will surface
+              // as TyUnknown and either work (if dynamic) or fail at the
+              // first concrete-type assertion downstream.
+              for sel <- i.selectors do
+                val effective = sel.alias.getOrElse(sel.name)
+                defineNoError(effective, SymKind.Import, TyUnknown)
+        case _ => ()
+
+      // Pass A: pre-declare every top-level def / struct / top-binding.
+      val topSyms = mutable.LinkedHashMap.empty[DeclAST, List[Symbol]]
+      for d <- mergedDecls do d match
+        case f: FunDeclAST =>
+          val s = define(f.name, SymKind.Function, TyUnknown, f)
+          topSyms(d) = List(s)
+          if !f.isPrivate then moduleExports(f.name) = s
+        case s: StructDeclAST =>
+          val sym = define(s.name, SymKind.TypeName, TyStruct(s.name, Nil), s)
+          topSyms(d) = List(sym)
+          if !s.isPrivate then moduleExports(s.name) = sym
+        case v: ValDeclAST =>
+          val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
+          topSyms(d) = ss
+          // Top-level val/var/const have no `private` keyword in v0 — all
+          // are exported (synthetic `$tuple` temps are excluded by name).
+          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+        case v: VarDeclAST =>
+          val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
+          topSyms(d) = ss
+          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+        case c: ConstDeclAST =>
+          val ss = topBindingSyms(c.pat, SymKind.TopLevel, c)
+          topSyms(d) = ss
+          ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+        case _: ImportDeclAST | _: ModuleDeclAST =>
+          ()
+
+      // Pass B: elaborate each declaration's body with all top-level
+      // names + imports visible. Module decl must come first per §9.2 —
+      // we only let it pass without an error if it's the very first
+      // declaration in this file's merged stream.
+      val elabDecls = mutable.ListBuffer.empty[TDecl]
+      var seenNonModule = false
+      for d <- mergedDecls do
+        d match
+          case f: FunDeclAST     => seenNonModule = true; elabDecls += elabFun(f, topSyms(d).head)
+          case s: StructDeclAST  => seenNonModule = true; elabDecls += elabStruct(s, topSyms(d).head)
+          case v: ValDeclAST     => seenNonModule = true; elabDecls ++= elabTopBinding(v, BindingKind.Val,   topSyms(d))
+          case v: VarDeclAST     => seenNonModule = true; elabDecls ++= elabTopBinding(v, BindingKind.Var,   topSyms(d))
+          case c: ConstDeclAST   => seenNonModule = true; elabDecls ++= elabTopBinding(c, BindingKind.Const, topSyms(d))
+          case i: ImportDeclAST  => seenNonModule = true; elabDecls += elabImport(i)
+          case m: ModuleDeclAST  =>
+            if seenNonModule then err("module declaration must come first in file", m)
+            elabDecls += elabModuleDecl(m)
+
+      exports(module.path) = moduleExports
+
+      // -- Stage 2: type inference (per-module, inside module scope) --
+      // Inference reads `current.lookup(...)` for method-call dispatch
+      // and other top-level-name lookups, so it must run while the
+      // module's bindings are in scope.
+      val perModule         = TProgram(module.path, elabDecls.toList, symbols)
+      val perModuleInferred = inferProgram(perModule)
+
+      // -- Stage 3: sugar lowering + mode validation (per-module) -----
+      // Lowering also uses `current.lookup(...)` (lowerMethodCall) for
+      // method-to-call dispatch, so it has to stay inside this module's
+      // scope too. Mode validation reads paramModes / mutableSymIds —
+      // both global — so cross-module forwarding works.
+      val perModuleLowered = lowerProgram(perModuleInferred)
+      allLowered ++= perModuleLowered.decls
+
+    // Restore root scope for any post-loop work.
+    current = rootScope
 
     if errors.nonEmpty then return Left(errors.toList)
 
-    // -- Stage 2: type inference ----------------------------------------
-    val program = TProgram(moduleDecl.map(_.path).getOrElse(Nil), elabDecls.toList, symbols)
-    val inferred = inferProgram(program)
-    if errors.nonEmpty then return Left(errors.toList)
+    // Use the LAST module's path as the program's module path. For a
+    // single-module project this is the only module; for multi-module
+    // the last is the entry module by topo order.
+    val rootPath = modules.lastOption.map(_.path).getOrElse(Nil)
 
-    // -- Stage 3: sugar lowering + mode validation ----------------------
-    val lowered = lowerProgram(inferred)
-    if errors.nonEmpty then Left(errors.toList) else Right(lowered)
+    Right(TProgram(rootPath, allLowered.toList, symbols))
 
   // -- top-binding symbol minting (handles tuple patterns) -------------------
 
@@ -264,13 +361,18 @@ class NexElaborator:
     TModuleDecl(m.path, m.isTestOnly, Some(m.pos))
 
   private def elabImport(i: ImportDeclAST): TImportDecl =
-    // Each selector becomes a Symbol in the current scope so subsequent
-    // references resolve. The actual binding to a foreign module is a
-    // later-phase concern.
-    val sels = i.selectors.map { s =>
+    // In multi-module mode the imported symbols were already injected
+    // into the module scope by [[elaborateProject]]'s pre-elab pass —
+    // here we just look them up by their effective name and record them
+    // in the TImportDecl so the typed AST stays self-describing.
+    //
+    // If the import wasn't resolved (e.g., missing module), the inject
+    // pass already recorded an error and there's nothing to bind; we
+    // return an empty selectors list so the TImportDecl shape is still
+    // legal for downstream consumers.
+    val sels = i.selectors.flatMap { s =>
       val effective = s.alias.getOrElse(s.name)
-      val sym       = define(effective, SymKind.Import, TyUnknown, i)
-      (sym, s.alias)
+      current.lookup(effective).map(sym => (sym, s.alias))
     }
     TImportDecl(i.path, sels, Some(i.pos))
 

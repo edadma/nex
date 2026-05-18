@@ -1,0 +1,5 @@
+module helpers
+
+def square(x: integer) = x * x
+
+def addone(x: integer) = x + 1
