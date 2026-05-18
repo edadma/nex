@@ -1,7 +1,7 @@
 package io.github.edadma.nex
 
 import java.io.ByteArrayOutputStream
-import java.nio.file.{Files, Path}
+import io.github.edadma.path.Path
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
@@ -9,9 +9,9 @@ import org.scalatest.wordspec.AnyWordSpec
   * tiny project on disk in a fresh tmp directory per test, runs it through
   * the loader + elaborator + interpreter, and checks the program output.
   *
-  * The tests target the JVM (the only platform with a real filesystem in
-  * this build); shared-suite execution still skips Native/JS by virtue of
-  * how the build is configured.
+  * Cross-platform via the `path` library — `Path.createTempDirectory`
+  * uses `Files.createTempDirectory` on JVM/Native and `fs.mkdtempSync`
+  * on Node, so the same tests run identically on all three platforms.
   */
 class NexModuleLoaderTests extends AnyWordSpec with Matchers:
 
@@ -19,12 +19,15 @@ class NexModuleLoaderTests extends AnyWordSpec with Matchers:
     * Returns the (root path, entry file path).
     */
   private def mkProject(entry: String, files: Map[String, String]): (String, String) =
-    val root = Files.createTempDirectory("nex-mod-test-")
+    val root = Path.createTempDirectory("nex-mod-test-")
     for (relPath, content) <- files do
-      val abs = root.resolve(relPath)
-      Files.createDirectories(abs.getParent)
-      Files.writeString(abs, content)
-    (root.toString, root.resolve(entry).toString)
+      // `root / "helpers/ops.nex"` would treat the whole string as ONE
+      // segment (Path's String overload of `/` doesn't parse separators);
+      // route through Path.apply so embedded slashes split correctly.
+      val abs = root / Path(relPath)
+      abs.parent.foreach(_.createDirectories())
+      abs.writeText(content)
+    (root.toPlatformString, (root / Path(entry)).toPlatformString)
 
   /** Load + elaborate + run a project. Captures stdout. */
   private def runProject(entryFile: String): String =
