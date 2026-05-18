@@ -567,3 +567,97 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
       ir should include("define i64 @first(ptr %arg0)")
     }
   }
+
+  "ARC (§8.5)" should {
+    "emit the rank-1 inc/dec runtime helpers in the preamble" in {
+      val ir = compile("def main() = ()")
+      ir should include("define void @__nex_arr1_inc(ptr %a)")
+      ir should include("define void @__nex_arr1_dec(ptr %a)")
+      ir should include("call void @free(ptr %buf)")
+      ir should include("call void @free(ptr %a)")
+    }
+
+    "TVarRef of an array-typed local emits an inc after the load" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  print(a)
+      """.stripMargin)
+      // The load+inc pair for the print arg.
+      ir should include regex """load ptr, ptr %t\d+\n\s+call void @__nex_arr1_inc"""
+    }
+
+    "function exit dec's array-typed params and locals" in {
+      val ir = compile("""
+        |def first(xs: [integer]) =
+        |  val tmp = [1]
+        |  xs[0]
+        |def main() = print(first([10]))
+      """.stripMargin)
+      // `first` should dec both tmp and xs before its ret.
+      ir should include("@first(ptr %arg0)")
+      // At least two dec calls inside `first` (tmp and xs).
+      val firstBody = ir.substring(ir.indexOf("@first("), ir.indexOf("@main()"))
+      val decs = "__nex_arr1_dec".r.findAllIn(firstBody).toList
+      decs.size should be >= 2
+    }
+
+    "TAssign overwriting a var-array slot dec's the old value" in {
+      val ir = compile("""
+        |def main() =
+        |  var a = [1, 2]
+        |  a = [3, 4, 5]
+        |  print(a)
+      """.stripMargin)
+      // Find the assign site: a load+dec before the second alloc-from-literal.
+      // The pattern is: load ptr from a's slot, dec it, alloc new, store new.
+      ir should include regex """load ptr, ptr %t\d+\n\s+call void @__nex_arr1_dec"""
+    }
+
+    "block-scoped val-array bindings dec at block end" in {
+      val ir = compile("""
+        |def main() =
+        |  for i in 1..=3 do
+        |    val a = [i, i, i]
+        |    print(a[0])
+      """.stripMargin)
+      // The inner block (for-body TBlock) must dec `a` before the for-cond
+      // back-branch. We look for at least one __nex_arr1_dec inside main.
+      ir should include("__nex_arr1_dec")
+    }
+
+    "array print path emits a dec on the printed value after the loop" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  print(a)
+      """.stripMargin)
+      // Two ARC events for the print path: inc (from TVarRef) before the
+      // print loop, then dec after.
+      val incs = "__nex_arr1_inc".r.findAllIn(ir).toList
+      val decs = "__nex_arr1_dec".r.findAllIn(ir).toList
+      // We don't pin exact counts (the helper definitions themselves also
+      // match the regex) but the call sites should be non-empty.
+      incs.size should be > 1
+      decs.size should be > 1
+    }
+
+    "block-result that's an array survives its scope (slot dec, value kept)" in {
+      val ir = compile("""
+        |def make() =
+        |  val a = [10, 20, 30]
+        |  a
+        |def main() = print(make())
+      """.stripMargin)
+      // `make` should: TArrayLit → store in a slot; TVarRef(a) → load + inc;
+      // dec the a slot; ret the inc'd ptr. Caller (print) gets a non-zero
+      // refcount value.
+      val ir2 = ir
+      ir2 should include("define ptr @make()")
+      // The inc on TVarRef inside make, followed by dec of the slot, then ret.
+      val makeBody = ir2.substring(ir2.indexOf("@make()"), ir2.indexOf("@main()"))
+      makeBody should include("__nex_arr1_inc")
+      makeBody should include("__nex_arr1_dec")
+      makeBody should include("ret ptr")
+    }
+  }

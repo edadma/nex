@@ -72,6 +72,24 @@ class NexLLVMCodegen:
     */
   private val stringPool = mutable.LinkedHashMap.empty[String, String]
 
+  /** Function-level array slots — currently only array-typed parameters.
+    * Block-level `val` / `var` bindings live in [[blockArrayScopes]] and
+    * are dec'd at block end, not function end. Cleared per function.
+    */
+  private val arrayLocalSlots = mutable.LinkedHashMap.empty[Int, (String, Type)]
+
+  /** A stack of array-slot maps, one per currently-open `TBlock`. Top of
+    * the stack is the innermost block. Each `TBlockBinding(sym, _, …)`
+    * whose `sym` is array-typed pushes onto the top. At block end we
+    * dec every entry in the popped scope so the binding's owning share
+    * is released. Early `return` consults the whole stack via
+    * [[decAllLocalArrays]] so nothing leaks regardless of nesting.
+    *
+    * Maintained as a `List` of mutable maps so `push` / `pop` is cheap
+    * and the natural iteration order matches innermost-first.
+    */
+  private var blockArrayScopes: List[mutable.LinkedHashMap[Int, (String, Type)]] = Nil
+
   /** Compile a program. Returns the full LLVM IR module text. */
   def compile(tp: TProgram): String =
     emitPreamble()
@@ -163,6 +181,8 @@ class NexLLVMCodegen:
     regCounter   = 0
     labelCounter = 0
     locals.clear()
+    arrayLocalSlots.clear()
+    blockArrayScopes = Nil
     currentReturnType = TyUnit
     currentIsMain     = false
 
@@ -431,6 +451,8 @@ class NexLLVMCodegen:
     regCounter   = 0
     labelCounter = 0
     locals.clear()
+    arrayLocalSlots.clear()
+    blockArrayScopes = Nil
 
     val isMain  = f.sym.name == "main" && f.params.isEmpty
     val retLLT  = if isMain then "i32" else llvmType(f.returnType)
@@ -455,19 +477,33 @@ class NexLLVMCodegen:
       emitLine("  call void @__nex_init_globals()\n")
 
     // Spill each param to an alloca so TVarRef loads work uniformly.
+    // Array-typed params arrive already inc'd by the caller (per the
+    // owned-everywhere convention); the slot takes ownership and the
+    // function-exit dec releases it.
     for ((p, i) <- f.params.zipWithIndex) do
       val ty   = llvmType(p.tpe)
       val slot = newReg()
       emitLine(s"  $slot = alloca $ty\n")
       emitLine(s"  store $ty %arg$i, ptr $slot\n")
       locals(p.id) = slot
+      if isArrayType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     val result = emitExpr(f.body)
 
     // Emit the final ret only if no terminator has fired yet. Inside the
     // body, an early `return` (or both branches of an if that return)
-    // will already have closed the block.
+    // will already have closed the block (with their own dec-locals).
     if currentBlock.isDefined then
+      // If the function body produced an owning array value but we are
+      // about to discard it (main returns i32, or fn returns void), dec
+      // the result first so it doesn't leak.
+      val bodyIsArray = isArrayType(f.body.tpe)
+      val willDiscardResult = isMain || f.returnType == TyUnit || result == "void"
+      if bodyIsArray && willDiscardResult && result != "0" && result != "void" then
+        emitArrDec(result, f.body.tpe)
+
+      decAllLocalArrays()
+
       if isMain then
         emitTerminator("  ret i32 0\n")
       else if f.returnType == TyUnit || result == "void" then
@@ -502,14 +538,19 @@ class NexLLVMCodegen:
       notYet("interpolated string at value position (use print)"); "null"
 
     case TVarRef(s, _, t) =>
+      // For array-typed references, the loaded value gets an inc so the
+      // caller has its own owning share (per the spec §8.5 ARC model
+      // documented above [[arrayLocalSlots]]). Scalars need no inc.
       locals.get(s.id) match
         case Some(slot) =>
           val reg = newReg()
           emitLine(s"  $reg = load ${llvmType(t)}, ptr $slot\n")
+          emitArrInc(reg, t)
           reg
         case None if globalBindings.contains(s.id) =>
           val reg = newReg()
           emitLine(s"  $reg = load ${llvmType(t)}, ptr @${s.name}\n")
+          emitArrInc(reg, t)
           reg
         case None =>
           notYet(s"reference to non-local `${s.name}`"); "0"
@@ -571,11 +612,26 @@ class NexLLVMCodegen:
       emitReturn(v); "void"
 
     case TBlock(items, result, _, _) =>
+      // Each `TBlock` opens its own ARC scope: any `val` / `var` whose
+      // RHS is array-typed is registered into the top scope. At block
+      // exit (after the result is computed) we dec every slot in the
+      // popped scope so the bindings release their owning share —
+      // critical for blocks inside loops (each iteration owns and frees
+      // its own arrays).
+      //
+      // TBlockExpr whose discarded value is array-typed needs its own
+      // dec (the value never reached a slot).
+      pushBlockScope()
       items.foreach {
         case TBlockBinding(sym, _, value) => emitLocalBinding(sym, value)
-        case TBlockExpr(x)                => emitExpr(x)
+        case TBlockExpr(x) =>
+          val v = emitExpr(x)
+          if isArrayType(x.tpe) then emitArrDec(v, x.tpe)
       }
-      emitExpr(result)
+      val rv    = emitExpr(result)
+      val scope = popBlockScope()
+      decBlockScope(scope)
+      rv
 
     case TAssign(target, value, _, _) =>
       emitAssign(target, value); "void"
@@ -769,6 +825,13 @@ class NexLLVMCodegen:
       emitTerminator(s"  br label %$condL\n")
 
     startBlock(exitL)
+    // Release the owning share we took on the iter expression. (An early
+    // `return` inside the body would skip this — a known leak for chunk
+    // 6; the larger fix is to register the synthetic iter alloca with
+    // `arrayLocalSlots` so it participates in decAllLocalArrays.)
+    val arrFinal = newReg()
+    emitLine(s"  $arrFinal = load ptr, ptr $arrSlot\n")
+    emitArrDec(arrFinal, iter.tpe)
 
   private def emitForRange(
       loopVars: List[Symbol],
@@ -896,7 +959,7 @@ class NexLLVMCodegen:
     val stT   = storageType(elem)
     val arrV  = emitExpr(arr)
 
-    (rank, indices) match
+    val result = (rank, indices) match
       case (1, List(idx)) =>
         val iv   = emitExpr(idx)
         val slot = newReg()
@@ -910,6 +973,11 @@ class NexLLVMCodegen:
         loadElem(stT, slot, llvmType(elem))
       case (r, ixs) =>
         notYet(s"index of rank $r with ${ixs.size} indices"); "0"
+    // If the element is itself an array (nested), the loaded value needs
+    // an inc since we shared it out of the slot — but v0 doesn't support
+    // nested arrays via TArrayLit, so skip for now.
+    emitArrDec(arrV, arr.tpe)
+    result
 
   /** Store a value of LLVM type `t` (the *language* type) into a buffer slot
     * whose stored type is `storageT`. For bool, the i1 value is widened to
@@ -972,7 +1040,7 @@ class NexLLVMCodegen:
     val rank = arrayRank(arr.tpe)
     val av   = emitExpr(arr)
     val r    = newReg()
-    (rank, which) match
+    val result = (rank, which) match
       case (1, "len" | "cols") =>
         emitLine(s"  $r = call i64 @__nex_arr1_len(ptr $av)\n"); r
       case (1, "rows") =>
@@ -985,21 +1053,33 @@ class NexLLVMCodegen:
         emitLine(s"  $r = call i64 @__nex_arr2_len(ptr $av)\n"); r
       case _ =>
         notYet(s"$which for rank $rank"); "0"
+    // Release the owning share we took on the input array.
+    emitArrDec(av, arr.tpe)
+    result
 
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
       case None =>
+        decAllLocalArrays()
         if currentIsMain then emitTerminator("  ret i32 0\n")
         else emitTerminator("  ret void\n")
       case Some(expr) =>
         val rv = emitExpr(expr)
+        // If the function is about to discard the value (main / unit
+        // return), dec the SSA value before we tear down the rest of
+        // the local arrays.
+        val willDiscard = currentIsMain || currentReturnType == TyUnit
+        if willDiscard && isArrayType(expr.tpe) && rv != "0" && rv != "void" then
+          emitArrDec(rv, expr.tpe)
+
+        decAllLocalArrays()
+
         if currentIsMain then
           emitTerminator("  ret i32 0\n")
         else currentReturnType match
           case TyUnit =>
             emitTerminator("  ret void\n")
           case TyUnknown =>
-            // Best-effort fallback: trust the expression's inferred type.
             expr.tpe match
               case TyUnit => emitTerminator("  ret void\n")
               case t      => emitTerminator(s"  ret ${llvmType(t)} $rv\n")
@@ -1040,9 +1120,21 @@ class NexLLVMCodegen:
     target match
       case TVarRef(s, _, t) =>
         val rv = emitExpr(value)
+        // For array slots, the previous occupant owns a share — dec it
+        // before storing the new value so the old buffer can be freed if
+        // this was its last reference. Scalars need no such cleanup.
         locals.get(s.id) match
-          case Some(slot) => emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
+          case Some(slot) =>
+            if isArrayType(t) then
+              val old = newReg()
+              emitLine(s"  $old = load ${llvmType(t)}, ptr $slot\n")
+              emitArrDec(old, t)
+            emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
           case None if globalBindings.contains(s.id) =>
+            if isArrayType(t) then
+              val old = newReg()
+              emitLine(s"  $old = load ${llvmType(t)}, ptr @${s.name}\n")
+              emitArrDec(old, t)
             emitLine(s"  store ${llvmType(t)} $rv, ptr @${s.name}\n")
           case None       => notYet(s"assign to non-local `${s.name}`")
 
@@ -1068,6 +1160,8 @@ class NexLLVMCodegen:
             return
         val rv = emitExpr(value)
         storeElem(stT, rv, slot)
+        // The receiver array `av` was loaded as an owning share — release it.
+        emitArrDec(av, arr.tpe)
 
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")
@@ -1079,6 +1173,12 @@ class NexLLVMCodegen:
     emitLine(s"  $slot = alloca $ty\n")
     if ty != "void" then emitLine(s"  store $ty $rv, ptr $slot\n")
     locals(sym.id) = slot
+    // Register array-typed bindings into the innermost block scope (or
+    // function-level if not inside one) so they're dec'd at scope exit.
+    // The slot takes ownership of the stored ref; no extra inc needed —
+    // [[emitExpr]] already returned an owning value.
+    if isArrayType(sym.tpe) then
+      registerArraySlot(sym.id, slot, sym.tpe)
 
   // ---------------------------------------------------------------------------
   // User-function call — emits `call <retT> @<name>(<argT> <arg>, ...)`.
@@ -1191,6 +1291,10 @@ class NexLLVMCodegen:
     * `, ` separators between them, then a `]`. Rank-2 reuses the rank-1
     * helper for each inner row, but the inner-row "array" we walk is the
     * outer's row slice — we generate `i*cols+j` indexing inline.
+    *
+    * ARC: the `arr` argument is evaluated once into an owning SSA value
+    * (TVarRef inc'd, TArrayLit fresh, etc.); after the printing loop
+    * finishes, we dec the value so its ownership cycle closes.
     */
   private def emitPrintArray(arr: TExpr): Unit =
     val rank = arrayRank(arr.tpe)
@@ -1199,10 +1303,13 @@ class NexLLVMCodegen:
     val stT  = storageType(elem)
     val langT = llvmType(elem)
     val arrV  = emitExpr(arr)
+    // Marker used after the print body to release the owning share.
+    val tType = arr.tpe
 
     rank match
       case 1 =>
         emitPrintArr1Inline(arrV, elem, esz, stT, langT)
+        emitArrDec(arrV, tType)
       case 2 =>
         val rowsR = newReg()
         emitLine(s"  $rowsR = call i64 @__nex_arr2_rows(ptr $arrV)\n")
@@ -1275,6 +1382,7 @@ class NexLLVMCodegen:
         emitTerminator(s"  br label %$condL\n")
         startBlock(exitL)
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.arr_close)\n")
+        emitArrDec(arrV, tType)
       case _ =>
         notYet(s"print of rank-$rank array")
 
@@ -1380,6 +1488,80 @@ class NexLLVMCodegen:
   private def arrayRank(t: Type): Int = t match
     case TyArray(_, r) => r
     case _             => 1
+
+  private def isArrayType(t: Type): Boolean = t match
+    case TyArray(_, _) => true
+    case _             => false
+
+  /** Pick the right ARC inc helper based on the array's static rank. */
+  private def arrIncFor(t: Type): String = arrayRank(t) match
+    case 1 => "@__nex_arr1_inc"
+    case 2 => "@__nex_arr2_inc"
+    case _ => "@__nex_arr1_inc"
+
+  /** Pick the right ARC dec helper based on the array's static rank. */
+  private def arrDecFor(t: Type): String = arrayRank(t) match
+    case 1 => "@__nex_arr1_dec"
+    case 2 => "@__nex_arr2_dec"
+    case _ => "@__nex_arr1_dec"
+
+  /** Emit `call void @__nex_arr*_inc(ptr value)`. No-op (silently skipped)
+    * if no block is open or if [[t]] isn't an array type.
+    */
+  private def emitArrInc(value: String, t: Type): Unit =
+    if isArrayType(t) then
+      emitLine(s"  call void ${arrIncFor(t)}(ptr $value)\n")
+
+  /** Emit `call void @__nex_arr*_dec(ptr value)`. */
+  private def emitArrDec(value: String, t: Type): Unit =
+    if isArrayType(t) then
+      emitLine(s"  call void ${arrDecFor(t)}(ptr $value)\n")
+
+  /** Decrement-ref every slot registered as an array-typed local in the
+    * current function — innermost block first, then the function-level
+    * (param) slots last. Called right before each function-exit `ret`
+    * (including early `return`s) so that nothing leaks regardless of
+    * how deeply nested the return site is.
+    */
+  private def decAllLocalArrays(): Unit =
+    if currentBlock.isDefined then
+      for scope <- blockArrayScopes do decBlockScope(scope)
+      for (id, (slot, t)) <- arrayLocalSlots do
+        val v = newReg()
+        emitLine(s"  $v = load ptr, ptr $slot\n")
+        emitArrDec(v, t)
+
+  /** Dec every array slot recorded in a single block scope. Used at
+    * block end (after popping) and as a building block for
+    * [[decAllLocalArrays]].
+    */
+  private def decBlockScope(scope: mutable.LinkedHashMap[Int, (String, Type)]): Unit =
+    if currentBlock.isDefined then
+      for (id, (slot, t)) <- scope do
+        val v = newReg()
+        emitLine(s"  $v = load ptr, ptr $slot\n")
+        emitArrDec(v, t)
+
+  /** Push a fresh block scope; subsequent array bindings emit into it. */
+  private def pushBlockScope(): Unit =
+    blockArrayScopes = mutable.LinkedHashMap.empty[Int, (String, Type)] :: blockArrayScopes
+
+  /** Pop the innermost block scope and return it so the caller can dec
+    * its entries at the block-exit position.
+    */
+  private def popBlockScope(): mutable.LinkedHashMap[Int, (String, Type)] =
+    val top = blockArrayScopes.head
+    blockArrayScopes = blockArrayScopes.tail
+    top
+
+  /** Register an array-typed binding's slot under the appropriate scope:
+    * the innermost block if we're inside one, otherwise the function-
+    * level [[arrayLocalSlots]] (which is the right home for params).
+    */
+  private def registerArraySlot(id: Int, slot: String, t: Type): Unit =
+    blockArrayScopes match
+      case head :: _ => head(id) = (slot, t)
+      case Nil       => arrayLocalSlots(id) = (slot, t)
 
   /** Map a Nex binary operator + operand type to (LLVM instruction,
     * result LLVM type). Integer / real overloads are picked here.
