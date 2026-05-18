@@ -839,6 +839,55 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("filter requires a rank-1 array")) shouldBe true
     }
 
+    "`dot` rejects rank-2 source on either argument" in {
+      val errs1 = elabExpect("""
+        |val m = [[1, 2], [3, 4]]
+        |val v = [1, 2, 3, 4]
+        |val r = dot(m, v)
+      """.stripMargin)
+      errs1.exists(_.contains("dot first argument requires a rank-1 array")) shouldBe true
+
+      val errs2 = elabExpect("""
+        |val v = [1, 2, 3, 4]
+        |val m = [[1, 2], [3, 4]]
+        |val r = dot(v, m)
+      """.stripMargin)
+      errs2.exists(_.contains("dot second argument requires a rank-1 array")) shouldBe true
+    }
+
+    "`enumerate` rejects rank-2 source" in {
+      val errs = elabExpect("""
+        |val m  = [[1, 2], [3, 4]]
+        |val xs = enumerate(m)
+      """.stripMargin)
+      errs.exists(_.contains("enumerate argument requires a rank-1 array")) shouldBe true
+    }
+
+    "`zip` rejects rank-2 source" in {
+      val errs = elabExpect("""
+        |val m = [[1, 2], [3, 4]]
+        |val v = [10, 20, 30, 40]
+        |val z = zip(m, v)
+      """.stripMargin)
+      errs.exists(_.contains("zip first argument requires a rank-1 array")) shouldBe true
+    }
+
+    "rank-1-only prelude functions still elaborate cleanly with rank-1 input" in {
+      val tp = elab("""
+        |val a  = [1, 2, 3]
+        |val b  = [4, 5, 6]
+        |val d  = dot(a, b)
+        |val xs = enumerate(a)
+        |val z  = zip(a, b)
+      """.stripMargin)
+      val dBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "d").get
+      dBind.value.tpe shouldBe TyInteger
+      val eBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "xs").get
+      eBind.value.tpe shouldBe TyArray(TyTuple(List(TyInteger, TyInteger)), 1)
+      val zBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "z").get
+      zBind.value.tpe shouldBe TyArray(TyTuple(List(TyInteger, TyInteger)), 1)
+    }
+
     "prelude `map` preserves source rank in its result type (rank-1)" in {
       val tp = elab("""
         |val xs = [1, 2, 3]

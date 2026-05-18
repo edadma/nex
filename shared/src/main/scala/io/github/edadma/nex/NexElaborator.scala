@@ -739,6 +739,8 @@ class NexElaborator:
       cc match
         case TVarRef(s, _, _) if isPreludeHOF(s) =>
           inferPreludeHOFCall(s.name, cc, args, p)
+        case TVarRef(s, _, _) if isPreludeRank1Only(s) =>
+          inferPreludeRank1Call(s.name, cc, args, p)
         case _ =>
           val aa = cc.tpe match
             case TyFunc(params, _) if params.size == args.size =>
@@ -787,6 +789,12 @@ class NexElaborator:
           // TMethodCall so Stage 3 can still recognize and dispatch it.
           val syntheticCallee = TVarRef(sym, p, currentType(sym))
           val tcall = inferPreludeHOFCall(n, syntheticCallee, r :: args, p).asInstanceOf[TCall]
+          TMethodCall(rr, n, tcall.args.tail, p, tcall.tpe)
+        case Some(sym) if isPreludeRank1Only(sym) =>
+          // Same routing for the rank-1-only prelude helpers — `xs.dot(ys)`,
+          // `xs.enumerate()`, `xs.zip(ys)` all need the rank guard.
+          val syntheticCallee = TVarRef(sym, p, currentType(sym))
+          val tcall = inferPreludeRank1Call(n, syntheticCallee, r :: args, p).asInstanceOf[TCall]
           TMethodCall(rr, n, tcall.args.tail, p, tcall.tpe)
         case Some(sym) =>
           val aa = currentType(sym) match
@@ -1051,6 +1059,57 @@ class NexElaborator:
 
   private def isPreludeHOF(s: Symbol): Boolean =
     s.kind == SymKind.Prelude && preludeHOFNames.contains(s.name)
+
+  /** Prelude functions whose runtime only accepts rank-1 input. Calls with
+    * rank-2 (or higher) sources should error at elaborate time rather than
+    * trap with an unhelpful runtime message. Each entry needs a matching
+    * branch in [[inferPreludeRank1Call]] that supplies the result type.
+    */
+  private val preludeRank1OnlyNames: Set[String] = Set("dot", "enumerate", "zip")
+
+  private def isPreludeRank1Only(s: Symbol): Boolean =
+    s.kind == SymKind.Prelude && preludeRank1OnlyNames.contains(s.name)
+
+  /** Reject rank-2+ array arguments and supply a concrete result type for
+    * rank-1-only prelude functions. Without this, calls fall through to
+    * the generic `inferCall` which returns `TyUnknown` and lets the
+    * runtime trap with "expects rank-1" — fine for users who never made
+    * the mistake, hostile to users who did.
+    */
+  private def inferPreludeRank1Call(
+    name: String,
+    callee: TExpr,
+    args: List[TExpr],
+    p: Option[Position],
+  ): TExpr =
+    val aa = args.map(infExpr)
+
+    def requireRank1(arg: TExpr, ctx: String): Unit = arg.tpe match
+      case TyArray(_, r) if r > 1 =>
+        err(s"$name $ctx requires a rank-1 array, got rank $r", p)
+      case _ =>
+
+    name match
+      case "dot" if aa.size == 2 =>
+        requireRank1(aa(0), "first argument")
+        requireRank1(aa(1), "second argument")
+        val elemT = elemOf(aa(0).tpe).map(_._1).getOrElse(TyUnknown)
+        TCall(callee, aa, p, elemT)
+
+      case "enumerate" if aa.size == 1 =>
+        requireRank1(aa(0), "argument")
+        val elemT = elemOf(aa(0).tpe).map(_._1).getOrElse(TyUnknown)
+        TCall(callee, aa, p, TyArray(TyTuple(List(TyInteger, elemT)), 1))
+
+      case "zip" if aa.size == 2 =>
+        requireRank1(aa(0), "first argument")
+        requireRank1(aa(1), "second argument")
+        val aT = elemOf(aa(0).tpe).map(_._1).getOrElse(TyUnknown)
+        val bT = elemOf(aa(1).tpe).map(_._1).getOrElse(TyUnknown)
+        TCall(callee, aa, p, TyArray(TyTuple(List(aT, bT)), 1))
+
+      case _ =>
+        TCall(callee, aa, p, TyUnknown)
 
   /** Hand-rolled bidirectional inference for the prelude HOFs:
     *   - `map(arr, f)`       — f: (elem -> U); result: [U]
