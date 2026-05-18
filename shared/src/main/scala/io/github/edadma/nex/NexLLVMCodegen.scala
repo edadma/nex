@@ -344,6 +344,9 @@ class NexLLVMCodegen:
     case TWhile(cond, body, _, _) =>
       emitWhile(cond, body); "void"
 
+    case TFor(loopVars, iter, body, _, _) =>
+      emitFor(loopVars, iter, body); "void"
+
     case TReturn(v, _, _) =>
       emitReturn(v); "void"
 
@@ -441,6 +444,77 @@ class NexLLVMCodegen:
     startBlock(bodyL)
     emitExpr(body)
     if currentBlock.isDefined then emitTerminator(s"  br label %$condL\n")
+    startBlock(exitL)
+
+  /** Lower `for i in lo..hi do body` (or `lo..=hi`) to a counting while:
+    *
+    * {{{
+    *   alloca i64 %i ; store %lo
+    *   br label %for.cond
+    *  for.cond:
+    *   %cur = load %i
+    *   %ok  = icmp s(le|lt) %cur, %hi
+    *   br i1 %ok, label %for.body, label %for.exit
+    *  for.body:
+    *   ... body (loopVar = %cur load) ...
+    *   %next = add %cur, 1
+    *   store %next, %i
+    *   br label %for.cond
+    *  for.exit:
+    * }}}
+    *
+    * Iterating over arrays / general iterables is deferred to a later
+    * chunk that introduces array codegen.
+    */
+  private def emitFor(loopVars: List[Symbol], iter: TExpr, body: TExpr): Unit =
+    iter match
+      case TBinOp("..",  lo, hi, _, _) => emitForRange(loopVars, lo, hi, body, inclusive = false)
+      case TBinOp("..=", lo, hi, _, _) => emitForRange(loopVars, lo, hi, body, inclusive = true)
+      case _                            => notYet("for over non-range iterable (arrays deferred)")
+
+  private def emitForRange(
+      loopVars: List[Symbol],
+      lo:       TExpr,
+      hi:       TExpr,
+      body:     TExpr,
+      inclusive: Boolean,
+  ): Unit =
+    if loopVars.size != 1 then
+      notYet("for-over-range with tuple destructuring")
+      return
+
+    val loopVar = loopVars.head
+    val loV     = emitExpr(lo)
+    val hiV     = emitExpr(hi)
+
+    val slot = newReg()
+    emitLine(s"  $slot = alloca i64\n")
+    emitLine(s"  store i64 $loV, ptr $slot\n")
+    locals(loopVar.id) = slot
+
+    val condL = freshLabel("for.cond")
+    val bodyL = freshLabel("for.body")
+    val exitL = freshLabel("for.exit")
+    val cmp   = if inclusive then "sle" else "slt"
+
+    emitTerminator(s"  br label %$condL\n")
+    startBlock(condL)
+    val cur = newReg()
+    emitLine(s"  $cur = load i64, ptr $slot\n")
+    val ok = newReg()
+    emitLine(s"  $ok = icmp $cmp i64 $cur, $hiV\n")
+    emitTerminator(s"  br i1 $ok, label %$bodyL, label %$exitL\n")
+
+    startBlock(bodyL)
+    emitExpr(body)
+    if currentBlock.isDefined then
+      val cur2 = newReg()
+      emitLine(s"  $cur2 = load i64, ptr $slot\n")
+      val next = newReg()
+      emitLine(s"  $next = add i64 $cur2, 1\n")
+      emitLine(s"  store i64 $next, ptr $slot\n")
+      emitTerminator(s"  br label %$condL\n")
+
     startBlock(exitL)
 
   private def emitReturn(v: Option[TExpr]): Unit =
