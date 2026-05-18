@@ -184,6 +184,21 @@ case class TField(receiver: TExpr, field: String, pos: Option[Position] = None, 
   */
 case class TTupleProj(receiver: TExpr, idx: Int, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
+/** Rank-1 slice — `arr[lo..hi]` (half-open) or `arr[lo..=hi]` (closed)
+  * per spec §4.14. Returns a freshly-owned rank-1 array. `inclusive`
+  * encodes whether the upper bound is included. Emitted by the
+  * elaborator's `inferIndex` when the lone index expression is a
+  * `TBinOp("..", _, _)` / `TBinOp("..=", _, _)`.
+  */
+case class TSlice(
+    arr:       TExpr,
+    lo:        TExpr,
+    hi:        TExpr,
+    inclusive: Boolean,
+    pos:       Option[Position] = None,
+    tpe:       Type = TyUnknown,
+) extends TExpr
+
 /** Stage-1 placeholder for `r.name(args)` before we know whether it
   * resolves to field access or function-call sugar (§4.9). Stage 3 lowers.
   */

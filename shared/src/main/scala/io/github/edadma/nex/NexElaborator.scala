@@ -1433,18 +1433,40 @@ class NexElaborator:
             TCall(callee, args, p, TyUnknown)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
-    idx.foreach { i =>
-      if i.tpe != TyUnknown && i.tpe != TyInteger then
-        err(s"array index must be integer, got ${i.tpe}", i.pos)
-    }
-    val ty = arr.tpe match
-      case TyArray(e, 1) if idx.size == 1 => e
-      case TyArray(e, 2) if idx.size == 2 => e
-      case TyArray(e, 2) if idx.size == 1 => TyArray(e, 1) // row slice
-      case TyUnknown                      => TyUnknown
-      case other =>
-        err(s"cannot index value of type $other", p); TyUnknown
-    TIndex(arr, idx, p, ty)
+    // Spec §4.14 rank-1 slicing: `arr[lo..hi]` / `arr[lo..=hi]`. The
+    // parser emits these as `TIndex(arr, [TBinOp("..", lo, hi)])` so
+    // we detect the pattern here and rewrite to `TSlice`. The bound
+    // expressions must be integers and the receiver must be rank-1.
+    idx match
+      case List(TBinOp(op, lo, hi, _, _)) if op == ".." || op == "..=" =>
+        if lo.tpe != TyUnknown && lo.tpe != TyInteger then
+          err(s"slice lower bound must be integer, got ${lo.tpe}", lo.pos)
+        if hi.tpe != TyUnknown && hi.tpe != TyInteger then
+          err(s"slice upper bound must be integer, got ${hi.tpe}", hi.pos)
+        arr.tpe match
+          case TyArray(e, 1) =>
+            TSlice(arr, lo, hi, inclusive = op == "..=", p, TyArray(e, 1))
+          case TyArray(_, r) =>
+            err(s"rank-1 slice requires a rank-1 array, got rank $r", p)
+            TSlice(arr, lo, hi, inclusive = op == "..=", p, TyUnknown)
+          case TyUnknown =>
+            TSlice(arr, lo, hi, inclusive = op == "..=", p, TyUnknown)
+          case other =>
+            err(s"cannot slice value of type $other", p)
+            TSlice(arr, lo, hi, inclusive = op == "..=", p, TyUnknown)
+      case _ =>
+        idx.foreach { i =>
+          if i.tpe != TyUnknown && i.tpe != TyInteger then
+            err(s"array index must be integer, got ${i.tpe}", i.pos)
+        }
+        val ty = arr.tpe match
+          case TyArray(e, 1) if idx.size == 1 => e
+          case TyArray(e, 2) if idx.size == 2 => e
+          case TyArray(e, 2) if idx.size == 1 => TyArray(e, 1) // row slice
+          case TyUnknown                      => TyUnknown
+          case other =>
+            err(s"cannot index value of type $other", p); TyUnknown
+        TIndex(arr, idx, p, ty)
 
   private def inferField(r: TExpr, name: String, p: Option[Position]): TExpr =
     val ty = r.tpe match
@@ -1519,6 +1541,7 @@ class NexElaborator:
     case TUnaryOp(op, x, p, t)         => TUnaryOp(op, lowerExpr(x), p, t)
     case TCall(c, args, p, t)          => TCall(lowerExpr(c), args.map(lowerExpr), p, t)
     case TIndex(a, i, p, t)            => TIndex(lowerExpr(a), i.map(lowerExpr), p, t)
+    case TSlice(a, lo, hi, inc, p, t)  => TSlice(lowerExpr(a), lowerExpr(lo), lowerExpr(hi), inc, p, t)
     case TField(r, n, p, t)            => TField(lowerExpr(r), n, p, t)
     case TTupleProj(r, idx, p, t)      => TTupleProj(lowerExpr(r), idx, p, t)
     case TLambda(params, body, p, t)   => TLambda(params, lowerExpr(body), p, t)
@@ -1671,6 +1694,8 @@ class NexElaborator:
       case TJuxtapose(c, b, _, _)      => walkForMutations(c, reads, names); walkForMutations(b, reads, names)
       case TCall(c, args, _, _)        => walkForMutations(c, reads, names); args.foreach(a => walkForMutations(a, reads, names))
       case TIndex(a, idx, _, _)        => walkForMutations(a, reads, names); idx.foreach(i => walkForMutations(i, reads, names))
+      case TSlice(a, lo, hi, _, _, _)  =>
+        walkForMutations(a, reads, names); walkForMutations(lo, reads, names); walkForMutations(hi, reads, names)
       case TField(r, _, _, _)          => walkForMutations(r, reads, names)
       case TTupleProj(r, _, _, _)      => walkForMutations(r, reads, names)
       case TMethodCall(r, _, args, _,_) => walkForMutations(r, reads, names); args.foreach(a => walkForMutations(a, reads, names))

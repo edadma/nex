@@ -614,6 +614,23 @@ class NexInterpreter:
       val iv = idx.map(evalExpr(_, env))
       indexGet(av, iv, p)
 
+    case TSlice(arr, lo, hi, inclusive, p, _) =>
+      // Spec §4.14: rank-1 slice. Half-open `lo..hi` or closed
+      // `lo..=hi`. Out-of-bounds bounds trap. The result is a fresh
+      // VArray1 — slicing never aliases the source buffer.
+      val av = evalExpr(arr, env)
+      val (loI, hiI) = (evalExpr(lo, env), evalExpr(hi, env)) match
+        case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
+        case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+      av match
+        case VArray1(b) =>
+          val upper = if inclusive then hiI + 1 else hiI
+          if loI < 0 || upper > b.size || loI > upper then
+            trap(s"slice [$loI..${if inclusive then "=" else ""}$hiI] out of bounds for array of size ${b.size}", p)
+          VArray1(b.slice(loI, upper).to(mutable.ArrayBuffer))
+        case other =>
+          trap(s"rank-1 slice requires a rank-1 array, got ${formatValue(other)}", p)
+
     case TField(receiver, name, p, _) =>
       val rv = evalExpr(receiver, env)
       fieldGet(rv, name, p)

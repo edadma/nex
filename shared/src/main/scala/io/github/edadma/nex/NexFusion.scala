@@ -124,6 +124,7 @@ class NexFusion(symbols: SymbolTable):
     case TMatMul(l, r, p, t)           => TMatMul(fuseExpr(l), fuseExpr(r), p, t)
     case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
+    case TSlice(a, lo, hi, inc, p, t)  => TSlice(fuseExpr(a), fuseExpr(lo), fuseExpr(hi), inc, p, t)
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(fuseExpr(x))
@@ -339,6 +340,7 @@ class NexFusion(symbols: SymbolTable):
       if lv.id == fromId then e
       else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), cols.map(subst(_, fromId, to)), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(subst(a, fromId, to), subst(i, fromId, to), p, t)
+    case TSlice(a, lo, hi, inc, p, t)  => TSlice(subst(a, fromId, to), subst(lo, fromId, to), subst(hi, fromId, to), inc, p, t)
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
         case TInterpExpr(x) => TInterpExpr(subst(x, fromId, to))

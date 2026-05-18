@@ -577,6 +577,62 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin).msg should include("size mismatch")
     }
 
+    "rank-1 slice with half-open range (spec §4.14)" in {
+      runOut("""
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[0..2])
+        |  print(a[1..3])
+      """.stripMargin) shouldBe "[10, 20]\n[20, 30]\n"
+    }
+
+    "rank-1 slice with closed range" in {
+      runOut("""
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[0..=4])
+        |  print(a[1..=2])
+      """.stripMargin) shouldBe "[10, 20, 30, 40, 50]\n[20, 30]\n"
+    }
+
+    "rank-1 slice with empty range" in {
+      runOut("""
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(a[1..1])
+      """.stripMargin) shouldBe "[]\n"
+    }
+
+    "rank-1 slice returns a fresh array (mutation doesn't alias)" in {
+      // Spec §4.14: "All slice forms return freshly-owned arrays."
+      runOut("""
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  var b = a[0..2]
+        |  b[0] = 99
+        |  print(a)
+        |  print(b)
+      """.stripMargin) shouldBe "[10, 20, 30]\n[99, 20]\n"
+    }
+
+    "rank-1 slice out-of-bounds traps" in {
+      shouldTrap("""
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  print(a[0..10])
+      """.stripMargin).msg should include("out of bounds")
+    }
+
+    "slicing computed bounds works (spec §4.14: range expression)" in {
+      runOut("""
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val lo = 1
+        |  val hi = 4
+        |  print(a[lo..hi])
+      """.stripMargin) shouldBe "[20, 30, 40]\n"
+    }
+
     "var array index assign" in {
       runOut("""
         |def main() =
