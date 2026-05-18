@@ -54,6 +54,8 @@ lazy val nex = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "org.scala-lang.modules" %%% "scala-parser-combinators" % "2.4.0",
       "io.github.edadma"       %%% "indentation"              % "0.0.4",
+      "com.github.scopt"       %%% "scopt"                    % "4.1.0",
+      "com.lihaoyi"            %%% "pprint"                   % "0.9.6",
       "org.scalatest"          %%% "scalatest"                % "3.2.19" % "test",
     ),
     publishMavenStyle      := true,

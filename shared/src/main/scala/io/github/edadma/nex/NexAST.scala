@@ -222,6 +222,13 @@ case class WhileExpr(cond: ExprAST, body: ExprAST) extends ExprAST
 /** `return [expr]` — early exit from the enclosing function. */
 case class ReturnExpr(value: Option[ExprAST]) extends ExprAST
 
+/** Assignment statement (modelled as a unit-typed expression for AST
+  * uniformity): `target = value`, where `target` is an l-value
+  * (VarRefExpr, FieldExpr, or IndexExpr — validated at elaboration time).
+  * Only legal at block-item position.
+  */
+case class AssignExpr(target: ExprAST, value: ExprAST) extends ExprAST
+
 // -- Block ----------------------------------------------------------------
 
 /** Block expression: a sequence of declarations / statements followed by a

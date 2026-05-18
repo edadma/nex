@@ -210,7 +210,19 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     }
 
   lazy val blockItem: PackratParser[Either[DeclAST, ExprAST]] =
-    declBare ^^ Left.apply | exprNoTuple ^^ Right.apply
+    declBare ^^ Left.apply |
+    assignment ^^ Right.apply |
+    exprNoTuple ^^ Right.apply
+
+  /** Assignment statement: `lvalue = rhs`. Only legal at block-item
+    * position. The l-value is parsed greedily as a postfix expression
+    * (covering bare names, field access, and indexing); the elaborator
+    * verifies it's actually assignable.
+    */
+  lazy val assignment: PackratParser[ExprAST] =
+    postfixExpr ~ "=" ~ exprNoTuple ^^ {
+      case lhs ~ _ ~ rhs => AssignExpr(lhs, rhs)
+    }
 
   private def toBlockItem(item: Either[DeclAST, ExprAST]): BlockItem = item match
     case Left(d)  => BlockDecl(d)
@@ -431,9 +443,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * says comma is the loosest operator).
     */
   lazy val ifExpr: PackratParser[ExprAST] =
-    ("if" ~> exprNoTuple) ~ ("then" ~> branchBody) ~ opt("else" ~> branchBody) ~ opt(trailingEnd) ^^ {
+    ("if" ~> exprNoTuple) ~ ("then" ~> branchBody) ~ opt(elseClause) ~ opt(trailingEnd) ^^ {
       case cond ~ thenB ~ elseB ~ _ => IfExpr(cond, thenB, elseB)
     }
+
+  /** The `else` clause may sit on the same line as the `then` body, or on
+    * a new line after the then-block's `Dedent` + trailing `Newline`.
+    * `rep(Newline)` matches zero or more — opt backtracks cleanly if no
+    * `else` ever shows up.
+    */
+  lazy val elseClause: PackratParser[ExprAST] =
+    rep(Newline) ~> "else" ~> branchBody
 
   lazy val forExpr: PackratParser[ExprAST] =
     ("for" ~> patternList) ~ ("in" ~> exprNoTuple) ~ ("do" ~> branchBody) ~ opt(trailingEnd) ^^ {

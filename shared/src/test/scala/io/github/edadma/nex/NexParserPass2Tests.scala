@@ -224,6 +224,20 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           VarRefExpr("d"),
         ))
     }
+    "parse a multi-line if/then/else inside a def block" in {
+      val src =
+        """def normalize(v: [real]) =
+          |  val mag = sqrt(sum(v * v))
+          |  if mag == 0.0 then v
+          |  else v / mag""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      val block = fn.body.asInstanceOf[BlockExpr]
+      block.result shouldBe IfExpr(
+        BinOpExpr("==", VarRefExpr("mag"), RealLitExpr(0.0)),
+        VarRefExpr("v"),
+        Some(BinOpExpr("/", VarRefExpr("v"), VarRefExpr("mag"))),
+      )
+    }
   }
 
   "for expressions" should {
@@ -262,6 +276,57 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
     "parse a return with value" in {
       parseExpr("return x + 1") shouldBe
         ReturnExpr(Some(BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1))))
+    }
+  }
+
+  // ========================================================================
+  // Assignment (statement form, only at block-item position)
+  // ========================================================================
+
+  "assignment" should {
+    "parse simple `x = expr` inside a function block" in {
+      val src =
+        """def main() =
+          |  x = 42""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe AssignExpr(VarRefExpr("x"), IntLitExpr(42))
+    }
+    "parse indexed assignment `a[i] = x`" in {
+      val src =
+        """def main() =
+          |  a[i] = 0.0""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe AssignExpr(
+        IndexExpr(VarRefExpr("a"), List(VarRefExpr("i"))),
+        RealLitExpr(0.0),
+      )
+    }
+    "parse field assignment `s.field = y`" in {
+      val src =
+        """def main() =
+          |  p.x = 5.0""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe AssignExpr(
+        FieldExpr(VarRefExpr("p"), "x"),
+        RealLitExpr(5.0),
+      )
+    }
+    "parse mixed block: val + assignment + final expr" in {
+      val src =
+        """def step(n: integer) =
+          |  var x = n
+          |  x = x + 1
+          |  x""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe a [BlockExpr]
+      val block = fn.body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 2  // var decl + assignment
+      block.items(0) shouldBe a [BlockDecl]
+      block.items(1) shouldBe BlockExprItem(
+        AssignExpr(VarRefExpr("x"),
+          BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1))),
+      )
+      block.result shouldBe VarRefExpr("x")
     }
   }
 
