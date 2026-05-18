@@ -202,6 +202,14 @@ class NexLLVMCodegen
         case "e"   => "0x4005BF0A8B145769"  // math.E
         case "inf" => "0x7FF0000000000000"
         case "nan" => "0x7FF8000000000000"
+        case "i"   =>
+          // Complex unit: build `{ 0.0, 1.0 }` via insertvalue. Subsequent
+          // arithmetic with reals/ints folds through the complex binop path.
+          val c0 = newReg()
+          emitLine(s"  $c0 = insertvalue { double, double } undef, double 0.0, 0\n")
+          val c1 = newReg()
+          emitLine(s"  $c1 = insertvalue { double, double } $c0, double 1.0, 1\n")
+          c1
         case other => notYet(s"prelude reference `$other`"); "0"
 
     case TVarRef(s, _, t) =>
@@ -249,6 +257,45 @@ class NexLLVMCodegen
     case TBinOp("and", l, r, _, _) => emitShortCircuit(l, r, isAnd = true)
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
 
+    case TBinOp(op, l, r, _, TyComplex) =>
+      // Complex arithmetic: promote any int/real operand to a complex
+      // pair `{ x, 0.0 }`, then run the per-component formula. The
+      // result type is `{ double, double }`.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val (lre, lim) = toComplex(lv, l.tpe)
+      val (rre, rim) = toComplex(rv, r.tpe)
+      emitComplexArith(op, lre, lim, rre, rim)
+
+    case TBinOp("==", l, r, _, TyBool) if l.tpe == TyComplex || r.tpe == TyComplex =>
+      // Complex equality: both real and imaginary parts must match.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val (lre, lim) = toComplex(lv, l.tpe)
+      val (rre, rim) = toComplex(rv, r.tpe)
+      val eR = newReg()
+      emitLine(s"  $eR = fcmp oeq double $lre, $rre\n")
+      val eI = newReg()
+      emitLine(s"  $eI = fcmp oeq double $lim, $rim\n")
+      val and = newReg()
+      emitLine(s"  $and = and i1 $eR, $eI\n")
+      and
+
+    case TBinOp("!=", l, r, _, TyBool) if l.tpe == TyComplex || r.tpe == TyComplex =>
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val (lre, lim) = toComplex(lv, l.tpe)
+      val (rre, rim) = toComplex(rv, r.tpe)
+      val eR = newReg()
+      emitLine(s"  $eR = fcmp oeq double $lre, $rre\n")
+      val eI = newReg()
+      emitLine(s"  $eI = fcmp oeq double $lim, $rim\n")
+      val and = newReg()
+      emitLine(s"  $and = and i1 $eR, $eI\n")
+      val neg = newReg()
+      emitLine(s"  $neg = xor i1 $and, 1\n")
+      neg
+
     case TBinOp(op, l, r, _, t) =>
       val lv0 = emitExpr(l)
       val rv0 = emitExpr(r)
@@ -288,6 +335,18 @@ class NexLLVMCodegen
       t match
         case TyInteger => emitLine(s"  $reg = sub i64 0, $xv\n")
         case TyReal    => emitLine(s"  $reg = fneg double $xv\n")
+        case TyComplex =>
+          val re0 = newReg()
+          emitLine(s"  $re0 = extractvalue { double, double } $xv, 0\n")
+          val im0 = newReg()
+          emitLine(s"  $im0 = extractvalue { double, double } $xv, 1\n")
+          val nre = newReg()
+          emitLine(s"  $nre = fneg double $re0\n")
+          val nim = newReg()
+          emitLine(s"  $nim = fneg double $im0\n")
+          val c0 = newReg()
+          emitLine(s"  $c0 = insertvalue { double, double } undef, double $nre, 0\n")
+          emitLine(s"  $reg = insertvalue { double, double } $c0, double $nim, 1\n")
         case other     => notYet(s"unary - on $other")
       reg
 
@@ -762,6 +821,85 @@ class NexLLVMCodegen
       registerArraySlot(sym.id, slot, sym.tpe)
 
   // ---------------------------------------------------------------------------
+  // Complex (TyComplex) arithmetic helpers (chunk 12).
+  //
+  // The value layout is `{ double real, double imag }`. Integer and real
+  // operands promote to `{ x, 0.0 }` before per-component arithmetic.
+  // Division follows the canonical (a + bi) / (c + di) = ((ac + bd) +
+  // (bc - ad)i) / (c² + d²) formula; no zero-denominator trap is emitted
+  // here (matches the interpreter's behaviour for now).
+  // ---------------------------------------------------------------------------
+
+  /** Decompose a value of type `t` into its real and imaginary
+    * components. For TyComplex this extracts the two fields; for
+    * TyInteger / TyReal this promotes to `(value, 0.0)`. Mixed-type
+    * binary ops use this to align operand shapes before applying the
+    * per-component formulas.
+    */
+  private def toComplex(v: String, t: Type): (String, String) = t match
+    case TyComplex =>
+      val re = newReg()
+      emitLine(s"  $re = extractvalue { double, double } $v, 0\n")
+      val im = newReg()
+      emitLine(s"  $im = extractvalue { double, double } $v, 1\n")
+      (re, im)
+    case TyReal =>
+      (v, "0.0")
+    case TyInteger =>
+      val re = newReg()
+      emitLine(s"  $re = sitofp i64 $v to double\n")
+      (re, "0.0")
+    case other =>
+      notYet(s"complex promotion from $other"); (v, "0.0")
+
+  /** Pack a (re, im) pair into a `{ double, double }` aggregate value. */
+  private def packComplex(re: String, im: String): String =
+    val c0 = newReg()
+    emitLine(s"  $c0 = insertvalue { double, double } undef, double $re, 0\n")
+    val c1 = newReg()
+    emitLine(s"  $c1 = insertvalue { double, double } $c0, double $im, 1\n")
+    c1
+
+  /** Per-component complex arithmetic. Caller has already split both
+    * operands into (re, im) pairs via [[toComplex]].
+    */
+  private def emitComplexArith(op: String, lre: String, lim: String, rre: String, rim: String): String =
+    op match
+      case "+" =>
+        val re = newReg(); emitLine(s"  $re = fadd double $lre, $rre\n")
+        val im = newReg(); emitLine(s"  $im = fadd double $lim, $rim\n")
+        packComplex(re, im)
+      case "-" =>
+        val re = newReg(); emitLine(s"  $re = fsub double $lre, $rre\n")
+        val im = newReg(); emitLine(s"  $im = fsub double $lim, $rim\n")
+        packComplex(re, im)
+      case "*" =>
+        // (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+        val ac = newReg(); emitLine(s"  $ac = fmul double $lre, $rre\n")
+        val bd = newReg(); emitLine(s"  $bd = fmul double $lim, $rim\n")
+        val ad = newReg(); emitLine(s"  $ad = fmul double $lre, $rim\n")
+        val bc = newReg(); emitLine(s"  $bc = fmul double $lim, $rre\n")
+        val re = newReg(); emitLine(s"  $re = fsub double $ac, $bd\n")
+        val im = newReg(); emitLine(s"  $im = fadd double $ad, $bc\n")
+        packComplex(re, im)
+      case "/" =>
+        // (a + bi) / (c + di) = ((ac + bd) + (bc - ad)i) / (c² + d²)
+        val cc   = newReg(); emitLine(s"  $cc = fmul double $rre, $rre\n")
+        val dd   = newReg(); emitLine(s"  $dd = fmul double $rim, $rim\n")
+        val den  = newReg(); emitLine(s"  $den = fadd double $cc, $dd\n")
+        val ac   = newReg(); emitLine(s"  $ac = fmul double $lre, $rre\n")
+        val bd   = newReg(); emitLine(s"  $bd = fmul double $lim, $rim\n")
+        val bc   = newReg(); emitLine(s"  $bc = fmul double $lim, $rre\n")
+        val ad   = newReg(); emitLine(s"  $ad = fmul double $lre, $rim\n")
+        val rnum = newReg(); emitLine(s"  $rnum = fadd double $ac, $bd\n")
+        val inum = newReg(); emitLine(s"  $inum = fsub double $bc, $ad\n")
+        val re   = newReg(); emitLine(s"  $re = fdiv double $rnum, $den\n")
+        val im   = newReg(); emitLine(s"  $im = fdiv double $inum, $den\n")
+        packComplex(re, im)
+      case other =>
+        notYet(s"complex `$other` op"); packComplex("0.0", "0.0")
+
+  // ---------------------------------------------------------------------------
   // User-function call — emits `call <retT> @<name>(<argT> <arg>, ...)`.
   // A unit-returning callee produces a `call void @name(...)` with no
   // result register; the emitExpr return value is `"void"` so any
@@ -849,7 +987,8 @@ class NexLLVMCodegen
     acc
 
   /** Lower `recv.field` — pick out the field's index from the receiver's
-    * TyStruct then emit `extractvalue`.
+    * TyStruct then emit `extractvalue`. Complex receivers get `.re`
+    * (field 0) and `.im` (field 1).
     */
   private def emitFieldAccess(receiver: TExpr, fieldName: String, resultT: Type): String =
     receiver.tpe match
@@ -863,5 +1002,14 @@ class NexLLVMCodegen
           val reg = newReg()
           emitLine(s"  $reg = extractvalue $ty $rv, $idx\n")
           reg
+      case TyComplex =>
+        val idx = fieldName match
+          case "re" => 0
+          case "im" => 1
+          case _    => notYet(s"complex field `$fieldName`"); return "0.0"
+        val rv = emitExpr(receiver)
+        val reg = newReg()
+        emitLine(s"  $reg = extractvalue { double, double } $rv, $idx\n")
+        reg
       case other =>
         notYet(s"field access on non-struct type $other"); "0"

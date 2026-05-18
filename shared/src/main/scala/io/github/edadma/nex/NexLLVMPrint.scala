@@ -39,6 +39,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
           case TyStruct(_, _) =>
             emitPrintStruct(arg)
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+          case TyComplex =>
+            emitPrintComplex(emitExpr(arg))
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
           case _ =>
             val v = emitExpr(arg)
             arg.tpe match
@@ -85,8 +88,42 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitPrintTuple(arg)
       case TyStruct(_, _) =>
         emitPrintStruct(arg)
+      case TyComplex =>
+        emitPrintComplex(v)
       case other =>
         notYet(s"interpolated print($other)")
+
+  /** Print a complex value (without a trailing newline) as `<re>+<im>i` or
+    * `<re>-<im>i`, mirroring the interpreter's [[formatValue]]
+    * implementation:
+    *
+    * {{{
+    *   val sign = if i >= 0 then "+" else "-"
+    *   s"$rs$sign${abs(i)}i"
+    * }}}
+    *
+    * Both components route through the existing real-formatting helper
+    * so whole-number parts print as `<n>.0` for parity. The `i` suffix
+    * is interned once like any other string literal.
+    */
+  protected def emitPrintComplex(v: String): Unit =
+    val re = newReg()
+    emitLine(s"  $re = extractvalue { double, double } $v, 0\n")
+    val im = newReg()
+    emitLine(s"  $im = extractvalue { double, double } $v, 1\n")
+    emitLine(s"  call void @__nex_print_real_raw(double $re)\n")
+    val isPos = newReg()
+    emitLine(s"  $isPos = fcmp oge double $im, 0.0\n")
+    val plusS  = internStringLiteral("+")
+    val minusS = internStringLiteral("-")
+    val sign   = newReg()
+    emitLine(s"  $sign = select i1 $isPos, ptr $plusS, ptr $minusS\n")
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sign)\n")
+    val absIm = newReg()
+    emitLine(s"  $absIm = call double @fabs(double $im)\n")
+    emitLine(s"  call void @__nex_print_real_raw(double $absIm)\n")
+    val iS = internStringLiteral("i")
+    emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $iS)\n")
 
   /** Print a Nex array as the interpreter does:
     *   rank-1:  [a, b, c]

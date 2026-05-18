@@ -53,8 +53,9 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         emitLine(s"  $reg = call double @atan2(double $yv, double $xv)\n")
         reg
 
-      // `abs` is overloaded — integer abs vs real fabs. The elaborator
-      // leaves the call's result type to follow the argument's type.
+      // `abs` is overloaded — integer abs vs real fabs vs complex modulus.
+      // The elaborator leaves the call's result type to follow the
+      // argument's type.
       case ("abs", List(x)) =>
         x.tpe match
           case TyInteger =>
@@ -62,11 +63,89 @@ protected trait NexLLVMPrelude extends NexLLVMState:
             val reg = newReg()
             emitLine(s"  $reg = call i64 @llabs(i64 $xv)\n")
             reg
+          case TyComplex =>
+            // |z| = sqrt(re² + im²)
+            val xv  = emitExpr(x)
+            val re  = newReg()
+            emitLine(s"  $re = extractvalue { double, double } $xv, 0\n")
+            val im  = newReg()
+            emitLine(s"  $im = extractvalue { double, double } $xv, 1\n")
+            val rr  = newReg(); emitLine(s"  $rr = fmul double $re, $re\n")
+            val ii  = newReg(); emitLine(s"  $ii = fmul double $im, $im\n")
+            val sum = newReg(); emitLine(s"  $sum = fadd double $rr, $ii\n")
+            val reg = newReg()
+            emitLine(s"  $reg = call double @sqrt(double $sum)\n")
+            reg
           case _ =>
             val xv  = liftToReal(x)
             val reg = newReg()
             emitLine(s"  $reg = call double @fabs(double $xv)\n")
             reg
+
+      // Complex prelude functions (§10.3).
+      case ("conj", List(z)) =>
+        z.tpe match
+          case TyComplex =>
+            val zv = emitExpr(z)
+            val re = newReg()
+            emitLine(s"  $re = extractvalue { double, double } $zv, 0\n")
+            val im = newReg()
+            emitLine(s"  $im = extractvalue { double, double } $zv, 1\n")
+            val nim = newReg()
+            emitLine(s"  $nim = fneg double $im\n")
+            val c0 = newReg()
+            emitLine(s"  $c0 = insertvalue { double, double } undef, double $re, 0\n")
+            val c1 = newReg()
+            emitLine(s"  $c1 = insertvalue { double, double } $c0, double $nim, 1\n")
+            c1
+          case _ =>
+            // conj of a real / int is itself — just emit it.
+            emitExpr(z)
+
+      case ("arg", List(z)) =>
+        // arg(z) = atan2(im, re) per the interpreter. Reals/ints have
+        // `im = 0`, so arg returns 0 for positive and π for negative.
+        z.tpe match
+          case TyComplex =>
+            val zv = emitExpr(z)
+            val re = newReg()
+            emitLine(s"  $re = extractvalue { double, double } $zv, 0\n")
+            val im = newReg()
+            emitLine(s"  $im = extractvalue { double, double } $zv, 1\n")
+            val reg = newReg()
+            emitLine(s"  $reg = call double @atan2(double $im, double $re)\n")
+            reg
+          case _ =>
+            val xv = liftToReal(z)
+            // For a non-complex value: return 0 if >= 0, π otherwise.
+            val ge = newReg()
+            emitLine(s"  $ge = fcmp oge double $xv, 0.0\n")
+            val sel = newReg()
+            emitLine(s"  $sel = select i1 $ge, double 0.0, double 0x400921FB54442D18\n")
+            sel
+
+      // §10.7 to_complex(x) — wrap any numeric as a complex pair.
+      case ("to_complex", List(x)) =>
+        x.tpe match
+          case TyComplex => emitExpr(x)
+          case TyReal =>
+            val xv = emitExpr(x)
+            val c0 = newReg()
+            emitLine(s"  $c0 = insertvalue { double, double } undef, double $xv, 0\n")
+            val c1 = newReg()
+            emitLine(s"  $c1 = insertvalue { double, double } $c0, double 0.0, 1\n")
+            c1
+          case TyInteger =>
+            val xv = emitExpr(x)
+            val rv = newReg()
+            emitLine(s"  $rv = sitofp i64 $xv to double\n")
+            val c0 = newReg()
+            emitLine(s"  $c0 = insertvalue { double, double } undef, double $rv, 0\n")
+            val c1 = newReg()
+            emitLine(s"  $c1 = insertvalue { double, double } $c0, double 0.0, 1\n")
+            c1
+          case other =>
+            notYet(s"to_complex from $other"); "0"
 
       // sign(x) returns -1, 0, or +1 — integer or real result follows arg.
       case ("sign", List(x)) =>

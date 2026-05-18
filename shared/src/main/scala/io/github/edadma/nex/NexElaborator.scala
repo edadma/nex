@@ -1509,7 +1509,13 @@ class NexElaborator:
     */
   private def preludeReturnTypeFor(name: String, args: List[TExpr]): Type =
     name match
-      case "abs" | "sign" =>
+      case "abs" =>
+        args.headOption.map(_.tpe) match
+          case Some(TyInteger) => TyInteger
+          case Some(TyReal)    => TyReal
+          case Some(TyComplex) => TyReal // |z| is the modulus, a real
+          case _               => TyUnknown
+      case "sign" =>
         args.headOption.map(_.tpe) match
           case Some(TyInteger) => TyInteger
           case Some(TyReal)    => TyReal

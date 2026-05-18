@@ -222,3 +222,125 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """call double \(ptr, double\) %t\d+\(ptr %t\d+, double %t\d+\)"""
     }
   }
+
+  "complex numbers (chunk 12)" should {
+    "TyComplex lowers to a `{ double, double }` aggregate" in {
+      val ir = compile("""
+        |def main() =
+        |  val z = 3.0 + 4.0 * i
+        |  print(z.re)
+      """.stripMargin)
+      ir should include("alloca { double, double }")
+      ir should include regex """store \{ double, double \} %t\d+, ptr %t\d+"""
+    }
+
+    "prelude `i` constant inlines as `{ 0.0, 1.0 }`" in {
+      val ir = compile("def main() = print((1.0 + 0.0 * i).re)")
+      ir should include("insertvalue { double, double } undef, double 0.0, 0")
+      ir should include regex """insertvalue \{ double, double \} %t\d+, double 1.0, 1"""
+    }
+
+    "complex addition uses per-component fadd" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = 1.0 + 2.0 * i
+        |  val b = 3.0 + 4.0 * i
+        |  print(a + b)
+      """.stripMargin)
+      // Two fadds for the (a.re+b.re, a.im+b.im) pair.
+      ir should include regex """fadd double %t\d+, %t\d+"""
+    }
+
+    "complex multiplication uses the (ac-bd, ad+bc) formula" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = 1.0 + 2.0 * i
+        |  val b = 3.0 + 4.0 * i
+        |  print(a * b)
+      """.stripMargin)
+      // 4 fmuls, 1 fsub, 1 fadd for the components.
+      ir should include regex """fmul double %t\d+, %t\d+"""
+      ir should include regex """fsub double %t\d+, %t\d+"""
+      ir should include regex """fadd double %t\d+, %t\d+"""
+    }
+
+    "complex division uses the canonical 4-fmul + fadd-denominator formula" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = 1.0 + 2.0 * i
+        |  val b = 3.0 + 4.0 * i
+        |  print(a / b)
+      """.stripMargin)
+      // Two fdivs (one per output component).
+      ir should include regex """fdiv double %t\d+, %t\d+"""
+    }
+
+    ".re and .im extract field 0 and field 1 respectively" in {
+      val ir = compile("""
+        |def main() =
+        |  val z = 7.0 + 8.0 * i
+        |  print(z.re)
+        |  print(z.im)
+      """.stripMargin)
+      ir should include regex """extractvalue \{ double, double \} %t\d+, 0"""
+      ir should include regex """extractvalue \{ double, double \} %t\d+, 1"""
+    }
+
+    "abs(complex) computes sqrt(re² + im²)" in {
+      val ir = compile("""
+        |def main() = print(abs(3.0 + 4.0 * i))
+      """.stripMargin)
+      // The modulus formula: fmul re*re, fmul im*im, fadd, sqrt.
+      ir should include("call double @sqrt(double")
+    }
+
+    "conj negates the imaginary part" in {
+      val ir = compile("""
+        |def main() = print(conj(3.0 + 4.0 * i))
+      """.stripMargin)
+      ir should include regex """fneg double %t\d+"""
+    }
+
+    "arg(complex) routes to atan2(im, re)" in {
+      val ir = compile("""
+        |def main() = print(arg(3.0 + 4.0 * i))
+      """.stripMargin)
+      ir should include regex """call double @atan2\(double %t\d+, double %t\d+\)"""
+    }
+
+    "unary minus negates both components" in {
+      val ir = compile("""
+        |def main() =
+        |  val z = 3.0 + 4.0 * i
+        |  print(-z)
+      """.stripMargin)
+      // Two fnegs — one per component.
+      ir should include regex """fneg double %t\d+"""
+    }
+
+    "complex == uses two fcmp oeq + and i1" in {
+      val ir = compile("""
+        |def main() =
+        |  val z = 3.0 + 4.0 * i
+        |  print(z == z)
+      """.stripMargin)
+      ir should include("fcmp oeq double")
+      ir should include regex """and i1 %t\d+, %t\d+"""
+    }
+
+    "to_complex(integer) sitofp-lifts the real part and zeroes imag" in {
+      val ir = compile("def main() = print(to_complex(5))")
+      ir should include regex """sitofp i64 5 to double"""
+      ir should include regex """insertvalue \{ double, double \} %t\d+, double 0.0, 1"""
+    }
+
+    "print(complex) emits `<re>+<im>i` via the per-component path" in {
+      val ir = compile("""
+        |def main() = print(3.0 + 4.0 * i)
+      """.stripMargin)
+      // Two real-prints (re + abs(im)) plus a sign string + "i" trailer.
+      ir should include("call void @__nex_print_real_raw(double")
+      ir should include("call double @fabs(double")
+      ir should include("fcmp oge double")
+    }
+  }

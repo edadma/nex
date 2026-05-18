@@ -290,6 +290,7 @@ protected trait NexLLVMState:
     case TyBool         => "i1"
     case TyUnit         => "void"
     case TyString       => "ptr"
+    case TyComplex      => "{ double, double }"
     case TyArray(_,_)   => "ptr"
     case TyTuple(elems)        => elems.map(llvmType).mkString("{ ", ", ", " }")
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
