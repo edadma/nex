@@ -392,6 +392,15 @@ class NexParserTests extends AnyWordSpec with Matchers:
         ConstDeclAST(VarPat("Z"), None, IntLitExpr(3)),
       )
     }
+    "reject paren-grouped patterns — tuples are paren-less" in {
+      // `(a, b)` would be a tuple sub-pattern, but tuples have no
+      // intrinsic parens in the spec, so the only tuple-pattern shape is
+      // the flat comma-separated form. The grammar should refuse the
+      // paren variant outright rather than silently accept a nested form.
+      new NexParser().parseProgram("val (a, b) = pair") match
+        case Left(_)  => succeed
+        case Right(_) => fail("expected the parser to reject `val (a, b) = pair`")
+    }
     "parse val with an indented-block body (same shape as def)" in {
       val src =
         """val total =

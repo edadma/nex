@@ -252,9 +252,14 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       case ps       => TuplePat(ps)
     }
 
+  /** A pattern atom is a single name or wildcard. Tuples-in-patterns are
+    * paren-less (matching the spec convention that tuples have no
+    * intrinsic parentheses) — they emerge from `patternList`'s comma
+    * separator alone. There is intentionally no `"(" ~> patternList <~ ")"`
+    * alternative: nested tuple patterns are syntactically inexpressible.
+    */
   lazy val patternAtom: PackratParser[PatternAST] =
-    ident ^^ { n => if n == "_" then WildcardPat() else VarPat(n) } |
-    "(" ~> patternList <~ ")"
+    ident ^^ { n => if n == "_" then WildcardPat() else VarPat(n) }
 
   // --- Type expressions ---------------------------------------------------
 

@@ -673,6 +673,65 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
+  // Paren-less tuple construction (the spec convention)
+  // ==========================================================================
+
+  "paren-less tuple construction" should {
+
+    "bind a tuple value with no parens at all" in {
+      // `val a, b = 1, 2` — both sides paren-less.
+      runOut("""
+        |def main() =
+        |  val a, b = 1, 2
+        |  print(a)
+        |  print(b)
+        |  print(a + b)
+      """.stripMargin) shouldBe "1\n2\n3\n"
+    }
+
+    "bind a single name to a paren-less tuple RHS" in {
+      // `val t = 1, 2` parses as `val t = TupleExpr(1, 2)` — t holds a tuple.
+      runOut("""
+        |def main() =
+        |  val t = 1, 2
+        |  print(t)
+      """.stripMargin) shouldBe "(1, 2)\n"
+    }
+
+    "bind a paren-less 3-tuple at the top level" in {
+      runOut("""
+        |val a, b, c = 10, 20, 30
+        |def main() = print(a + b + c)
+      """.stripMargin) shouldBe "60\n"
+    }
+
+    "bind a paren-less heterogeneous tuple" in {
+      runOut("""
+        |def main() =
+        |  val n, s = 42, "hello"
+        |  print(s"n=$n s=$s")
+      """.stripMargin) shouldBe "n=42 s=hello\n"
+    }
+
+    "produce equivalent values whether parens are written or not" in {
+      // `1, 2, 3` and `(1, 2, 3)` are the same tuple — parens are pure
+      // grouping. Bind both forms to a name and print; outputs must match.
+      // (Can't do `print(1, 2, 3)` because that's a 3-arg call to print,
+      // not a single tuple argument — function-call commas bind tighter.)
+      val withParens =
+        runOut("""def main() = print((1, 2, 3))""")
+      val viaBinding =
+        runOut("""
+          |def main() =
+          |  val t = 1, 2, 3
+          |  print(t)
+        """.stripMargin)
+      withParens shouldBe "(1, 2, 3)\n"
+      viaBinding shouldBe withParens
+    }
+  }
+
+  // ==========================================================================
   // Strings + interpolation
   // ==========================================================================
 

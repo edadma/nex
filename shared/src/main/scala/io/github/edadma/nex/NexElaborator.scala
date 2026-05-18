@@ -230,16 +230,15 @@ class NexElaborator:
         temp :: names
 
   /** Mint a single named symbol for one element of a tuple-destructuring
-    * pattern. Nested tuple patterns (e.g. `val (a, b), c = ...`) are not
-    * yet supported and emit an error with a placeholder symbol.
+    * pattern. Nested `TuplePat` cannot reach here because the parser's
+    * `patternAtom` has no paren alternative — tuples are paren-less, so
+    * there is no syntax for a tuple inside a tuple pattern.
     */
   private def bindTuplePatternName(p: PatternAST, kind: SymKind, where: Positional): Symbol =
     p match
       case VarPat(name)  => define(name, kind, TyUnknown, where)
       case WildcardPat() => symbols.mint("_", TyUnknown, kind)
-      case _: TuplePat   =>
-        err("nested tuple patterns are not yet supported", where)
-        symbols.mint("$nested", TyUnknown, kind)
+      case _: TuplePat   => sys.error("unreachable: parser rejects nested tuple patterns")
 
   // ==========================================================================
   // Declarations
