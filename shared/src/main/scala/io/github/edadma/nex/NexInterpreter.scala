@@ -504,6 +504,23 @@ class NexInterpreter:
     case TMatMul(l, r, p, _) =>
       matMul(evalExpr(l, env), evalExpr(r, env), p)
 
+    case TFusedLoop(loopVar, length, body, p, _) =>
+      // Materialize a rank-1 array by evaluating `body` once per i in
+      // 0..length-1 with `loopVar` bound to i. Introduced by NexFusion;
+      // the un-fused TElementWise/TBroadcast path is still valid and
+      // produces the same result.
+      val n = evalExpr(length, env) match
+        case VInt(v) => v.toInt
+        case other   => trap(s"TFusedLoop: length not an integer, got ${formatValue(other)}", p)
+      val out = mutable.ArrayBuffer.empty[Value]
+      var i = 0
+      while i < n do
+        val frame = env.child
+        frame.define(loopVar.id, VInt(i.toLong))
+        out += evalExpr(body, frame)
+        i += 1
+      VArray1(out)
+
     case TCall(callee, args, p, _) =>
       // Struct construction: callee is a TypeName symbol.
       callee match

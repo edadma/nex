@@ -134,6 +134,21 @@ case class TMap(arr: TExpr, fn: TExpr, pos: Option[Position] = None, tpe: Type =
 case class TReduce(arr: TExpr, init: TExpr, fn: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 case class TMatMul(lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
+/** A fused-loop array producer. The result is an array `[body(i) for i in
+  * 0..length]` — `loopVar` is the integer index bound during body evaluation;
+  * `length` is an expression evaluating to TyInteger; `body` evaluates once
+  * per iteration in a scope where `loopVar` resolves to the current i.
+  *
+  * Introduced by [[NexFusion]] (Stage 4, opt-in) as the rewrite target for
+  * [[TElementWise]] / [[TBroadcast]] and — eventually — map/reduce/filter
+  * call sites. A fusion pass that combines chains rewrites nested
+  * TFusedLoop expressions into a single loop with merged body.
+  *
+  * Status as of chunk 1: only rank-1 element-wise and broadcast get
+  * rewritten; rank-2 still goes through TElementWise/TBroadcast.
+  */
+case class TFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+
 // -- Application / projection ----------------------------------------------
 
 case class TCall(callee: TExpr, args: List[TExpr], pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
