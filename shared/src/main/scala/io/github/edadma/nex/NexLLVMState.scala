@@ -319,6 +319,7 @@ protected trait NexLLVMState:
     case TyReal           => 8
     case TyBool           => 1
     case TyString         => 8
+    case TyComplex        => 16 // { double, double }
     case TyArray(_, _)    => 8 // ptr to descriptor
     case TyTuple(es)      => es.map(aggregateFieldSize).sum
     case TyStruct(_, fs)  => fs.map(f => aggregateFieldSize(f._2)).sum
