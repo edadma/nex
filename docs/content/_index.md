@@ -17,7 +17,26 @@ def normalize(v: [real]) =
   else v / mag
 ```
 
-The whole expression fuses to a single loop with no intermediate arrays. That's the design promise.
+That lowers to a single pass over `v` — no intermediate arrays:
+
+```nex
+def normalize(v: [real]) =
+  val n = length(v)
+  var sum_sq = 0.0
+  for i in 0..n do
+    sum_sq = sum_sq + v[i]^2
+  end for
+  val mag = sqrt(sum_sq)
+  if mag == 0.0 then v
+  else
+    var out = zeros(n)
+    for i in 0..n do
+      out[i] = v[i] / mag
+    end for
+    out
+```
+
+The hand-written loop form and the fused-source form produce the same machine code. That's the design promise.
 
 ## What's here
 
