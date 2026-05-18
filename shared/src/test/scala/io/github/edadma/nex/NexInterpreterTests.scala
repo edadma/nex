@@ -353,6 +353,40 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(apply2((x, y) -> x + y, 4, 5))
       """.stripMargin) shouldBe "9\n"
     }
+
+    "prelude HOF `map` with unannotated lambda infers and runs" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  val ys = map(xs, x -> x * 2)
+        |  print(sum(ys))
+      """.stripMargin) shouldBe "12\n"
+    }
+
+    "prelude HOF `reduce` with unannotated lambda infers and runs" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(reduce(xs, 0, (a, x) -> a + x))
+      """.stripMargin) shouldBe "10\n"
+    }
+
+    "prelude HOF `filter` with unannotated lambda infers and runs" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5]
+        |  val ev = filter(xs, x -> x % 2 == 0)
+        |  print(sum(ev))
+      """.stripMargin) shouldBe "6\n"
+    }
+
+    "prelude HOF method-call sugar `xs.map(x -> ...)` runs" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(sum(xs.map(x -> x * 10)))
+      """.stripMargin) shouldBe "60\n"
+    }
   }
 
   // ==========================================================================

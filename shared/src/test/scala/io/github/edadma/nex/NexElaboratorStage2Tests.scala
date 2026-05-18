@@ -787,18 +787,66 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       lam.params.head.tpe shouldBe TyReal
     }
 
-    "push-down does NOT happen for prelude-resolved callees (TyUnknown signature)" in {
-      // Prelude funcs (map, reduce, ...) carry TyUnknown signatures in
-      // v0. The lambda's param stays TyUnknown — documents the known
-      // gap. When prelude signatures arrive this test will start failing
-      // and should be updated to the positive form.
+    "push-down works for prelude HOF `map` (element type into lambda's first param)" in {
+      // `map` carries a TyUnknown signature (prelude funcs have no type
+      // variables in v0), but the elaborator hand-rolls bidirectional
+      // inference for the three HOFs that take lambdas: map, reduce,
+      // filter. The lambda's param gets the array's element type.
       val tp = elab("""
         |val xs = [1, 2, 3]
         |val ys = map(xs, x -> x * 2)
       """.stripMargin)
       val ysBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ys").get
-      val lam    = ysBind.value.asInstanceOf[TCall].args(1).asInstanceOf[TLambda]
-      lam.params.head.tpe shouldBe TyUnknown
+      val call   = ysBind.value.asInstanceOf[TCall]
+      val lam    = call.args(1).asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+      // Result type of map(arr, f) should be [f.body.tpe]
+      call.tpe shouldBe TyArray(TyInteger, 1)
+    }
+
+    "push-down works for prelude HOF `reduce` (acc, elem) into lambda params" in {
+      val tp = elab("""
+        |val xs = [1, 2, 3]
+        |val s  = reduce(xs, 0, (a, x) -> a + x)
+      """.stripMargin)
+      val sBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "s").get
+      val call  = sBind.value.asInstanceOf[TCall]
+      val lam   = call.args(2).asInstanceOf[TLambda]
+      lam.params.map(_.tpe) shouldBe List(TyInteger, TyInteger)
+      lam.body.tpe shouldBe TyInteger
+      call.tpe shouldBe TyInteger
+    }
+
+    "push-down works for prelude HOF `filter` (elem into lambda, expected bool result)" in {
+      val tp = elab("""
+        |val xs = [1, 2, 3, 4]
+        |val ev = filter(xs, x -> x % 2 == 0)
+      """.stripMargin)
+      val evBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ev").get
+      val call   = evBind.value.asInstanceOf[TCall]
+      val lam    = call.args(1).asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyBool
+      call.tpe shouldBe TyArray(TyInteger, 1)
+    }
+
+    "push-down works for `xs.map(x -> ...)` method-call sugar" in {
+      // Method-call form goes through the TMethodCall branch in Stage 2.
+      // The HOF dispatch synthesizes the equivalent TCall shape (receiver
+      // as first arg) and re-wraps the typed args back into a TMethodCall
+      // so Stage 3 can still lower it via lowerMethodCall.
+      val tp = elab("""
+        |val xs = [1, 2, 3]
+        |val ys = xs.map(x -> x * 2)
+      """.stripMargin)
+      val ysBind = tp.decls.collect { case b: TTopBinding => b }.find(_.sym.name == "ys").get
+      // After Stage 3 lowering: TCall(map, [xs, lambda]).
+      val call = ysBind.value.asInstanceOf[TCall]
+      val lam  = call.args(1).asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+      call.tpe shouldBe TyArray(TyInteger, 1)
     }
 
     "push-down does NOT happen for bound-then-not-pushed lambdas without a declared type" in {

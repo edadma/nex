@@ -684,12 +684,21 @@ class NexElaborator:
 
     case TCall(callee, args, p, _) =>
       val cc = infExpr(callee)
-      val aa = cc.tpe match
-        case TyFunc(params, _) if params.size == args.size =>
-          args.zip(params).map { case (a, (pt, _)) => inferArg(a, pt) }
+      // Prelude HOFs (map/reduce/filter) have TyUnknown signatures in v0
+      // because the type system has no type variables. But their shapes
+      // are fixed and well-known, so we can hand-roll bidirectional
+      // inference for them — push the array's element type into the
+      // lambda arg and compute a sensible result type.
+      cc match
+        case TVarRef(s, _, _) if isPreludeHOF(s) =>
+          inferPreludeHOFCall(s.name, cc, args, p)
         case _ =>
-          args.map(infExpr)
-      inferCall(cc, aa, p)
+          val aa = cc.tpe match
+            case TyFunc(params, _) if params.size == args.size =>
+              args.zip(params).map { case (a, (pt, _)) => inferArg(a, pt) }
+            case _ =>
+              args.map(infExpr)
+          inferCall(cc, aa, p)
 
     case TIndex(arr, idx, p, _) =>
       val aa = infExpr(arr); val ii = idx.map(infExpr)
@@ -714,23 +723,33 @@ class NexElaborator:
 
     case TMethodCall(r, n, args, p, _) =>
       // Stage 3 will lower this into either a field access or a function
-      // call `n(r, args...)`. Meanwhile, when `n` resolves to a top-level
-      // function with a concrete TyFunc signature whose first param is the
-      // receiver, push the remaining expected param types into `args` so
-      // unannotated lambdas (`xs.foo(x -> x + 1)`) can infer their param
-      // types. Prelude funcs still carry TyUnknown signatures in v0 and
-      // are skipped — `xs.map(x -> x * 2)` does NOT yet infer `x`'s type.
+      // call `n(r, args...)`. Meanwhile, push expected param types into
+      // unannotated lambda args so `xs.foo(x -> x + 1)` works. Three
+      // shapes are handled here:
+      //   1. `n` resolves to a top-level user function with a concrete
+      //      TyFunc signature — push from `params.tail` into `args`.
+      //   2. `n` is one of the prelude HOFs (map/reduce/filter) — use
+      //      [[inferPreludeHOFCall]] with the receiver as the first arg.
+      //   3. Otherwise infer args generically.
       val rr = infExpr(r)
-      val aa = current.lookup(n) match
+      current.lookup(n) match
+        case Some(sym) if isPreludeHOF(sym) =>
+          // Reuse the prelude HOF path. The lowered call form is
+          // `n(receiver, args...)`, so we synthesize that shape here and
+          // let inferPreludeHOFCall do the push-down. We re-wrap as a
+          // TMethodCall so Stage 3 can still recognize and dispatch it.
+          val syntheticCallee = TVarRef(sym, p, currentType(sym))
+          val tcall = inferPreludeHOFCall(n, syntheticCallee, r :: args, p).asInstanceOf[TCall]
+          TMethodCall(rr, n, tcall.args.tail, p, tcall.tpe)
         case Some(sym) =>
-          currentType(sym) match
+          val aa = currentType(sym) match
             case TyFunc(params, _) if params.size == args.size + 1 =>
               args.zip(params.tail).map { case (a, (pt, _)) => inferArg(a, pt) }
             case _ =>
               args.map(infExpr)
+          TMethodCall(rr, n, aa, p, TyUnknown)
         case None =>
-          args.map(infExpr)
-      TMethodCall(rr, n, aa, p, TyUnknown)
+          TMethodCall(rr, n, args.map(infExpr), p, TyUnknown)
 
     case TLambda(params, body, p, _) =>
       // No expected type at this position — params keep whatever type they
@@ -971,6 +990,64 @@ class NexElaborator:
       case _ =>
         TUnaryOp(op, x, p, TyUnknown)
 
+  /** Prelude higher-order functions whose shape is fixed enough for
+    * bidirectional inference even though their registered signature is
+    * TyUnknown. Limited to those that actually take a lambda — adding more
+    * is cheap but needs a per-name entry in [[inferPreludeHOFCall]].
+    */
+  private val preludeHOFNames: Set[String] = Set("map", "reduce", "filter")
+
+  private def isPreludeHOF(s: Symbol): Boolean =
+    s.kind == SymKind.Prelude && preludeHOFNames.contains(s.name)
+
+  /** Hand-rolled bidirectional inference for the prelude HOFs:
+    *   - `map(arr, f)`       — f: (elem -> U); result: [U]
+    *   - `reduce(arr, init, f)` — f: (U, elem) -> U; result: U
+    *   - `filter(arr, f)`    — f: (elem -> bool); result: same array type
+    *
+    * Each branch infers non-lambda args via [[infExpr]], extracts the
+    * array's element type, builds the expected `TyFunc` for the lambda
+    * arg, and pushes it down via [[inferArg]]. The result type of the
+    * call is computed when enough is known; otherwise stays TyUnknown.
+    */
+  private def inferPreludeHOFCall(
+    name: String,
+    callee: TExpr,
+    args: List[TExpr],
+    p: Option[Position],
+  ): TExpr = name match
+    case "map" if args.size == 2 =>
+      val arr   = infExpr(args.head)
+      val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
+      val f     = inferArg(args(1), TyFunc(List((elemT, ParamMode.Read)), TyUnknown))
+      val outT  = f.tpe match
+        case TyFunc(_, ret) if ret != TyUnknown => TyArray(ret, 1)
+        case _                                  => TyUnknown
+      TCall(callee, List(arr, f), p, outT)
+
+    case "reduce" if args.size == 3 =>
+      val arr   = infExpr(args.head)
+      val init  = infExpr(args(1))
+      val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
+      val accT  = init.tpe
+      val f     = inferArg(
+        args(2),
+        TyFunc(List((accT, ParamMode.Read), (elemT, ParamMode.Read)), TyUnknown),
+      )
+      TCall(callee, List(arr, init, f), p, accT)
+
+    case "filter" if args.size == 2 =>
+      val arr   = infExpr(args.head)
+      val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
+      val f     = inferArg(args(1), TyFunc(List((elemT, ParamMode.Read)), TyBool))
+      TCall(callee, List(arr, f), p, arr.tpe)
+
+    case _ =>
+      // Wrong arity for a known HOF — fall back to default inference and
+      // let the runtime / future arity-check report it.
+      val aa = args.map(infExpr)
+      TCall(callee, aa, p, TyUnknown)
+
   private def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr =
     callee match
       case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
@@ -1064,10 +1141,10 @@ class NexElaborator:
         case _               => TBinOp("*", cc, bb, p, t)
 
     // -- method-call dispatch (§4.9) --------------------------------------
-    case TMethodCall(r, name, args, p, _) =>
+    case mc @ TMethodCall(r, name, args, p, _) =>
       val rr     = lowerExpr(r)
       val argsLow = args.map(lowerExpr)
-      lowerMethodCall(rr, name, argsLow, p)
+      lowerMethodCall(rr, name, argsLow, p, mc.tpe)
 
     // -- recurse ----------------------------------------------------------
     case TBinOp(op, l, r, p, t)        => TBinOp(op, lowerExpr(l), lowerExpr(r), p, t)
@@ -1112,7 +1189,13 @@ class NexElaborator:
     *      whose first parameter type matches `e`'s type
     *   3. otherwise an error
     */
-  private def lowerMethodCall(r: TExpr, name: String, args: List[TExpr], p: Option[Position]): TExpr =
+  private def lowerMethodCall(
+    r: TExpr,
+    name: String,
+    args: List[TExpr],
+    p: Option[Position],
+    originalTpe: Type,
+  ): TExpr =
     // (1) field access if no args and the receiver has the field
     r.tpe match
       case TyStruct(_, fs) if args.isEmpty && fs.exists(_._1 == name) =>
@@ -1126,9 +1209,15 @@ class NexElaborator:
       case Some(sym) =>
         val calleeT = currentType(sym)
         val callee  = TVarRef(sym, p, calleeT)
-        // We re-run inferCall to get the result type. Pass receiver as
-        // first arg.
-        inferCall(callee, r :: args, p)
+        val tcall   = inferCall(callee, r :: args, p)
+        // inferCall returns TyUnknown for prelude HOFs (TyUnknown sigs).
+        // Stage 2 already computed the right result type on the TMethodCall
+        // via inferPreludeHOFCall — fall back to that so downstream sees
+        // the inferred type rather than losing it on the way through Stage 3.
+        tcall match
+          case c: TCall if c.tpe == TyUnknown && originalTpe != TyUnknown =>
+            c.copy(tpe = originalTpe)
+          case other => other
       case None =>
         err(s"no method or function `$name` on receiver of type ${r.tpe}", p)
         TCall(TVarRef(symbols.mint(name, TyUnknown, SymKind.Local), p), r :: args, p, TyUnknown)
