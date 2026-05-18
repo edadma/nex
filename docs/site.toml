@@ -40,5 +40,5 @@ minify = true
 
 [juicerdocs]
 version    = "v0.0.1"
-getStarted = false
+getStarted = true
 logo       = "/nex-logo.png"

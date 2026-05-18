@@ -40,7 +40,7 @@ The hand-written loop form and the fused-source form produce the same machine co
 
 ## What's here
 
-The sections above walk through the language. The **Specification** is the chapter-by-chapter language reference. The **Examples** section is a feature tour plus a set of complete programs. The **Tooling** section covers the CLI, the verification model, and supported targets.
+The sections above walk through the toolchain and the language. **Getting Started** is the three-step path from a fresh checkout to a running native binary. The **Specification** is the chapter-by-chapter language reference. The **Examples** section is a feature tour plus a set of complete programs. The **Tooling** section covers the CLI, the verification model, and supported targets.
 
 ## Status
 
