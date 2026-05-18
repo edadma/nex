@@ -58,17 +58,73 @@ class NexLLVMCodegen:
   private var currentReturnType: Type = TyUnit
   private var currentIsMain:     Boolean = false
 
+  /** Symbol ids of top-level `val` / `var` / `const` bindings emitted as
+    * LLVM `@<name> = global ...`. Looked up by [[emitExpr]] when a
+    * [[TVarRef]] resolves neither to a local alloca nor a function — so
+    * we know to emit a `load ... @<name>` (or, on the assign side, a
+    * `store ... ptr @<name>`).
+    */
+  private val globalBindings = mutable.Set.empty[Int]
+
   /** Compile a program. Returns the full LLVM IR module text. */
   def compile(tp: TProgram): String =
     emitPreamble()
+
+    // Pass 1: emit `@<name> = global <T> zeroinitializer` for every
+    // top-level binding. Records them in [[globalBindings]] so later
+    // [[TVarRef]] / [[TAssign]] sites can route through load/store on
+    // the global pointer. Initial values are filled in by the runtime
+    // init function below — this matches the interpreter, which runs
+    // every binding initializer at program start.
+    val topBindings = tp.decls.collect { case b: TTopBinding => b }
+    for b <- topBindings do
+      globalBindings += b.sym.id
+      val ty = llvmType(b.sym.tpe)
+      out.append(s"@${b.sym.name} = global $ty ${zeroInitFor(ty)}\n")
+    if topBindings.nonEmpty then out.append("\n")
+
+    // Pass 2: emit the init function (if there are any bindings) and
+    // every user function. main has an implicit call to the init
+    // function inserted before its body — see [[emitFunction]].
+    if topBindings.nonEmpty then emitInitFunction(topBindings)
+
     for d <- tp.decls do d match
       case f: TFunDecl =>
         emitFunction(f)
-      case _: TModuleDecl | _: TImportDecl =>
-        () // metadata only
-      case other =>
-        notYet(s"top-level decl `${other.getClass.getSimpleName}`")
+      case _: TTopBinding | _: TStructDecl | _: TModuleDecl | _: TImportDecl =>
+        () // top-bindings already emitted as globals; struct/module are metadata
     out.toString
+
+  /** Picks the appropriate `zeroinitializer` token for an LLVM type. */
+  private def zeroInitFor(ty: String): String = ty match
+    case "double" => "0.0"
+    case "i1"     => "false"
+    case _        => "0"
+
+  /** Runs every top-level binding initializer in declaration order. The
+    * function returns void and is called once from `main`'s entry block.
+    * Functions are already initialized at compile time (each is a
+    * `define`), so an initializer body may freely call any function.
+    */
+  private def emitInitFunction(bindings: List[TTopBinding]): Unit =
+    regCounter   = 0
+    labelCounter = 0
+    locals.clear()
+    currentReturnType = TyUnit
+    currentIsMain     = false
+
+    out.append("define void @__nex_init_globals() {\n")
+    currentBlock = Some("entry")
+    out.append("entry:\n")
+
+    for b <- bindings do
+      val rv = emitExpr(b.value)
+      val ty = llvmType(b.sym.tpe)
+      if currentBlock.isDefined && ty != "void" then
+        emitLine(s"  store $ty $rv, ptr @${b.sym.name}\n")
+
+    if currentBlock.isDefined then emitTerminator("  ret void\n")
+    out.append("}\n\n")
 
   // ---------------------------------------------------------------------------
   // Preamble — external declarations, format strings.
@@ -122,6 +178,12 @@ class NexLLVMCodegen:
     currentBlock = Some("entry")
     out.append("entry:\n")
 
+    // main initializes all top-level bindings before running its body
+    // — matches the interpreter's two-stage init (functions first via
+    // module emission order, then top-binding initializers).
+    if isMain && globalBindings.nonEmpty then
+      emitLine("  call void @__nex_init_globals()\n")
+
     // Spill each param to an alloca so TVarRef loads work uniformly.
     for ((p, i) <- f.params.zipWithIndex) do
       val ty   = llvmType(p.tpe)
@@ -162,6 +224,10 @@ class NexLLVMCodegen:
         case Some(slot) =>
           val reg = newReg()
           emitLine(s"  $reg = load ${llvmType(t)}, ptr $slot\n")
+          reg
+        case None if globalBindings.contains(s.id) =>
+          val reg = newReg()
+          emitLine(s"  $reg = load ${llvmType(t)}, ptr @${s.name}\n")
           reg
         case None =>
           notYet(s"reference to non-local `${s.name}`"); "0"
@@ -363,6 +429,8 @@ class NexLLVMCodegen:
       case TVarRef(s, _, t) =>
         locals.get(s.id) match
           case Some(slot) => emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
+          case None if globalBindings.contains(s.id) =>
+            emitLine(s"  store ${llvmType(t)} $rv, ptr @${s.name}\n")
           case None       => notYet(s"assign to non-local `${s.name}`")
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")

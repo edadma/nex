@@ -260,12 +260,68 @@ class NexLLVMCodegenTests extends AnyWordSpec with Matchers:
     }
   }
 
-  "unsupported features" should {
-    "leave a 'not yet supported' comment when a top-level binding is seen" in {
+  "top-level bindings" should {
+
+    "emit @<name> = global zeroinitializer for each top-level val/var/const" in {
       val ir = compile("""
-        |val x = 42
+        |val x: integer = 42
+        |var y: integer = 0
         |def main() = print(x)
       """.stripMargin)
-      ir should include("; TODO:")
+      ir should include("@x = global i64")
+      ir should include("@y = global i64")
+    }
+
+    "emit __nex_init_globals when bindings exist" in {
+      val ir = compile("""
+        |val x: integer = 42
+        |def main() = print(x)
+      """.stripMargin)
+      ir should include("define void @__nex_init_globals()")
+      ir should include("store i64 42, ptr @x")
+    }
+
+    "main calls __nex_init_globals at the entry block" in {
+      val ir = compile("""
+        |val x: integer = 7
+        |def main() = print(x)
+      """.stripMargin)
+      ir should include("call void @__nex_init_globals()")
+    }
+
+    "TVarRef to a top-level binding loads from @<name>" in {
+      val ir = compile("""
+        |val MAX: integer = 100
+        |def main() = print(MAX)
+      """.stripMargin)
+      ir should include("load i64, ptr @MAX")
+    }
+
+    "TAssign to a top-level var stores to @<name>" in {
+      val ir = compile("""
+        |var counter: integer = 0
+        |def bump() = counter = counter + 1
+        |def main() = bump()
+      """.stripMargin)
+      ir should include("store i64")
+      ir should include("ptr @counter")
+    }
+
+    "no __nex_init_globals when there are no top bindings" in {
+      val ir = compile("""
+        |def main() = print(42)
+      """.stripMargin)
+      ir should not include "@__nex_init_globals"
+      ir should not include "call void @__nex_init_globals"
+    }
+
+    "real-typed top binding gets a double global" in {
+      val ir = compile("""
+        |val PI: real = 3.14159
+        |def main() = print(PI)
+      """.stripMargin)
+      ir should include("@PI = global double 0.0")
+      ir should include("store double")
+      ir should include("load double, ptr @PI")
     }
   }
