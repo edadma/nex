@@ -16,6 +16,7 @@ Note that *language* version and *compiler* version are tracked independently. A
 **Syntax / expressions:**
 - Literate programming via `.lnex` files (Markdown wrapper: column-0 prose, indented code, supports inline math, tables, and non-Nex code blocks)
 - View-style slicing (non-copying — returns a borrow into the source array)
+- Slice assignment (`a[lo..hi] = rhs`, `m[i, lo..hi] = rhs`, strided forms). The right-hand side is shape-conforming with the slice; mismatched lengths trap at runtime, following Fortran 90's array-section assignment semantics. Unlocks the natural way to write Gaussian elimination, matrix row swaps, and most BLAS-style updates without per-element loops
 - Negative indexing (`a[-1]`)
 - Default parameter values (`def f(x: real = 0.0) = ...`)
 - Named arguments at call sites (`f(x = 1.0, y = 2.0)`)
