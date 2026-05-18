@@ -40,11 +40,11 @@ The hand-written loop form and the fused-source form produce the same machine co
 
 ## What's here
 
-The sections above walk through the language. Start with [Spec](/spec/v0/) for the v0 reference, or jump to [Examples](/spec/examples/) for a tour and a set of complete programs.
+The sections above walk through the language. The **Specification** is the chapter-by-chapter language reference. The **Examples** section is a feature tour plus a set of complete programs. The **Tooling** section covers the CLI, the verification model, and supported targets.
 
 ## Status
 
-v0 is shipped end-to-end. The AOT compiler produces native binaries (LLVM IR → `clang -O1`) for the entire v0 surface: scalar arithmetic, arrays (rank-1 and rank-2) with ARC and slicing, element-wise + broadcast + slice + clone + fused loops, tuples and structs, lambdas and closures (val + var capture), prelude scalar math + assertions, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Compiled output is byte-for-byte verified against the reference interpreter on every commit (≈ 690 unit tests).
+The current implementation covers the language end-to-end: a tree-walking interpreter for `nex run` and `nex test`, plus an AOT compiler (LLVM IR → `clang -O1`) producing native Mac arm64 binaries for the full surface — scalar arithmetic, arrays (rank-1 and rank-2) with ARC and slicing, element-wise + broadcast + slice + clone + fused loops, tuples and structs, lambdas and closures (val + var capture), prelude scalar math + assertions, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Compiled output is byte-for-byte verified against the reference interpreter on every commit (around 700 unit tests).
 
 ```bash
 # Run a program with the tree-walking interpreter:

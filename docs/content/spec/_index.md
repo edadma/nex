@@ -1,10 +1,9 @@
 ---
 title: Specification
-summary: The v0 language reference and a comprehensive example tour.
+summary: The Nex language reference — lexical syntax through standard prelude, plus deferred features and naming conventions.
 weight: 10
 ---
 
-The Nex v0 surface — the smallest coherent slice that can run real numerical programs.
+The Nex language reference. Each chapter covers one major area — lexical structure, the type system, expressions, bindings, functions, control flow, the mode system and memory management, modules, the standard prelude, and what's deferred to later language versions.
 
-- **[Language Specification (v0)](v0/)** — the formal reference: lexical syntax, type system, expressions, bindings, functions, control flow, mode system + memory, modules, standard prelude.
-- **[Examples](examples/)** — a tour of every v0 feature, plus 16 complete programs from hello-world to a recursive FFT.
+All code in this reference is valid against the current implementation. Built-in functions (`sqrt`, `sum`, `map`, ...) and constants (`pi`, `e`, `i`, ...) come from the implicit prelude described in chapter 10.

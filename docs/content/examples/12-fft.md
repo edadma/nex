@@ -1,0 +1,67 @@
+---
+title: FFT
+summary: Cooley-Tukey radix-2 recursive FFT for any power-of-2 N — complex numbers, the `fill` constructor, per-element array-literal coercion.
+weight: 120
+---
+
+A recursive discrete Fourier transform that showcases Nex's complex number support, the prelude `fill(n, v)` array constructor, and per-element array-literal coercion. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
+
+```nex
+def fft(x: [complex]): [complex] =
+  val n = length(x)
+  if n == 1 then return x
+
+  val half = n div 2
+
+  // Split into even/odd-indexed sub-arrays. `fill(half, 0.0 + 0i)`
+  // gives us a writable rank-1 complex buffer of the right size.
+  var even = fill(half, 0.0 + 0i)
+  var odd  = fill(half, 0.0 + 0i)
+  for k in 0..half do
+    even[k] = x[2 * k]
+    odd[k]  = x[2 * k + 1]
+
+  val ef = fft(even)
+  val of = fft(odd)
+
+  // Cooley-Tukey butterfly: Y[k]      = E[k] + W^k · O[k]
+  //                        Y[k+N/2]   = E[k] - W^k · O[k]   for k ∈ [0, N/2)
+  var y = fill(n, 0.0 + 0i)
+  for k in 0..half do
+    val angle = -2.0 * pi * to_real(k) / to_real(n)
+    val w     = cos(angle) + sin(angle) * i
+    val t     = w * of[k]
+    y[k]        = ef[k] + t
+    y[k + half] = ef[k] - t
+  y
+
+def main() =
+  // The `: [complex]` annotation pushes the element type into each
+  // literal, so the real values 0.0 / 1.0 coerce per-element via
+  // `to_complex(...)`.
+  val x: [complex] = [
+    1.0, 1.0, 1.0, 1.0,
+    0.0, 0.0, 0.0, 0.0
+  ]
+  val y = fft(x)
+  val n = length(y)
+  print("FFT of [1, 1, 1, 1, 0, 0, 0, 0]:")
+  for k in 0..n do
+    print(y[k])
+```
+
+Output (DC term `Y[0]` is the sum of inputs; real input gives `Y[k] = conj(Y[N-k])` for k > 0):
+
+```
+FFT of [1, 1, 1, 1, 0, 0, 0, 0]:
+4.0+0.0i
+1.0-2.41421i
+0.0+0.0i
+1.0-0.414214i
+0.0+0.0i
+1+0.414214i
+0.0+0.0i
+1+2.41421i
+```
+
+The full source lives at `examples/fft/main.nex`. Change `x` to any power-of-2 length and the same code transforms it.

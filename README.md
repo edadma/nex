@@ -22,7 +22,7 @@ def normalize(v: [real]) =
 
 ## Status
 
-v0 is shipped end-to-end. The AOT compiler produces native Mac arm64 binaries (LLVM IR → `clang -O1`) for the entire v0 surface: scalar arithmetic, arrays + ARC + slicing + fusion, tuples and structs, lambdas + closures (val + var capture), the prelude scalar math and assertion family, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Every commit verifies the AOT output byte-for-byte against the reference tree-walking interpreter (≈ 690 unit tests).
+The current implementation runs the language end-to-end: a tree-walking interpreter plus an AOT compiler that produces native Mac arm64 binaries (LLVM IR → `clang -O1`) for the full surface — scalar arithmetic, arrays + ARC + slicing + fusion, tuples and structs, lambdas + closures (val + var capture), the prelude scalar math and assertion family, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Every commit verifies the AOT output byte-for-byte against the reference tree-walking interpreter (around 700 unit tests).
 
 ```bash
 sbt "nexJVM/runMain io.github.edadma.nex.run run     examples/fft/main.nex"
@@ -32,8 +32,9 @@ sbt "nexJVM/runMain io.github.edadma.nex.run compile examples/fft/main.nex"
 
 ## See [nexlang.org](https://nexlang.org) for the full documentation.
 
-- [Language specification](https://nexlang.org/spec/v0/)
-- [Examples and tour](https://nexlang.org/spec/examples/)
+- [Language specification](https://nexlang.org/spec/)
+- [Examples](https://nexlang.org/examples/)
+- [Tooling](https://nexlang.org/tooling/)
 
 ## License
 

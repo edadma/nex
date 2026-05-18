@@ -1,0 +1,22 @@
+---
+title: Verification Model
+summary: How the interpreter and the AOT compiler are kept in lock-step — two paths, one expected output.
+weight: 20
+---
+
+The Nex implementation runs two execution paths in parallel and treats their disagreement as a bug:
+
+1. **Tree-walking interpreter.** The reference semantics. Used by `nex run` and `nex test`. Easy to read, easy to step through, easy to extend when adding a new language feature.
+2. **AOT compiler.** LLVM IR text → `clang -O1` → native binary. Used by `nex compile`. The path users ship.
+
+## Three layers of testing
+
+- **Unit tests on every subsystem.** Lexer, parser, three elaborator stages, interpreter, codegen, prelude. Roughly 700 tests on the JVM target; every commit runs the full suite.
+- **IR pattern checks.** Codegen tests assert against expected LLVM IR fragments — both that the right instructions are emitted and that the fusion pass actually produced a single loop where it claimed to. This catches regressions where the IR drifts shape but still happens to execute correctly.
+- **End-to-end interpreter/AOT parity.** A program is run twice — once through the interpreter, once through the AOT binary — and the two stdouts are compared byte-for-byte. Documented exception: the AOT path emits `%g`-formatted reals at 6 significant figures, while the interpreter emits 17; for irrational outputs the trailing digits diverge.
+
+## Why this matters
+
+Numerical code is unforgiving — silent codegen bugs corrupt computation in ways that look exactly like correct output until they don't. Running a reference interpreter alongside a compiler and demanding byte-exact agreement turns a class of "did the optimizer break it?" bugs into immediate test failures.
+
+The model came from sysl, where it has been load-bearing across seven backends. Nex inherits the same discipline.

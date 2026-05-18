@@ -1,0 +1,25 @@
+---
+title: Supported Targets
+summary: Where the AOT path is verified, where the CLI builds, and what's planned.
+weight: 30
+---
+
+## AOT path (native binaries via `nex compile`)
+
+- **Mac arm64** — verified end-to-end on every commit. The `clang -O1` invocation produces a Mach-O binary; CI runs it and diffs the stdout against the interpreter.
+
+Other Unix targets (Linux x86_64, Linux arm64) should work given a working `clang -O1`, but they are not yet exercised by CI.
+
+## CLI builds
+
+The Nex compiler is cross-compiled to three targets via Scala 3:
+
+- **JVM** — primary development target. The full CLI (`tokens`, `parse`, `elaborate`, `run`, `test`, `compile`) lives here; the JVM is the only target that exercises the AOT path because it shells out to `clang`.
+- **Scala.js** — the interpreter compiles cleanly and runs in the browser. Useful for embedded playgrounds; no `compile` subcommand because there's no `clang` to shell out to.
+- **Scala Native** — same story as Scala.js. Compiles, interprets; no AOT path.
+
+## Planned
+
+- GPU / accelerator targets — *deferred to v1+*.
+- Linux x86_64 / arm64 — likely to be folded into CI once a runner is available; no language work required.
+- WebAssembly — possible via a future LLVM IR → wasm backend; no concrete plan yet.
