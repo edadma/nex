@@ -11,6 +11,11 @@ def readFile(path: String): String =
     s"readFile not yet supported on Scala.js (tried to read: $path)"
   )
 
+def writeFile(path: String, content: String): Unit =
+  throw new UnsupportedOperationException(
+    s"writeFile not yet supported on Scala.js (tried to write: $path)"
+  )
+
 def listNexFiles(dir: String): List[String] =
   throw new UnsupportedOperationException("listNexFiles not yet supported on Scala.js")
 

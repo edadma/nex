@@ -75,6 +75,16 @@ object Cli:
             .text("Project entry file (its directory is the project root)."),
         ),
 
+      cmd("compile")
+        .action((_, c) => c.copy(command = "compile"))
+        .text("Emit LLVM IR for the program (v0 scaffolding: scalar arithmetic + print).")
+        .children(
+          arg[String]("<file>")
+            .required()
+            .action((x, c) => c.copy(file = x))
+            .text("Project entry file."),
+        ),
+
       checkConfig { c =>
         if c.command.isEmpty then failure("no subcommand given (try `nex help`)")
         else success
@@ -94,6 +104,7 @@ object Cli:
           case "elaborate" => doElaborate(cfg.file)
           case "run"       => doRun(cfg.file)
           case "test"      => doTest(cfg.file)
+          case "compile"   => doCompile(cfg.file)
           case other       =>
             Console.err.println(s"nex: unknown command '$other'")
             1
@@ -134,6 +145,37 @@ object Cli:
       case Right(tp) =>
         new NexInterpreter().runProgram(tp)
         0
+
+  /** Emit LLVM IR for the program and shell out to `clang` to produce a
+    * native binary. Output paths: `<entry>.ll` (IR) and `<entry-basename>`
+    * (executable). v0 scaffolding — only covers `def main() = print(N)`
+    * and scalar arithmetic; richer programs will hit "not yet" diags in
+    * the emitted IR and fail at the clang stage.
+    */
+  private def doCompile(file: String): Int =
+    loadAndElaborate(file) match
+      case Left(rc) => rc
+      case Right(tp) =>
+        val ir       = new NexLLVMCodegen().compile(tp)
+        val llPath   = if file.endsWith(".nex") then file.stripSuffix(".nex") + ".ll" else file + ".ll"
+        val binPath  = if file.endsWith(".nex") then file.stripSuffix(".nex") else file + ".out"
+        writeFile(llPath, ir)
+        println(s"nex: wrote $llPath")
+        // Shell out to clang. JVM-only; throws on JS/Native if invoked.
+        try
+          val pb = new java.lang.ProcessBuilder("clang", "-O1", "-o", binPath, llPath)
+            .inheritIO()
+          val rc = pb.start().waitFor()
+          if rc == 0 then
+            println(s"nex: wrote $binPath")
+            0
+          else
+            Console.err.println(s"nex: clang exited with status $rc")
+            rc
+        catch
+          case e: Throwable =>
+            Console.err.println(s"nex: failed to invoke clang: ${e.getMessage}")
+            1
 
   /** Walk the elaborated project for every `@test`-annotated nullary
     * function, run each one in isolation (fresh interpreter so module-

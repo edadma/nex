@@ -1,0 +1,7 @@
+def main() =
+  print(42)
+  val x = 10
+  val y = 32
+  print(x + y)
+  print(3.14)
+  print(2.0 * 21.0)

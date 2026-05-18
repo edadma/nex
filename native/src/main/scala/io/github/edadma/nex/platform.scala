@@ -9,6 +9,9 @@ val platform: String = "native"
 def readFile(path: String): String =
   new String(Files.readAllBytes(Paths.get(path)), java.nio.charset.StandardCharsets.UTF_8)
 
+def writeFile(path: String, content: String): Unit =
+  Files.writeString(Paths.get(path), content, java.nio.charset.StandardCharsets.UTF_8)
+
 /** List `.nex` files directly inside `dir` (NOT recursive — subdirectories
   * are submodules). Returns absolute paths, sorted for deterministic order.
   */
