@@ -230,19 +230,8 @@ class NexFusion(symbols: SymbolTable):
       case TVarRef(sym, _, _)                            => lambdaBindings.get(sym.id)
       case _                                             => None
 
-    // `map`'s elaborator type is always rank-1 (`TyArray(ret, 1)`) — see
-    // `inferPreludeHOFCall` — but the runtime `mapArray` preserves the
-    // source's rank for rank-2 inputs (returns `VArray2`). That makes
-    // `tpe`-driven fusion unsafe for rank-2 sources: a fused loop using
-    // the elaborator's rank-1 type would produce a flat rank-1 result
-    // that doesn't match the un-fused runtime shape. Skip fusing rank-2
-    // `map(...)` until the elaborator types `map` per-source-rank.
-    val arrIsRank2 = arr.tpe match
-      case TyArray(_, 2) => true
-      case _             => false
-
     (resolved, arrayInfo(tpe)) match
-      case (Some(lam), Some((_, rank))) if lam.params.size == 1 && !arrIsRank2 =>
+      case (Some(lam), Some((_, rank))) if lam.params.size == 1 =>
         val iSym = symbols.mint("$fused_i", TyInteger, SymKind.Local)
         val iRef = TVarRef(iSym, pos, TyInteger)
         val (aBindings, aElem, aLen, aCols) = sourceOperand(arr, iSym, iRef, pos)

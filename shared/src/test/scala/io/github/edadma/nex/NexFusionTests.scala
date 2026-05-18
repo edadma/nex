@@ -475,18 +475,14 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       bin.rhs shouldBe a[TVarRef]    // scalar on the right
     }
 
-    "leave `map(m, lam)` alone for rank-2 source (type-system mismatch)" in {
-      // `map`'s elaborator-result type is hardcoded rank-1 even when the
-      // source is rank-2 (where mapArray preserves shape at runtime).
-      // Fusing under that type would produce a flat rank-1 result that
-      // doesn't match the un-fused runtime shape. NexFusion deliberately
-      // doesn't fuse rank-2 map until the elaborator gets per-source-rank
-      // typing for the prelude HOFs — TODO.
+    "rewrite `map(m, x -> x * 2)` over rank-2 array" in {
       val body = fBodyAfterFusion("""
         |def f(m: [[integer]]) = map(m, x -> x * 2)
       """.stripMargin)
-      val call = body.asInstanceOf[TCall]
-      call.callee.asInstanceOf[TVarRef].sym.name shouldBe "map"
+      val loop = body.asInstanceOf[TBlock].result.asInstanceOf[TFusedLoop]
+      loop.cols should not be None
+      loop.tpe shouldBe TyArray(TyInteger, 2)
+      countFusedLoops(loop.body) shouldBe 0
     }
 
     "leave TMatMul alone (still not a fusion target)" in {
@@ -525,6 +521,29 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       """.stripMargin
       runFused(src) shouldBe runUnfused(src)
       runFused(src) shouldBe "[[9, 19], [29, 39]]\n"
+    }
+
+    "rank-2 map with inline lambda: fused matches un-fused" in {
+      val src = """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(map(m, x -> x + 100))
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[101, 102], [103, 104]]\n"
+    }
+
+    "rank-2 map result feeds into rank-2 element-wise: fused matches un-fused" in {
+      // Chain inlining over rank-2: map producer collapses with the outer
+      // rank-2 element-wise add into a single flat loop.
+      val src = """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  val n = [[100, 200], [300, 400]]
+        |  print(map(m, x -> x * 10) + n)
+      """.stripMargin
+      runFused(src) shouldBe runUnfused(src)
+      runFused(src) shouldBe "[[110, 220], [330, 440]]\n"
     }
 
     "rank-2 chain `2 * a + b` collapses to a single TFusedLoop" in {

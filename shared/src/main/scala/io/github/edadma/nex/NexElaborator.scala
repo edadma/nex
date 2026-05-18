@@ -1069,11 +1069,15 @@ class NexElaborator:
     p: Option[Position],
   ): TExpr = name match
     case "map" if args.size == 2 =>
-      val arr   = infExpr(args.head)
-      val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
-      val f     = inferArg(args(1), TyFunc(List((elemT, ParamMode.Read)), TyUnknown))
-      val outT  = f.tpe match
-        case TyFunc(_, ret) if ret != TyUnknown => TyArray(ret, 1)
+      val arr           = infExpr(args.head)
+      val (elemT, srcR) = elemOf(arr.tpe).getOrElse((TyUnknown, 1))
+      val f             = inferArg(args(1), TyFunc(List((elemT, ParamMode.Read)), TyUnknown))
+      // `mapArray` preserves the source's rank at runtime — VArray2 in
+      // gives VArray2 out — so the result type must do the same. Hard-
+      // coding rank-1 here would break shape-preservation downstream
+      // (notably the fusion pass, which keys off this `tpe`).
+      val outT          = f.tpe match
+        case TyFunc(_, ret) if ret != TyUnknown => TyArray(ret, srcR)
         case _                                  => TyUnknown
       TCall(callee, List(arr, f), p, outT)
 
