@@ -1586,6 +1586,28 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "remaining runtime checks (dot, sum_axis)" should {
+    "dot with mismatched lengths traps" in parityCheck(
+      """
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  val b = [4, 5]
+        |  assert_traps(() -> print(dot(a, b)), "length mismatch")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "sum_axis with axis out of {0, 1} traps" in parityCheck(
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  assert_traps(() -> print(sum_axis(m, 2)), "axis must be 0 or 1")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+  }
+
 
   "real shortest-round-trip print (Ryu-equivalent via iterative %.Ng)" should {
     "0.1 + 0.2 prints all 17 round-trip digits, not %g's 6" in parityCheck(

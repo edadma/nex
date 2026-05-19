@@ -161,6 +161,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.cdiv_zero_msg    = private unnamed_addr constant [32 x i8] c"trap: complex division by zero\0A\00"
         |@.slice_oob_msg    = private unnamed_addr constant [27 x i8] c"trap: slice out of bounds\0A\00"
         |@.axis_oob_msg     = private unnamed_addr constant [32 x i8] c"trap: axis index out of bounds\0A\00"
+        |@.dot_mismatch_msg = private unnamed_addr constant [28 x i8] c"trap: dot: length mismatch\0A\00"
+        |@.sum_axis_msg     = private unnamed_addr constant [37 x i8] c"trap: sum_axis: axis must be 0 or 1\0A\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:

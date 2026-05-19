@@ -1060,6 +1060,19 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val av    = emitExpr(a)
     val bv    = emitExpr(b)
     val len   = newReg(); emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $av)\n")
+    val blen  = newReg(); emitLine(s"  $blen = call i64 @__nex_arr1_len(ptr $bv)\n")
+    // dot(a, b) requires a.len == b.len — interpreter traps with
+    // "dot: length mismatch"; without this check the AOT would either
+    // truncate (if b shorter) or read OOB (if b longer).
+    val mismatch = newReg()
+    emitLine(s"  $mismatch = icmp ne i64 $len, $blen\n")
+    val okL   = freshLabel("dot.ok")
+    val failL = freshLabel("dot.fail")
+    emitTerminator(s"  br i1 $mismatch, label %$failL, label %$okL\n")
+    startBlock(failL)
+    emitLine(s"  call void @__nex_trap_with(ptr @.dot_mismatch_msg)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL)
     val aBuf  = bufPtr(av, a.tpe)
     val bBuf  = bufPtr(bv, b.tpe)
     val accSlot = newReg()
@@ -1859,7 +1872,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitTerminator(s"  br label %$doneL\n")
 
     startBlock(badL)
-    emitLine(s"  call void @__nex_trap()\n")
+    emitLine(s"  call void @__nex_trap_with(ptr @.sum_axis_msg)\n")
     emitTerminator(s"  unreachable\n")
 
     startBlock(doneL)
