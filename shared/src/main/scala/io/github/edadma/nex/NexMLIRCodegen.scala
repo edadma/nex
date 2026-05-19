@@ -228,6 +228,13 @@ class NexMLIRCodegen:
         case t: MTensor => emitSumReduce(av.reg, t)
         case other      => notYet(s"sum over $other")
 
+    case TMatMul(lhs, rhs, _, _) =>
+      emitMatMul(emitExpr(lhs), emitExpr(rhs))
+
+    case TCall(TVarRef(s, _, _), List(lhs, rhs), _, _)
+        if s.kind == SymKind.Prelude && s.name == "matmul" =>
+      emitMatMul(emitExpr(lhs), emitExpr(rhs))
+
     case other =>
       notYet(s"expression: ${other.getClass.getSimpleName}")
 
@@ -263,8 +270,39 @@ class NexMLIRCodegen:
     out.append("    }\n")
     MlirVal(outR, ty)
 
-  /** Sum-reduce a rank-1 tensor to a 0-d tensor, then extract the
-    * scalar. Init value is the element-type zero; reducer is the
+  /** Matrix multiply via `linalg.matmul`. Both operands must already
+    * be rank-2 tensors with matching element type and inner K dim
+    * (`lhs : NxK`, `rhs : KxM` → result `NxM`). The init operand is a
+    * zero-filled `tensor.empty()` produced with `linalg.fill`, since
+    * `linalg.matmul` accumulates into its output.
+    */
+  private def emitMatMul(lv: MlirVal, rv: MlirVal): MlirVal =
+    (lv.ty, rv.ty) match
+      case (MTensor(elemL, List(n, k)), MTensor(elemR, List(k2, m))) if elemL == elemR && k == k2 =>
+        val elemT  = elemL
+        val scalar = scalarText(elemT)
+        val outTy  = MTensor(elemT, List(n, m))
+        val zeroR  = fresh("zero")
+        out.append(s"  $zeroR = arith.constant ${zeroLit(elemT)} : $scalar\n")
+        val emptyR = fresh("empty")
+        out.append(s"  $emptyR = tensor.empty() : ${outTy.text}\n")
+        val initR = fresh("init")
+        out.append(
+          s"  $initR = linalg.fill ins($zeroR : $scalar) outs($emptyR : ${outTy.text}) -> ${outTy.text}\n",
+        )
+        val mmR = fresh("mm")
+        out.append(
+          s"  $mmR = linalg.matmul ins(${lv.reg}, ${rv.reg} : ${lv.ty.text}, ${rv.ty.text}) outs($initR : ${outTy.text}) -> ${outTy.text}\n",
+        )
+        MlirVal(mmR, outTy)
+      case (lt, rt) =>
+        notYet(s"matmul shape: $lt @ $rt")
+
+  /** Sum-reduce a tensor of any rank to a 0-d tensor, then extract
+    * the scalar. Matches `NexInterpreter`'s rule that `sum` walks
+    * every element regardless of rank — for rank-N input we reduce
+    * along all N dimensions in one `linalg.reduce` and the output
+    * is 0-d. Init value is the element-type zero; reducer is the
     * element-type add.
     */
   private def emitSumReduce(srcReg: String, ty: MTensor): MlirVal =
@@ -275,9 +313,10 @@ class NexMLIRCodegen:
     out.append(s"  $initER = arith.constant ${zeroLit(elemT)} : $scalar\n")
     val initR = fresh("init")
     out.append(s"  $initR = tensor.from_elements $initER : ${outTy.text}\n")
+    val dims  = ty.shape.indices.mkString(", ")
     val sumTR = fresh("sum_t")
     out.append(
-      s"  $sumTR = linalg.reduce ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) dimensions = [0]\n",
+      s"  $sumTR = linalg.reduce ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) dimensions = [$dims]\n",
     )
     out.append(s"    (%in: $scalar, %acc: $scalar) {\n")
     out.append(s"      %s = ${scalarBinop("+", elemT)} %in, %acc : $scalar\n")

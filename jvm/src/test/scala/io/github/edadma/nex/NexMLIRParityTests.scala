@@ -115,3 +115,44 @@ class NexMLIRParityTests extends AnyWordSpec with NexMLIRParityBase:
       """.stripMargin,
       "[[1, 2], [3, 4]]\n",
     )
+
+  "milestone 5 — matmul" should:
+    "2x2 integer matmul via @" in parityCheck(
+      "def main() = print([[1, 2], [3, 4]] @ [[5, 6], [7, 8]])",
+      "[[19, 22], [43, 50]]\n",
+    )
+    "2x2 real matmul via @" in parityCheck(
+      "def main() = print([[1.0, 2.0], [3.0, 4.0]] @ [[5.0, 6.0], [7.0, 8.0]])",
+      "[[19.0, 22.0], [43.0, 50.0]]\n",
+    )
+    "2x3 by 3x2 integer matmul via @" in parityCheck(
+      "def main() = print([[1, 2, 3], [4, 5, 6]] @ [[7, 8], [9, 10], [11, 12]])",
+      "[[58, 64], [139, 154]]\n",
+    )
+    "matmul(a, b) prelude form" in parityCheck(
+      """
+        |def main() =
+        |  val a = [[1, 2], [3, 4]]
+        |  val b = [[5, 6], [7, 8]]
+        |  print(matmul(a, b))
+      """.stripMargin,
+      "[[19, 22], [43, 50]]\n",
+    )
+    "sum of matmul result" in parityCheck(
+      """
+        |def main() =
+        |  val a = [[1, 2], [3, 4]]
+        |  val b = [[1, 0], [0, 1]]
+        |  print(sum(a @ b))
+      """.stripMargin,
+      "10\n",
+    )
+    "identity matmul leaves matrix unchanged" in parityCheck(
+      """
+        |def main() =
+        |  val a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        |  val i = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        |  print(a @ i)
+      """.stripMargin,
+      "[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\n",
+    )
