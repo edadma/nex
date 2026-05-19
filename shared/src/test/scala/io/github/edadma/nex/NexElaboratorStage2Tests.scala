@@ -1193,6 +1193,52 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       lam.params.head.tpe shouldBe TyUnknown
     }
 
+    "deferred resolve fires on a direct call (no enclosing HOF)" in {
+      // `val f = x -> x + 1; f(10)` — no function expects an
+      // (integer -> integer) here, so the call-site arg types are the
+      // only signal. The new direct-call path uses them to synthesize
+      // an expected TyFunc and routes through the same refinement.
+      val tp = elab("""
+        |def main() =
+        |  val f = x -> x + 1
+        |  f(10)
+      """.stripMargin)
+      val main = tp.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f }.get
+      val body = main.body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyInteger
+      lam.body.tpe shouldBe TyInteger
+      bind.sym.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+
+    "direct call with real arg refines to a real-typed lambda" in {
+      val tp = elab("""
+        |def main() =
+        |  val sqr = x -> x * x
+        |  sqr(2.5)
+      """.stripMargin)
+      val main = tp.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f }.get
+      val body = main.body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyReal
+      lam.body.tpe shouldBe TyReal
+    }
+
+    "conflicting direct-call arg types after refinement surface as a type error" in {
+      // First call pins f as (integer -> integer); the second call's real
+      // argument no longer matches, so the existing checkAssignable path
+      // reports the mismatch. Monomorphic-by-design.
+      val errs = elabExpect("""
+        |def main() =
+        |  val f = x -> x * 2
+        |  f(3)
+        |  f(1.5)
+      """.stripMargin)
+      errs.exists(_.contains("cannot assign")) shouldBe true
+    }
+
     "arity mismatch between lambda and expected falls back gracefully" in {
       // Lambda has 2 params but callee expects 1. The push-down path
       // skips (its `eparams.size == params.size` guard); inference

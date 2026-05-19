@@ -262,6 +262,31 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "[]\n[]\n"
     }
 
+    "direct call refines a bound-then-called integer lambda" in {
+      runOut("""
+        |def main() =
+        |  val f = x -> x + 1
+        |  print(f(10))
+      """.stripMargin) shouldBe "11\n"
+    }
+
+    "direct call refines a bound-then-called real lambda" in {
+      runOut("""
+        |def main() =
+        |  val sqr = x -> x * x
+        |  print(sqr(2.5))
+      """.stripMargin) shouldBe "6.25\n"
+    }
+
+    "second direct call after refinement still works" in {
+      runOut("""
+        |def main() =
+        |  val f = x -> x * 2
+        |  print(f(3))
+        |  print(f(4))
+      """.stripMargin) shouldBe "6\n8\n"
+    }
+
     "for with tuple destructuring on enumerate(xs)" in {
       runOut("""
         |def main() =

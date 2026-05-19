@@ -566,6 +566,43 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "bind-then-call lambda inference (direct invocation)" should {
+    "deferred-resolve refines a captured-int lambda at the direct call" in parityCheck(
+      """
+        |def main() =
+        |  val k = 5
+        |  val f = x -> x + k
+        |  print(f(10))
+      """.stripMargin,
+      "15\n",
+    )
+    "second call re-uses the refined type" in parityCheck(
+      """
+        |def main() =
+        |  val f = x -> x * 2
+        |  print(f(3))
+        |  print(f(4))
+      """.stripMargin,
+      "6\n8\n",
+    )
+    "real-arg call refines to a real-typed lambda" in parityCheck(
+      """
+        |def main() =
+        |  val sqr = x -> x * x
+        |  print(sqr(2.5))
+      """.stripMargin,
+      "6.25\n",
+    )
+    "lambda body that uses the param multiple ways still refines" in parityCheck(
+      """
+        |def main() =
+        |  val f = x -> (x * x) + (x * 2)
+        |  print(f(3))
+      """.stripMargin,
+      "15\n",
+    )
+  }
+
   "rank-1 HOFs" should {
     "map (inline lambda)"   in parityCheck(
       "def main() = print(map([1, 2, 3, 4], x -> x * x))",

@@ -427,6 +427,18 @@ protected trait NexElabInference extends NexElabState:
           inferPreludeHOFCall(s.name, cc, args, p)
         case TVarRef(s, _, _) if isPreludeRank1Only(s) =>
           inferPreludeRank1Call(s.name, cc, args, p)
+        case TVarRef(s, _, _) if deferredLambdas.contains(s.id) =>
+          // Direct call of a bound-then-called lambda: the lambda left its
+          // params at TyUnknown, but the call-site args now carry concrete
+          // types. Synthesize an expected `TyFunc(argTypes, TyUnknown)`
+          // and route through `inferArg`, which handles deferred-lambda
+          // refinement by re-running the lambda's body with pushed-down
+          // param types. The refined TVarRef replaces `cc`; from there the
+          // generic call path applies just like a regular function call.
+          val aa = args.map(infExpr)
+          val argTypes = aa.map(a => (a.tpe, ParamMode.Read))
+          val refinedCc = inferArg(cc, TyFunc(argTypes, TyUnknown))
+          inferCall(refinedCc, aa, p)
         case _ =>
           val aa = cc.tpe match
             case TyFunc(params, _) if params.size == args.size =>
