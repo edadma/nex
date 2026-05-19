@@ -14,6 +14,7 @@ object Cli:
   case class Config(
       command: String = "",
       file:    String = "",
+      backend: String = "llvm",
   )
 
   private val builder = OParser.builder[Config]
@@ -77,8 +78,16 @@ object Cli:
 
       cmd("compile")
         .action((_, c) => c.copy(command = "compile"))
-        .text("Emit LLVM IR for the program (v0 scaffolding: scalar arithmetic + print).")
+        .text("Compile the program to a native binary. Default backend is LLVM IR; pass --backend mlir for the MLIR pipeline (much smaller subset).")
         .children(
+          opt[String]("backend")
+            .valueName("<llvm|mlir>")
+            .validate {
+              case "llvm" | "mlir" => success
+              case other           => failure(s"--backend must be llvm or mlir, got '$other'")
+            }
+            .action((b, c) => c.copy(backend = b))
+            .text("Codegen backend (default: llvm)."),
           arg[String]("<file>")
             .required()
             .action((x, c) => c.copy(file = x))
@@ -104,7 +113,7 @@ object Cli:
           case "elaborate" => doElaborate(cfg.file)
           case "run"       => doRun(cfg.file)
           case "test"      => doTest(cfg.file)
-          case "compile"   => doCompile(cfg.file)
+          case "compile"   => doCompile(cfg.file, cfg.backend)
           case other       =>
             Console.err.println(s"nex: unknown command '$other'")
             1
@@ -146,36 +155,111 @@ object Cli:
         new NexInterpreter().runProgram(tp)
         0
 
-  /** Emit LLVM IR for the program and shell out to `clang` to produce a
-    * native binary. Output paths: `<entry>.ll` (IR) and `<entry-basename>`
-    * (executable). v0 scaffolding — only covers `def main() = print(N)`
-    * and scalar arithmetic; richer programs will hit "not yet" diags in
-    * the emitted IR and fail at the clang stage.
+  /** Compile the program to a native binary via one of the supported
+    * backends. The default LLVM backend covers the full v0 surface; the
+    * MLIR backend (`--backend mlir`) only handles the small subset
+    * exercised by `NexMLIRParityTests` (sum, element-wise, matmul,
+    * array printing) and rejects anything else with `notYet`.
+    *
+    * Output paths in both modes follow the same convention: an IR
+    * file next to the source plus an executable named after the entry
+    * file. MLIR mode additionally writes `<entry>.mlir` and
+    * `<entry>.lowered.mlir` for inspection.
     */
-  private def doCompile(file: String): Int =
+  private def doCompile(file: String, backend: String): Int =
     loadAndElaborate(file) match
-      case Left(rc) => rc
-      case Right(tp) =>
-        val ir       = new NexLLVMCodegen().compile(tp)
-        val llPath   = if file.endsWith(".nex") then file.stripSuffix(".nex") + ".ll" else file + ".ll"
-        val binPath  = if file.endsWith(".nex") then file.stripSuffix(".nex") else file + ".out"
-        writeFile(llPath, ir)
-        println(s"nex: wrote $llPath")
-        // Shell out to clang. JVM-only; throws on JS/Native if invoked.
-        try
-          val pb = new java.lang.ProcessBuilder("clang", "-O1", "-o", binPath, llPath)
-            .inheritIO()
-          val rc = pb.start().waitFor()
-          if rc == 0 then
-            println(s"nex: wrote $binPath")
-            0
-          else
-            Console.err.println(s"nex: clang exited with status $rc")
-            rc
-        catch
-          case e: Throwable =>
-            Console.err.println(s"nex: failed to invoke clang: ${e.getMessage}")
-            1
+      case Left(rc)  => rc
+      case Right(tp) => backend match
+        case "llvm" => doCompileLlvm(file, tp)
+        case "mlir" => doCompileMlir(file, tp)
+        case other  =>
+          Console.err.println(s"nex: unknown backend '$other'")
+          1
+
+  private def doCompileLlvm(file: String, tp: TProgram): Int =
+    val ir      = new NexLLVMCodegen().compile(tp)
+    val llPath  = if file.endsWith(".nex") then file.stripSuffix(".nex") + ".ll" else file + ".ll"
+    val binPath = if file.endsWith(".nex") then file.stripSuffix(".nex") else file + ".out"
+    writeFile(llPath, ir)
+    println(s"nex: wrote $llPath")
+    runProcess(s"clang -O1 -o $binPath $llPath", Seq("clang", "-O1", "-o", binPath, llPath)) match
+      case 0  => println(s"nex: wrote $binPath"); 0
+      case rc => rc
+
+  /** MLIR-backend compile: emit MLIR, run mlir-opt + mlir-translate from
+    * Homebrew LLVM 22 (overridable via `NEX_LLVM_HOME`), extract the
+    * embedded `mlir_runtime.c` to a temp file, link with clang.
+    */
+  private def doCompileMlir(file: String, tp: TProgram): Int =
+    val llvmHome = sys.env.getOrElse("NEX_LLVM_HOME", "/opt/homebrew/opt/llvm")
+    val tool     = (name: String) => s"$llvmHome/bin/$name"
+
+    val mlirSrc      = new NexMLIRCodegen().compile(tp)
+    val base         = if file.endsWith(".nex") then file.stripSuffix(".nex") else file
+    val mlirPath     = base + ".mlir"
+    val loweredPath  = base + ".lowered.mlir"
+    val llPath       = base + ".ll"
+    val binPath      = base
+    val runtimePath  = base + ".mlir_runtime.c"
+    writeFile(mlirPath, mlirSrc)
+    println(s"nex: wrote $mlirPath")
+
+    val runtime = loadResourceText("/io/github/edadma/nex/mlir_runtime.c")
+    if runtime.isEmpty then
+      Console.err.println("nex: mlir_runtime.c resource missing from jar")
+      return 1
+    writeFile(runtimePath, runtime)
+
+    val mlirOptArgs = Seq(
+      tool("mlir-opt"), mlirPath,
+      "--one-shot-bufferize=bufferize-function-boundaries",
+      "--convert-linalg-to-loops",
+      "--convert-scf-to-cf",
+      "--finalize-memref-to-llvm",
+      "--convert-arith-to-llvm",
+      "--convert-func-to-llvm",
+      "--convert-cf-to-llvm",
+      "--reconcile-unrealized-casts",
+      "-o", loweredPath,
+    )
+    runProcess(mlirOptArgs.mkString(" "), mlirOptArgs) match
+      case 0 => ()
+      case rc => return rc
+    runProcess(s"mlir-translate $loweredPath -> $llPath",
+      Seq(tool("mlir-translate"), "--mlir-to-llvmir", loweredPath, "-o", llPath)) match
+      case 0 => ()
+      case rc => return rc
+    runProcess(s"clang -> $binPath",
+      Seq(tool("clang"), "-O1", "-o", binPath, llPath, runtimePath)) match
+      case 0 => println(s"nex: wrote $binPath"); 0
+      case rc => rc
+
+  /** Shell-out helper used by both compile backends: prints the
+    * command on failure (so the user can re-run by hand), inherits
+    * stdio so child diagnostics surface directly. Returns the child
+    * exit code; -1 if the process couldn't be launched.
+    */
+  private def runProcess(label: String, cmd: Seq[String]): Int =
+    try
+      import scala.jdk.CollectionConverters.*
+      val pb = new java.lang.ProcessBuilder(cmd.asJava).inheritIO()
+      val rc = pb.start().waitFor()
+      if rc != 0 then Console.err.println(s"nex: $label exited with status $rc")
+      rc
+    catch
+      case e: Throwable =>
+        Console.err.println(s"nex: failed to invoke ${cmd.head}: ${e.getMessage}")
+        -1
+
+  /** JVM-only resource loader (JS / Native have no classpath
+    * resources). Returns the empty string if the resource is missing.
+    */
+  private def loadResourceText(path: String): String =
+    val stream = getClass.getResourceAsStream(path)
+    if stream == null then ""
+    else
+      try new String(stream.readAllBytes, "UTF-8")
+      finally stream.close()
 
   /** Walk the elaborated project for every `@test`-annotated nullary
     * function, run each one in isolation (fresh interpreter so module-
