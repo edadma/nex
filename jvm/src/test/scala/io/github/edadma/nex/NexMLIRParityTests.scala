@@ -19,3 +19,13 @@ class NexMLIRParityTests extends AnyWordSpec with NexMLIRParityBase:
       "def main() = print(sum([1, 2, 3, 4, 5]))",
       "15\n",
     )
+
+  "milestone 2" should:
+    "sum of literal rank-1 real array" in parityCheck(
+      "def main() = print(sum([1.0, 2.0, 3.0, 4.0, 5.0]))",
+      "15.0\n",
+    )
+    "sum of literal rank-1 real array with a negative element" in parityCheck(
+      "def main() = print(sum([10.0, -3.0, 2.0]))",
+      "9.0\n",
+    )
