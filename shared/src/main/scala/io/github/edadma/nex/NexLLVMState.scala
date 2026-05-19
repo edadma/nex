@@ -384,6 +384,22 @@ protected trait NexLLVMState:
     case TyArray(_, _) => true
     case _             => false
 
+  /** A closure value is `{ ptr fn, ptr env }`. The `env` pointer (when
+    * non-null) targets a refcounted heap allocation; inc/dec route
+    * through `__nex_env_inc/dec` after extracting it from the value.
+    */
+  protected def isClosureType(t: Type): Boolean = t match
+    case TyFunc(_, _) => true
+    case _            => false
+
+  /** Types that participate in scope-based refcounting. Array and
+    * closure are tracked uniformly through [[arrayLocalSlots]] /
+    * [[blockArrayScopes]]; the load shape and dec helper differ but
+    * the registration / decrement timing is identical.
+    */
+  protected def isRefCountedType(t: Type): Boolean =
+    isArrayType(t) || isClosureType(t)
+
   /** Pick the right ARC inc helper based on the array's static rank. */
   protected def arrIncFor(t: Type): String = arrayRank(t) match
     case 1 => "@__nex_arr1_inc"
@@ -396,17 +412,27 @@ protected trait NexLLVMState:
     case 2 => "@__nex_arr2_dec"
     case _ => "@__nex_arr1_dec"
 
-  /** Emit `call void @__nex_arr*_inc(ptr value)`. No-op (silently skipped)
-    * if no block is open or if [[t]] isn't an array type.
+  /** Emit an inc-refcount call appropriate for [[t]]. For arrays the
+    * SSA `value` is the array descriptor ptr; for closures it's the
+    * `{ ptr, ptr }` value, from which we extract env_ptr before
+    * routing to `__nex_env_inc`. Other types are silently skipped.
     */
   protected def emitArrInc(value: String, t: Type): Unit =
     if isArrayType(t) then
       emitLine(s"  call void ${arrIncFor(t)}(ptr $value)\n")
+    else if isClosureType(t) then
+      val env = newReg()
+      emitLine(s"  $env = extractvalue { ptr, ptr } $value, 1\n")
+      emitLine(s"  call void @__nex_env_inc(ptr $env)\n")
 
-  /** Emit `call void @__nex_arr*_dec(ptr value)`. */
+  /** Symmetric dec — see [[emitArrInc]] for shape semantics. */
   protected def emitArrDec(value: String, t: Type): Unit =
     if isArrayType(t) then
       emitLine(s"  call void ${arrDecFor(t)}(ptr $value)\n")
+    else if isClosureType(t) then
+      val env = newReg()
+      emitLine(s"  $env = extractvalue { ptr, ptr } $value, 1\n")
+      emitLine(s"  call void @__nex_env_dec(ptr $env)\n")
 
   /** Decrement-ref every slot registered as an array-typed local in the
     * current function — innermost block first, then the function-level
@@ -419,18 +445,19 @@ protected trait NexLLVMState:
       for scope <- blockArrayScopes do decBlockScope(scope)
       for (id, (slot, t)) <- arrayLocalSlots do
         val v = newReg()
-        emitLine(s"  $v = load ptr, ptr $slot\n")
+        emitLine(s"  $v = load ${llvmType(t)}, ptr $slot\n")
         emitArrDec(v, t)
 
-  /** Dec every array slot recorded in a single block scope. Used at
+  /** Dec every refcounted slot recorded in a single block scope. Used at
     * block end (after popping) and as a building block for
-    * [[decAllLocalArrays]].
+    * [[decAllLocalArrays]]. The load type follows `llvmType(t)` so
+    * arrays load as ptr and closures load as `{ ptr, ptr }`.
     */
   protected def decBlockScope(scope: mutable.LinkedHashMap[Int, (String, Type)]): Unit =
     if currentBlock.isDefined then
       for (id, (slot, t)) <- scope do
         val v = newReg()
-        emitLine(s"  $v = load ptr, ptr $slot\n")
+        emitLine(s"  $v = load ${llvmType(t)}, ptr $slot\n")
         emitArrDec(v, t)
 
   /** Push a fresh block scope; subsequent array bindings emit into it. */
@@ -445,9 +472,11 @@ protected trait NexLLVMState:
     blockArrayScopes = blockArrayScopes.tail
     top
 
-  /** Register an array-typed binding's slot under the appropriate scope:
-    * the innermost block if we're inside one, otherwise the function-
-    * level [[arrayLocalSlots]] (which is the right home for params).
+  /** Register a refcounted (array or closure) binding's slot under the
+    * appropriate scope: the innermost block if we're inside one,
+    * otherwise the function-level [[arrayLocalSlots]] (which is the
+    * right home for params). Despite the legacy name, the map tracks
+    * any refcounted type — see [[isRefCountedType]].
     */
   protected def registerArraySlot(id: Int, slot: String, t: Type): Unit =
     blockArrayScopes match

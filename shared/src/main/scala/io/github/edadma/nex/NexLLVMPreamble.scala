@@ -522,6 +522,55 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret ptr %slot
         |}
         |
+        |; ---------- Closure env refcount (negative-offset i64 header) ----------
+        |; Layout: malloc returns a block of (size + 8) bytes. The first 8 bytes
+        |; hold the refcount; the env pointer we hand out points 8 bytes past the
+        |; start so the capture struct's field indices stay 0..N-1 unchanged.
+        |; inc/dec GEP back -8 to find the header. null is the empty-capture
+        |; sentinel and is silently skipped.
+        |define ptr @__nex_env_alloc(i64 %sz) {
+        |entry:
+        |  %total = add i64 %sz, 8
+        |  %raw   = call ptr @malloc(i64 %total)
+        |  store i64 1, ptr %raw
+        |  %env   = getelementptr inbounds i8, ptr %raw, i64 8
+        |  ret ptr %env
+        |}
+        |
+        |define void @__nex_env_inc(ptr %env) {
+        |entry:
+        |  %z = icmp eq ptr %env, null
+        |  br i1 %z, label %nul, label %do
+        |do:
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %rc  = load i64, ptr %hdr
+        |  %rc1 = add i64 %rc, 1
+        |  store i64 %rc1, ptr %hdr
+        |  ret void
+        |nul:
+        |  ret void
+        |}
+        |
+        |define void @__nex_env_dec(ptr %env) {
+        |entry:
+        |  %z = icmp eq ptr %env, null
+        |  br i1 %z, label %nul, label %do
+        |do:
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %rc  = load i64, ptr %hdr
+        |  %rc1 = sub i64 %rc, 1
+        |  store i64 %rc1, ptr %hdr
+        |  %dead = icmp eq i64 %rc1, 0
+        |  br i1 %dead, label %fr, label %ok
+        |fr:
+        |  call void @free(ptr %hdr)
+        |  ret void
+        |ok:
+        |  ret void
+        |nul:
+        |  ret void
+        |}
+        |
         |""".stripMargin,
     )
 

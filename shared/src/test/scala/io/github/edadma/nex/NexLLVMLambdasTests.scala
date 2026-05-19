@@ -73,9 +73,11 @@ class NexLLVMLambdasTests extends AnyWordSpec with NexCodegenTestBase:
         |  val k = 10
         |  print(callIt(x -> x + k, 5))
       """.stripMargin)
-      // env is a single-field `{ i64 }` struct, sizeof = 8.
-      // The lambda body GEPs into env[0] and loads the i64 directly.
-      ir should include("call ptr @malloc(i64 8)")
+      // env is a single-field `{ i64 }` struct, sizeof = 8. Allocation
+      // goes through the refcounted `__nex_env_alloc` helper (negative-
+      // offset i64 rc header). The lambda body GEPs into env[0] and
+      // loads the i64 directly.
+      ir should include("call ptr @__nex_env_alloc(i64 8)")
       ir should include regex """getelementptr inbounds \{ i64 \}, ptr %env, i32 0, i32 0"""
     }
 
@@ -131,5 +133,19 @@ class NexLLVMLambdasTests extends AnyWordSpec with NexCodegenTestBase:
         .mkString("\n")
       mainBody should include regex """getelementptr inbounds \{ i64 \}, ptr %t\d+, i32 0, i32 0"""
       mainBody should include regex """store i64 %t\d+, ptr %t\d+"""
+    }
+
+    "closure env is released after the indirect dispatch" in {
+      // emitClosureCall extracts env_ptr, calls the function, then dec's
+      // the env. The capturing lambda's env_alloc rc=1 is balanced by
+      // this dec when the value is dispatched and discarded.
+      val ir = compile("""
+        |def callIt(f: (integer -> integer), x: integer) = f(x)
+        |def main() =
+        |  val k = 10
+        |  print(callIt(x -> x + k, 5))
+      """.stripMargin)
+      ir should include("call ptr @__nex_env_alloc(i64 8)")
+      ir should include regex """call void @__nex_env_dec\(ptr %t\d+\)"""
     }
   }

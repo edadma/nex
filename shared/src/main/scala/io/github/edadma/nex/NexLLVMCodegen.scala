@@ -154,7 +154,7 @@ class NexLLVMCodegen
       emitLine(s"  $slot = alloca $ty\n")
       emitLine(s"  store $ty %arg$i, ptr $slot\n")
       locals(p.id) = slot
-      if isArrayType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
+      if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     val result = emitExpr(f.body)
 
@@ -165,9 +165,9 @@ class NexLLVMCodegen
       // If the function body produced an owning array value but we are
       // about to discard it (main returns i32, or fn returns void), dec
       // the result first so it doesn't leak.
-      val bodyIsArray = isArrayType(f.body.tpe)
+      val bodyIsRefCounted = isRefCountedType(f.body.tpe)
       val willDiscardResult = isMain || f.returnType == TyUnit || result == "void"
-      if bodyIsArray && willDiscardResult && result != "0" && result != "void" then
+      if bodyIsRefCounted && willDiscardResult && result != "0" && result != "void" then
         emitArrDec(result, f.body.tpe)
 
       decAllLocalArrays()
@@ -467,7 +467,7 @@ class NexLLVMCodegen
         case TBlockBinding(sym, _, value) => emitLocalBinding(sym, value)
         case TBlockExpr(x) =>
           val v = emitExpr(x)
-          if isArrayType(x.tpe) then emitArrDec(v, x.tpe)
+          if isRefCountedType(x.tpe) then emitArrDec(v, x.tpe)
       }
       val rv    = emitExpr(result)
       val scope = popBlockScope()
@@ -767,7 +767,7 @@ class NexLLVMCodegen
         // return), dec the SSA value before we tear down the rest of
         // the local arrays.
         val willDiscard = currentIsMain || currentReturnType == TyUnit
-        if willDiscard && isArrayType(expr.tpe) && rv != "0" && rv != "void" then
+        if willDiscard && isRefCountedType(expr.tpe) && rv != "0" && rv != "void" then
           emitArrDec(rv, expr.tpe)
 
         decAllLocalArrays()
@@ -823,13 +823,13 @@ class NexLLVMCodegen
         // this was its last reference. Scalars need no such cleanup.
         locals.get(s.id) match
           case Some(slot) =>
-            if isArrayType(t) then
+            if isRefCountedType(t) then
               val old = newReg()
               emitLine(s"  $old = load ${llvmType(t)}, ptr $slot\n")
               emitArrDec(old, t)
             emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
           case None if globalBindings.contains(s.id) =>
-            if isArrayType(t) then
+            if isRefCountedType(t) then
               val old = newReg()
               emitLine(s"  $old = load ${llvmType(t)}, ptr @${s.name}\n")
               emitArrDec(old, t)
@@ -875,7 +875,7 @@ class NexLLVMCodegen
     // function-level if not inside one) so they're dec'd at scope exit.
     // The slot takes ownership of the stored ref; no extra inc needed —
     // [[emitExpr]] already returned an owning value.
-    if isArrayType(sym.tpe) then
+    if isRefCountedType(sym.tpe) then
       registerArraySlot(sym.id, slot, sym.tpe)
 
   // ---------------------------------------------------------------------------

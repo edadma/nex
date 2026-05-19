@@ -536,9 +536,10 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   //   3. Iterate 0..len-1, invoking the closure per element.
   //   4. dec the source array (we owned a share).
   //
-  // Rank-1 only for now — rank-2 map would preserve shape but the
-  // interpreter's filter is rank-1 only too, so the spec target is the
-  // rank-1 path. Rank-2 surfaces a `notYet` diag.
+  // map and reduce work on rank-1 and rank-2 (shape preserved by map;
+  // reduce folds over every element regardless of rank). filter is
+  // rank-1 only — the spec doesn't define what filtering a matrix
+  // even means. Ranks ≥3 surface a `notYet` diag.
   // ---------------------------------------------------------------------------
 
   /** Emit `map(arr, fn)` — allocate a result array of the same length
@@ -593,6 +594,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     }
 
     emitArrDec(arrV, arr.tpe)
+    emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
     res
 
   /** Emit `reduce(arr, init, fn)` — fold the array left-to-right
@@ -633,6 +635,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     }
 
     emitArrDec(arrV, arr.tpe)
+    emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
     val finalAcc = newReg()
     emitLine(s"  $finalAcc = load $accLLT, ptr $accSlot\n")
     finalAcc
@@ -700,6 +703,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  store i64 $cnt, ptr $lenP\n")
 
     emitArrDec(arrV, arr.tpe)
+    emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
     res
 
   /** Evaluate a closure-typed expression once and return its
@@ -1106,6 +1110,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  store i64 $finalCount, ptr $lenP\n")
 
     emitArrDec(arrV, arr.tpe)
+    emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
     res
 
   // ---------------------------------------------------------------------------

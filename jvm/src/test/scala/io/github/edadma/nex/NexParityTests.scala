@@ -246,6 +246,47 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "43\n",
     )
+
+    // Closure-ARC stress: each iteration constructs a fresh capturing
+    // lambda + calls it. Without refcounting the env would leak every
+    // iteration; with refcounting the env from each iteration is freed
+    // when emitClosureCall env_decs after dispatch.
+    "many closures in a loop are freed each iteration" in parityCheck(
+      """
+        |def call(f: (integer -> integer), x: integer): integer = f(x)
+        |def main() =
+        |  var total = 0
+        |  for i in 1..=10 do
+        |    total = total + call(x -> x + i, i)
+        |  print(total)
+      """.stripMargin,
+      "110\n",
+    )
+
+    // Closure stored in a val binding — the slot owns one share; each
+    // call inc's via TVarRef then dec's after dispatch. Final scope
+    // exit frees the original share.
+    "named closure called multiple times" in parityCheck(
+      """
+        |def main() =
+        |  val add3: (integer -> integer) = x -> x + 3
+        |  print(add3(10))
+        |  print(add3(20))
+        |  print(add3(30))
+      """.stripMargin,
+      "13\n23\n33\n",
+    )
+
+    // Closure returned from a factory function. The factory's return
+    // is a fresh closure (rc=1); the caller dispatches it once and
+    // emitClosureCall env_decs at the end → freed.
+    "closure returned from factory and called inline" in parityCheck(
+      """
+        |def make_adder(k: integer): (integer -> integer) = x -> x + k
+        |def main() = print(make_adder(7)(35))
+      """.stripMargin,
+      "42\n",
+    )
   }
 
   "rank-1 arrays" should {

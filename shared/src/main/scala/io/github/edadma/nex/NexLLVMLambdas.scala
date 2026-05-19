@@ -240,7 +240,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
       emitLine(s"  $slot = alloca $ty\n")
       emitLine(s"  store $ty %arg$i, ptr $slot\n")
       locals(p.id) = slot
-      if isArrayType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
+      if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     // Install per-lambda capture map; TVarRef in emitExpr will consult
     // this and emit the env-GEP+load sequence inline.
@@ -252,9 +252,9 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     val result = emitExpr(info.body)
 
     if currentBlock.isDefined then
-      val bodyIsArray = isArrayType(info.body.tpe)
+      val bodyIsRefCounted = isRefCountedType(info.body.tpe)
       val willDiscardResult = info.retType == TyUnit || result == "void"
-      if bodyIsArray && willDiscardResult && result != "0" && result != "void" then
+      if bodyIsRefCounted && willDiscardResult && result != "0" && result != "void" then
         emitArrDec(result, info.body.tpe)
 
       decAllLocalArrays()
@@ -289,7 +289,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
         if info.captures.isEmpty then "null"
         else
           val ep = newReg()
-          emitLine(s"  $ep = call ptr @malloc(i64 ${info.envSize})\n")
+          emitLine(s"  $ep = call ptr @__nex_env_alloc(i64 ${info.envSize})\n")
           // Store each capture into its env slot. ByVal captures emit
           // a TVarRef-style load of the source value; ByRef captures
           // store a pointer to the source binding's alloca (or @global)
@@ -393,11 +393,17 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     val retLLT = llvmType(retT)
     val sig    = s"$retLLT ($argSig)"
 
+    // `emitExpr(callee)` returned a closure value with an owning share
+    // of env (TVarRef inc's on load; TLambda literals come fresh from
+    // __nex_env_alloc with rc=1). The call doesn't consume it, so we
+    // dec env once we're done dispatching through it.
     retT match
       case TyUnit =>
         emitLine(s"  call $sig $fnPtr($argList)\n")
+        emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
         "void"
       case _ =>
         val reg = newReg()
         emitLine(s"  $reg = call $sig $fnPtr($argList)\n")
+        emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
         reg
