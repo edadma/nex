@@ -152,6 +152,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.assert_approx_msg = private unnamed_addr constant [28 x i8] c"trap: assert_approx failed\0A\00"
         |@.assert_msg_fmt  = private unnamed_addr constant [28 x i8] c"trap: assertion failed: %s\0A\00"
         |@.assert_traps_substr_msg = private unnamed_addr constant [60 x i8] c"trap: assert_traps: expected substring not present in trap\0A\00"
+        |@.div_zero_msg     = private unnamed_addr constant [24 x i8] c"trap: division by zero\0A\00"
+        |@.idiv_zero_msg    = private unnamed_addr constant [32 x i8] c"trap: integer division by zero\0A\00"
+        |@.mod_zero_msg     = private unnamed_addr constant [19 x i8] c"trap: `%` by zero\0A\00"
+        |@.cdiv_zero_msg    = private unnamed_addr constant [32 x i8] c"trap: complex division by zero\0A\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:

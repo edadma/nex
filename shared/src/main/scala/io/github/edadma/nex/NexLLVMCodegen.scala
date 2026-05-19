@@ -368,6 +368,7 @@ class NexLLVMCodegen
         else
           (lv0, rv0, l.tpe)
 
+      emitDivZeroCheck(op, opT, rv)
       val (instr, _) = binOpInst(op, opT)
       val reg     = newReg()
       emitLine(s"  $reg = $instr ${llvmType(opT)} $lv, $rv\n")
@@ -515,6 +516,40 @@ class NexLLVMCodegen
   // that emits don't leak into a closed block (e.g., after an early
   // return inside a branch).
   // ---------------------------------------------------------------------------
+
+  /** Insert a divide-by-zero check before a `/`, `div`, or `%` operation.
+    *
+    * The interpreter explicitly traps on these — without an explicit
+    * AOT check, integer divide-by-zero is UB (likely SIGFPE on x86,
+    * silent on aarch64) and real divide-by-zero produces inf. Both
+    * diverge from the interpreter's trap. Inserting an icmp/fcmp +
+    * branch keeps the message wired through `__nex_trap_with` so an
+    * enclosing `assert_traps` catches and (with 2-arg form) finds the
+    * matching substring.
+    */
+  private def emitDivZeroCheck(op: String, opT: Type, rv: String): Unit =
+    val (needsCheck, isZeroIR, msgSym, prefix) = (op, opT) match
+      case ("/",   TyReal)    =>
+        val z = newReg()
+        emitLine(s"  $z = fcmp oeq double $rv, 0.0\n")
+        (true, z, "@.div_zero_msg", "rdz")
+      case ("div", TyInteger) =>
+        val z = newReg()
+        emitLine(s"  $z = icmp eq i64 $rv, 0\n")
+        (true, z, "@.idiv_zero_msg", "idz")
+      case ("%",   TyInteger) =>
+        val z = newReg()
+        emitLine(s"  $z = icmp eq i64 $rv, 0\n")
+        (true, z, "@.mod_zero_msg", "mdz")
+      case _ => (false, "", "", "")
+    if needsCheck then
+      val okL   = freshLabel(s"$prefix.ok")
+      val failL = freshLabel(s"$prefix.fail")
+      emitTerminator(s"  br i1 $isZeroIR, label %$failL, label %$okL\n")
+      startBlock(failL)
+      emitLine(s"  call void @__nex_trap_with(ptr $msgSym)\n")
+      emitTerminator(s"  unreachable\n")
+      startBlock(okL)
 
   private def emitIf(cond: TExpr, thenB: TExpr, elseOpt: Option[TExpr], resultT: Type): String =
     val condV  = emitExpr(cond)
@@ -967,6 +1002,17 @@ class NexLLVMCodegen
         val cc   = newReg(); emitLine(s"  $cc = fmul double $rre, $rre\n")
         val dd   = newReg(); emitLine(s"  $dd = fmul double $rim, $rim\n")
         val den  = newReg(); emitLine(s"  $den = fadd double $cc, $dd\n")
+        // Trap on zero denominator to match the interpreter, which
+        // throws NexTrap("complex division by zero"). Without this
+        // the divide silently produces NaNs / Infs.
+        val isZ  = newReg(); emitLine(s"  $isZ = fcmp oeq double $den, 0.0\n")
+        val okL  = freshLabel("cdz.ok")
+        val zL   = freshLabel("cdz.fail")
+        emitTerminator(s"  br i1 $isZ, label %$zL, label %$okL\n")
+        startBlock(zL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.cdiv_zero_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
         val ac   = newReg(); emitLine(s"  $ac = fmul double $lre, $rre\n")
         val bd   = newReg(); emitLine(s"  $bd = fmul double $lim, $rim\n")
         val bc   = newReg(); emitLine(s"  $bc = fmul double $lim, $rre\n")

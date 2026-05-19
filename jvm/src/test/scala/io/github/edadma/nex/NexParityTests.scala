@@ -1472,6 +1472,51 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "division by zero traps (matches interpreter)" should {
+    "real `/` by zero (int/int promotes to real / 0.0) traps with `division by zero`" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> print(1 / 0), "division by zero")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "real `/` by zero (literal real) traps" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> print(1.0 / 0.0), "division by zero")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "integer `div` by zero traps with `integer division by zero`" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> print(7 div 0), "integer division by zero")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "integer `%` by zero traps with the modulo-by-zero message" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> print(7 % 0), "by zero")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "non-zero divisors keep working" in parityCheck(
+      """
+        |def main() =
+        |  print(10 / 4)
+        |  print(10 div 3)
+        |  print(10 % 3)
+        |  print(1.0 / 4.0)
+      """.stripMargin,
+      "2.5\n3\n1\n0.25\n",
+    )
+  }
+
 
   "real shortest-round-trip print (Ryu-equivalent via iterative %.Ng)" should {
     "0.1 + 0.2 prints all 17 round-trip digits, not %g's 6" in parityCheck(
