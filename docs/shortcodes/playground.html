@@ -14,7 +14,16 @@
    // Lives in nex's own docs/shortcodes/ for now. Once the experience
    // is solid we lift it into juicerdocs proper. }}
 <div class="nex-playground" data-nex-playground>
-  <textarea class="nex-playground-src" spellcheck="false">{{ trim .content }}</textarea>
+  {{ // The source can't live inline in the <textarea> because
+     // CommonMark doesn't treat <textarea> as a raw-HTML block — a
+     // blank line inside the source ends the HTML block and the
+     // rest gets <p>-wrapped (which then trips Nex's parser when
+     // the textarea content is read). <script type="..."> IS a
+     // raw-HTML block (CommonMark type 1, ends only on </script>),
+     // so blank lines pass through intact. JS hoists the content
+     // into a real <textarea> at init. }}
+  <script type="text/x-nex-source">{{ trim .content }}</script>
+  <textarea class="nex-playground-src" spellcheck="false" aria-label="Nex source"></textarea>
   <div class="nex-playground-bar">
     <button type="button" class="nex-playground-run">Run</button>
     <span class="nex-playground-status" aria-live="polite"></span>
@@ -102,10 +111,22 @@
   // so re-runs (dev hot-reload, etc.) don't double-attach.
   for (const pg of document.querySelectorAll('.nex-playground[data-nex-playground]:not([data-wired])')) {
     pg.setAttribute('data-wired', '');
-    const src    = pg.querySelector('.nex-playground-src');
-    const run    = pg.querySelector('.nex-playground-run');
-    const out    = pg.querySelector('.nex-playground-out');
-    const status = pg.querySelector('.nex-playground-status');
+    const srcScript = pg.querySelector('script[type="text/x-nex-source"]');
+    const src       = pg.querySelector('.nex-playground-src');
+    const run       = pg.querySelector('.nex-playground-run');
+    const out       = pg.querySelector('.nex-playground-out');
+    const status    = pg.querySelector('.nex-playground-status');
+
+    // Hoist the raw source out of the <script> carrier into the
+    // <textarea>. Size the textarea to fit so authors don't see a
+    // scrollbar on short examples; min-height keeps it usable for
+    // edits past the initial line count.
+    if (srcScript) {
+      const initial = srcScript.textContent.replace(/^\n+/, '');
+      src.value = initial;
+      const lines = Math.max(initial.split('\n').length, 4);
+      src.rows = lines + 1;
+    }
     run.addEventListener('click', async () => {
       run.disabled = true;
       status.textContent = 'loading interpreter…';
