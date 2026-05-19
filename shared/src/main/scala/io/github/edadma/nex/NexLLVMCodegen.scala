@@ -1086,53 +1086,290 @@ class NexLLVMCodegen
   // ---------------------------------------------------------------------------
 
   /** Emit code that produces a %nex_str descriptor pointer for the value
-    * of `e`. For TyString this is just `emitExpr(e)`; for the scalar
-    * types it routes through a `__nex_str_from_<T>` runtime helper.
-    * Aggregate types (complex/tuple/array/struct) surface `notYet`
-    * until the recursive formatter lands.
+    * of `e`. For TyString this is just `emitExpr(e)`; for scalar types
+    * it routes through a `__nex_str_from_<T>` runtime helper. Aggregate
+    * types (complex / tuple / array / struct) build descriptors by
+    * concat-chaining the formatted parts — mirrors `formatValue` in the
+    * interpreter byte-for-byte.
     */
   protected def emitValueToString(e: TExpr): String =
     e.tpe match
       case TyString  => emitExpr(e)
-      case TyInteger =>
+      case TyInteger => emitValueToStringInt(emitExpr(e))
+      case TyReal    => emitValueToStringReal(emitExpr(e))
+      case TyBool    => emitValueToStringBool(emitExpr(e))
+      case TyComplex => emitValueToStringComplex(emitExpr(e))
+      case TyTuple(ts) =>
         val v = emitExpr(e)
-        val r = newReg()
-        emitLine(s"  $r = call ptr @__nex_str_from_i64(i64 $v)\n")
-        r
-      case TyReal =>
+        emitValueToStringTuple(v, e.tpe, ts)
+      case TyStruct(name, fields) =>
         val v = emitExpr(e)
-        val r = newReg()
-        emitLine(s"  $r = call ptr @__nex_str_from_double(double $v)\n")
-        r
-      case TyBool =>
-        // Static "true" / "false" descriptors from the literal pool —
-        // no runtime allocation. Select the right one at runtime.
-        val v    = emitExpr(e)
-        val tPtr = internStringDescriptor("true")
-        val fPtr = internStringDescriptor("false")
-        val sel  = newReg()
-        emitLine(s"  $sel = select i1 $v, ptr $tPtr, ptr $fPtr\n")
-        sel
+        emitValueToStringStruct(v, e.tpe, name, fields)
+      case TyArray(_, _) =>
+        emitValueToStringArray(e)
+      case TyUnit =>
+        internStringDescriptor("()")
       case other =>
         notYet(s"value-to-string for $other in interpolated `s\"...\"` at value position")
-        // Return a sentinel empty-string descriptor so the concat chain
-        // doesn't trap. The notYet diagnostic already flagged the gap.
         internStringDescriptor("")
 
-  /** Emit a concat chain that builds the full interpolated-string value.
-    * Empty parts list collapses to the empty-string literal descriptor.
+  /** Emit i64 → %nex_str descriptor. */
+  protected def emitValueToStringInt(v: String): String =
+    val r = newReg()
+    emitLine(s"  $r = call ptr @__nex_str_from_i64(i64 $v)\n")
+    r
+
+  /** Emit double → %nex_str descriptor (`<lld>.0` for whole reals,
+    * `%g` otherwise — matches the interpreter's [[formatValue]]).
     */
-  protected def emitInterpStringValue(parts: List[TInterpPart]): String =
-    // Materialize each part as a %nex_str descriptor SSA value.
-    val partDescs: List[String] = parts.map {
-      case TInterpText(text) => internStringDescriptor(text)
-      case TInterpRef(sym)   => emitValueToString(TVarRef(sym, None, sym.tpe))
-      case TInterpExpr(x)    => emitValueToString(x)
-      case _: TInterpRaw     =>
-        notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
+  protected def emitValueToStringReal(v: String): String =
+    val r = newReg()
+    emitLine(s"  $r = call ptr @__nex_str_from_double(double $v)\n")
+    r
+
+  /** Emit i1 → "true" / "false" descriptor via runtime select. */
+  protected def emitValueToStringBool(v: String): String =
+    val tPtr = internStringDescriptor("true")
+    val fPtr = internStringDescriptor("false")
+    val sel  = newReg()
+    emitLine(s"  $sel = select i1 $v, ptr $tPtr, ptr $fPtr\n")
+    sel
+
+  /** Emit `{ double, double }` → `<re><sign><|im|>i` descriptor. */
+  protected def emitValueToStringComplex(v: String): String =
+    val re = newReg()
+    emitLine(s"  $re = extractvalue { double, double } $v, 0\n")
+    val im = newReg()
+    emitLine(s"  $im = extractvalue { double, double } $v, 1\n")
+    val isNeg = newReg()
+    emitLine(s"  $isNeg = fcmp olt double $im, 0.0\n")
+    val plus  = internStringDescriptor("+")
+    val minus = internStringDescriptor("-")
+    val sign  = newReg()
+    emitLine(s"  $sign = select i1 $isNeg, ptr $minus, ptr $plus\n")
+    val absIm = newReg()
+    emitLine(s"  $absIm = call double @fabs(double $im)\n")
+    val reStr = emitValueToStringReal(re)
+    val imStr = emitValueToStringReal(absIm)
+    val iSfx  = internStringDescriptor("i")
+    concatChain(List(reStr, sign, imStr, iSfx))
+
+  /** Emit a tuple value → `(a, b, c)` descriptor. */
+  protected def emitValueToStringTuple(v: String, tupT: Type, elemTs: List[Type]): String =
+    if elemTs.isEmpty then return internStringDescriptor("()")
+    val tupTy = llvmType(tupT)
+    val open  = internStringDescriptor("(")
+    val close = internStringDescriptor(")")
+    val sep   = internStringDescriptor(", ")
+    val parts = scala.collection.mutable.ListBuffer[String](open)
+    for i <- elemTs.indices do
+      if i > 0 then parts += sep
+      val fieldT = elemTs(i)
+      val fv = newReg()
+      emitLine(s"  $fv = extractvalue $tupTy $v, $i\n")
+      parts += emitTypedValueToString(fv, fieldT)
+    parts += close
+    concatChain(parts.toList)
+
+  /** Emit a struct value → `Name { k=v, ... }` descriptor. */
+  protected def emitValueToStringStruct(
+    v: String,
+    structT: Type,
+    name: String,
+    fields: List[(String, Type)],
+  ): String =
+    val ty = llvmType(structT)
+    val header = internStringDescriptor(s"$name { ")
+    val closer = internStringDescriptor(" }")
+    val sep    = internStringDescriptor(", ")
+    val eq     = internStringDescriptor("=")
+    val parts  = scala.collection.mutable.ListBuffer[String](header)
+    for i <- fields.indices do
+      val (fname, ftype) = fields(i)
+      if i > 0 then parts += sep
+      parts += internStringDescriptor(fname)
+      parts += eq
+      val fv = newReg()
+      emitLine(s"  $fv = extractvalue $ty $v, $i\n")
+      parts += emitTypedValueToString(fv, ftype)
+    parts += closer
+    concatChain(parts.toList)
+
+  /** Emit an array value → `[a, b, c]` (rank-1) or
+    * `[[a, b], [c, d]]` (rank-2). Loops at runtime since the length
+    * isn't statically known; each iteration concats the per-element
+    * descriptor + separator into a single growing accumulator.
+    */
+  protected def emitValueToStringArray(arr: TExpr): String =
+    val rank   = arrayRank(arr.tpe)
+    val elem   = arrayElem(arr.tpe)
+    val arrV   = emitExpr(arr)
+    val result = rank match
+      case 1 => emitArrayToStringR1(arrV, arr.tpe, elem)
+      case 2 => emitArrayToStringR2(arrV, arr.tpe, elem)
+      case r =>
+        notYet(s"value-to-string for rank-$r array")
         internStringDescriptor("")
+    emitArrDec(arrV, arr.tpe)
+    result
+
+  /** Build a `[a, b, c]` descriptor for a rank-1 array. The accumulator
+    * starts as `[`, each iteration appends the formatted element and
+    * (except for the first) a leading `, `; finally `]` is appended.
+    */
+  protected def emitArrayToStringR1(arrV: String, arrT: Type, elem: Type): String =
+    val open  = internStringDescriptor("[")
+    val close = internStringDescriptor("]")
+    val sep   = internStringDescriptor(", ")
+    val accSlot = newReg()
+    emitLine(s"  $accSlot = alloca ptr\n")
+    emitLine(s"  store ptr $open, ptr $accSlot\n")
+    val len = newReg()
+    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    val buf = bufPtr(arrV, arrT)
+    val stT = storageType(elem)
+    val llT = llvmType(elem)
+    emitCountingLoop(len, "v2s.r1") { i =>
+      val isPos = newReg()
+      emitLine(s"  $isPos = icmp sgt i64 $i, 0\n")
+      val ifFirst = freshLabel("v2s.first")
+      val ifSep   = freshLabel("v2s.sep")
+      val afterS  = freshLabel("v2s.afterSep")
+      emitTerminator(s"  br i1 $isPos, label %$ifSep, label %$ifFirst\n")
+      startBlock(ifSep)
+      val curS = newReg()
+      emitLine(s"  $curS = load ptr, ptr $accSlot\n")
+      val withSep = newReg()
+      emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $curS, ptr $sep)\n")
+      emitLine(s"  store ptr $withSep, ptr $accSlot\n")
+      emitTerminator(s"  br label %$afterS\n")
+      startBlock(ifFirst)
+      emitTerminator(s"  br label %$afterS\n")
+      startBlock(afterS)
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
+      val elemV = loadElem(stT, slot, llT)
+      val elemS = emitTypedValueToString(elemV, elem)
+      val cur2  = newReg()
+      emitLine(s"  $cur2 = load ptr, ptr $accSlot\n")
+      val with2 = newReg()
+      emitLine(s"  $with2 = call ptr @__nex_str_concat(ptr $cur2, ptr $elemS)\n")
+      emitLine(s"  store ptr $with2, ptr $accSlot\n")
     }
-    partDescs match
+    val finalAcc = newReg()
+    emitLine(s"  $finalAcc = load ptr, ptr $accSlot\n")
+    val withClose = newReg()
+    emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $finalAcc, ptr $close)\n")
+    withClose
+
+  /** Build a `[[a, b], [c, d]]` descriptor for a rank-2 array. Outer
+    * loop walks rows; inner builds each row's `[..]` form. Reuses
+    * the rank-1 layout per row by concat-chaining manually rather
+    * than re-entering the runtime helper (interpreter inlines the
+    * loop too).
+    */
+  protected def emitArrayToStringR2(arrV: String, arrT: Type, elem: Type): String =
+    val open  = internStringDescriptor("[")
+    val close = internStringDescriptor("]")
+    val sep   = internStringDescriptor(", ")
+    val accSlot = newReg()
+    emitLine(s"  $accSlot = alloca ptr\n")
+    emitLine(s"  store ptr $open, ptr $accSlot\n")
+    val rows = newReg()
+    emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+    val cols = newReg()
+    emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+    val buf = bufPtr(arrV, arrT)
+    val stT = storageType(elem)
+    val llT = llvmType(elem)
+    emitCountingLoop(rows, "v2s.r2.row") { i =>
+      val isPos = newReg()
+      emitLine(s"  $isPos = icmp sgt i64 $i, 0\n")
+      val ifSep  = freshLabel("v2s.r2.sep")
+      val ifFst  = freshLabel("v2s.r2.first")
+      val afterS = freshLabel("v2s.r2.afterSep")
+      emitTerminator(s"  br i1 $isPos, label %$ifSep, label %$ifFst\n")
+      startBlock(ifSep)
+      val curS = newReg()
+      emitLine(s"  $curS = load ptr, ptr $accSlot\n")
+      val withSep = newReg()
+      emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $curS, ptr $sep)\n")
+      emitLine(s"  store ptr $withSep, ptr $accSlot\n")
+      emitTerminator(s"  br label %$afterS\n")
+      startBlock(ifFst)
+      emitTerminator(s"  br label %$afterS\n")
+      startBlock(afterS)
+      // Open the inner row.
+      val curOpen = newReg()
+      emitLine(s"  $curOpen = load ptr, ptr $accSlot\n")
+      val withOpen = newReg()
+      emitLine(s"  $withOpen = call ptr @__nex_str_concat(ptr $curOpen, ptr $open)\n")
+      emitLine(s"  store ptr $withOpen, ptr $accSlot\n")
+      val rowOff = newReg()
+      emitLine(s"  $rowOff = mul i64 $i, $cols\n")
+      emitCountingLoop(cols, "v2s.r2.col") { j =>
+        val isPosJ = newReg()
+        emitLine(s"  $isPosJ = icmp sgt i64 $j, 0\n")
+        val jSep   = freshLabel("v2s.r2.jsep")
+        val jFst   = freshLabel("v2s.r2.jfirst")
+        val jAfter = freshLabel("v2s.r2.jafter")
+        emitTerminator(s"  br i1 $isPosJ, label %$jSep, label %$jFst\n")
+        startBlock(jSep)
+        val curSj = newReg()
+        emitLine(s"  $curSj = load ptr, ptr $accSlot\n")
+        val withSepJ = newReg()
+        emitLine(s"  $withSepJ = call ptr @__nex_str_concat(ptr $curSj, ptr $sep)\n")
+        emitLine(s"  store ptr $withSepJ, ptr $accSlot\n")
+        emitTerminator(s"  br label %$jAfter\n")
+        startBlock(jFst)
+        emitTerminator(s"  br label %$jAfter\n")
+        startBlock(jAfter)
+        val k = newReg()
+        emitLine(s"  $k = add i64 $rowOff, $j\n")
+        val slot = newReg()
+        emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $k\n")
+        val elemV = loadElem(stT, slot, llT)
+        val elemS = emitTypedValueToString(elemV, elem)
+        val cur2 = newReg()
+        emitLine(s"  $cur2 = load ptr, ptr $accSlot\n")
+        val with2 = newReg()
+        emitLine(s"  $with2 = call ptr @__nex_str_concat(ptr $cur2, ptr $elemS)\n")
+        emitLine(s"  store ptr $with2, ptr $accSlot\n")
+      }
+      val curClose = newReg()
+      emitLine(s"  $curClose = load ptr, ptr $accSlot\n")
+      val withClose = newReg()
+      emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $curClose, ptr $close)\n")
+      emitLine(s"  store ptr $withClose, ptr $accSlot\n")
+    }
+    val finalAcc = newReg()
+    emitLine(s"  $finalAcc = load ptr, ptr $accSlot\n")
+    val withClose = newReg()
+    emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $finalAcc, ptr $close)\n")
+    withClose
+
+  /** Like [[emitValueToString]] but takes an already-emitted SSA value
+    * (from extractvalue / loadElem) plus a Type. Used by the aggregate
+    * formatters to recurse into their already-loaded components.
+    */
+  protected def emitTypedValueToString(v: String, t: Type): String =
+    t match
+      case TyString  => v   // already a descriptor
+      case TyInteger => emitValueToStringInt(v)
+      case TyReal    => emitValueToStringReal(v)
+      case TyBool    => emitValueToStringBool(v)
+      case TyComplex => emitValueToStringComplex(v)
+      case TyTuple(ts) => emitValueToStringTuple(v, t, ts)
+      case TyStruct(n, fs) => emitValueToStringStruct(v, t, n, fs)
+      case TyUnit    => internStringDescriptor("()")
+      case other =>
+        notYet(s"value-to-string for nested $other"); internStringDescriptor("")
+
+  /** Fold a list of descriptor pointers down to one via repeated
+    * __nex_str_concat. Empty list → empty-string descriptor.
+    */
+  protected def concatChain(parts: List[String]): String =
+    parts match
       case Nil      => internStringDescriptor("")
       case List(d)  => d
       case d :: ds  =>
@@ -1141,3 +1378,17 @@ class NexLLVMCodegen
           emitLine(s"  $r = call ptr @__nex_str_concat(ptr $acc, ptr $next)\n")
           r
         }
+
+  /** Emit a concat chain that builds the full interpolated-string value.
+    * Empty parts list collapses to the empty-string literal descriptor.
+    */
+  protected def emitInterpStringValue(parts: List[TInterpPart]): String =
+    val partDescs: List[String] = parts.map {
+      case TInterpText(text) => internStringDescriptor(text)
+      case TInterpRef(sym)   => emitValueToString(TVarRef(sym, None, sym.tpe))
+      case TInterpExpr(x)    => emitValueToString(x)
+      case _: TInterpRaw     =>
+        notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
+        internStringDescriptor("")
+    }
+    concatChain(partDescs)

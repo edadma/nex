@@ -859,6 +859,77 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "aggregate value-to-string (Wave 6 follow-up)" should {
+    "interpolate a complex" in parityCheck(
+      """
+        |def main() =
+        |  val z = 1.0 + 2.0i
+        |  print(s"z = $z")
+      """.stripMargin,
+      "z = 1.0+2.0i\n",
+    )
+    "interpolate a complex with negative imaginary" in parityCheck(
+      """
+        |def main() =
+        |  val z = 3.0 - 4.0i
+        |  print(s"z = $z")
+      """.stripMargin,
+      "z = 3.0-4.0i\n",
+    )
+    "interpolate a tuple" in parityCheck(
+      """
+        |def main() =
+        |  val t = (1, 2.5, true)
+        |  print(s"t = $t")
+      """.stripMargin,
+      "t = (1, 2.5, true)\n",
+    )
+    "interpolate a rank-1 array of integers" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(s"xs = $xs")
+      """.stripMargin,
+      "xs = [1, 2, 3, 4]\n",
+    )
+    "interpolate an empty rank-1 array" in parityCheck(
+      """
+        |def main() =
+        |  val xs: [integer] = []
+        |  print(s"xs = $xs")
+      """.stripMargin,
+      "xs = []\n",
+    )
+    "interpolate a rank-2 array" in parityCheck(
+      """
+        |def main() =
+        |  val m = identity(3)
+        |  print(s"m = $m")
+      """.stripMargin,
+      "m = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]\n",
+    )
+    "interpolate a struct" in parityCheck(
+      """
+        |struct Point
+        |  x: integer
+        |  y: integer
+        |end Point
+        |def main() =
+        |  val p = Point(3, 4)
+        |  print(s"p = $p")
+      """.stripMargin,
+      "p = Point { x=3, y=4 }\n",
+    )
+    "interpolate nested aggregates" in parityCheck(
+      """
+        |def main() =
+        |  val pairs = [(1, "a"), (2, "b")]
+        |  print(s"pairs = $pairs")
+      """.stripMargin,
+      "pairs = [(1, a), (2, b)]\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """
