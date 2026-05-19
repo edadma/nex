@@ -326,6 +326,60 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret ptr %d
         |}
         |
+        |; Build a fresh string descriptor from an i64 (decimal). Uses
+        |; snprintf-twice (size first, then write). Always heap-allocated
+        |; with refcount=1.
+        |define ptr @__nex_str_from_i64(i64 %n) {
+        |entry:
+        |  %len = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr @.fmt_int_raw, i64 %n)
+        |  %len64 = sext i32 %len to i64
+        |  %res = call ptr @__nex_str_alloc(i64 %len64)
+        |  %dp  = getelementptr inbounds %nex_str, ptr %res, i32 0, i32 2
+        |  %d   = load ptr, ptr %dp
+        |  %cap = add i64 %len64, 1
+        |  %ignored = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %d, i64 %cap, ptr @.fmt_int_raw, i64 %n)
+        |  ret ptr %res
+        |}
+        |
+        |; Build a fresh string descriptor from a bool. Returns immortal
+        |; "true" / "false" literals (no malloc — they're already in the
+        |; literal pool, so we route through the runtime helper that picks
+        |; the matching static descriptor at codegen time). Implemented
+        |; codegen-side to avoid threading two literal-pool descriptors
+        |; through a runtime select.
+        |
+        |; Build a fresh string descriptor from a real (double). Mirrors
+        |; the interpreter's formatValue: whole numbers under 1e15 print
+        |; as "<lld>.0", everything else via %g.
+        |define ptr @__nex_str_from_double(double %v) {
+        |entry:
+        |  %f      = call double @floor(double %v)
+        |  %is_int = fcmp oeq double %v, %f
+        |  %a      = call double @fabs(double %v)
+        |  %small  = fcmp olt double %a, 1.0e+15
+        |  %both   = and i1 %is_int, %small
+        |  br i1 %both, label %whole, label %generic
+        |whole:
+        |  %ll  = fptosi double %v to i64
+        |  %wlen = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr @.fmt_real_int, i64 %ll)
+        |  %wlen64 = sext i32 %wlen to i64
+        |  %wres = call ptr @__nex_str_alloc(i64 %wlen64)
+        |  %wdp  = getelementptr inbounds %nex_str, ptr %wres, i32 0, i32 2
+        |  %wd   = load ptr, ptr %wdp
+        |  %wcap = add i64 %wlen64, 1
+        |  %wig  = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %wd, i64 %wcap, ptr @.fmt_real_int, i64 %ll)
+        |  ret ptr %wres
+        |generic:
+        |  %glen = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr @.fmt_real_g, double %v)
+        |  %glen64 = sext i32 %glen to i64
+        |  %gres = call ptr @__nex_str_alloc(i64 %glen64)
+        |  %gdp  = getelementptr inbounds %nex_str, ptr %gres, i32 0, i32 2
+        |  %gd   = load ptr, ptr %gdp
+        |  %gcap = add i64 %glen64, 1
+        |  %gig  = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %gd, i64 %gcap, ptr @.fmt_real_g, double %v)
+        |  ret ptr %gres
+        |}
+        |
         |; Allocate a new string descriptor for the concatenation of `a` and
         |; `b`. Inputs may be immortal or heap-allocated; the result is a
         |; fresh heap descriptor with refcount=1. Inputs are NOT dec'd — the

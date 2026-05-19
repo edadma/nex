@@ -782,6 +782,83 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {
+    "with an integer ref" in parityCheck(
+      """
+        |def main() =
+        |  val k = 42
+        |  val msg = s"k = $k"
+        |  print(msg)
+      """.stripMargin,
+      "k = 42\n",
+    )
+    "with an inline ${expr}" in parityCheck(
+      """
+        |def main() =
+        |  val msg = s"sum = ${1 + 2}"
+        |  print(msg)
+      """.stripMargin,
+      "sum = 3\n",
+    )
+    "with a real" in parityCheck(
+      """
+        |def main() =
+        |  val x = 3.5
+        |  val msg = s"x = $x"
+        |  print(msg)
+      """.stripMargin,
+      "x = 3.5\n",
+    )
+    "with a whole real (formats as N.0)" in parityCheck(
+      """
+        |def main() =
+        |  val x = 7.0
+        |  val msg = s"x = $x"
+        |  print(msg)
+      """.stripMargin,
+      "x = 7.0\n",
+    )
+    "with a bool" in parityCheck(
+      """
+        |def main() =
+        |  val b = true
+        |  val msg = s"flag = $b"
+        |  print(msg)
+      """.stripMargin,
+      "flag = true\n",
+    )
+    "with a string ref" in parityCheck(
+      """
+        |def main() =
+        |  val name = "world"
+        |  val msg = s"hello, $name"
+        |  print(msg)
+      """.stripMargin,
+      "hello, world\n",
+    )
+    "round-trips through concat" in parityCheck(
+      """
+        |def main() =
+        |  val k = 10
+        |  val a = s"k=$k"
+        |  val b = " end"
+        |  print(a + b)
+      """.stripMargin,
+      "k=10 end\n",
+    )
+    "multiple interpolations in one string" in parityCheck(
+      """
+        |def main() =
+        |  val a = 1
+        |  val b = 2
+        |  val c = 3
+        |  val msg = s"a=$a b=$b c=$c"
+        |  print(msg)
+      """.stripMargin,
+      "a=1 b=2 c=3\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

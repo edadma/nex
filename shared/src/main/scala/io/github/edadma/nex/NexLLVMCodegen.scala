@@ -201,11 +201,12 @@ class NexLLVMCodegen
       internStringDescriptor(s)
 
     case TInterpStringLit(parts, _, _) =>
-      // For chunk-4 v0, only the print-statement form is fully
-      // supported (see emitPrintCall). At value position, surface a
-      // diagnostic — building the interpolated string into a heap
-      // buffer needs sprintf + malloc.
-      notYet("interpolated string at value position (use print)"); "null"
+      // Build a fresh %nex_str by concat-chaining each part. Text parts
+      // route through the literal descriptor pool (immortal); $ref and
+      // ${expr} parts go through emitValueToString which produces a
+      // heap-allocated descriptor for non-string types. Final result
+      // is heap-allocated with refcount=1.
+      emitInterpStringValue(parts)
 
     case TVarRef(s, _, t) if s.kind == SymKind.Prelude =>
       s.name match
@@ -1070,3 +1071,73 @@ class NexLLVMCodegen
         reg
       case other =>
         notYet(s"field access on non-struct type $other"); "0"
+
+  // ---------------------------------------------------------------------------
+  // Interpolated string at value position (Wave 6 phase 3).
+  //
+  // Builds a fresh %nex_str descriptor by concat-chaining each part. Text
+  // parts route through the literal-descriptor pool (immortal); $ref and
+  // ${expr} parts go through emitValueToString — which returns either the
+  // already-a-descriptor SSA value (for TyString refs) or a fresh heap
+  // descriptor (snprintf-built for numerics and bool). Each concat
+  // allocates a fresh result, so a 3-part interp string allocates 2
+  // intermediate descriptors plus the final one. ARC follow-up will
+  // address the intermediate leaks.
+  // ---------------------------------------------------------------------------
+
+  /** Emit code that produces a %nex_str descriptor pointer for the value
+    * of `e`. For TyString this is just `emitExpr(e)`; for the scalar
+    * types it routes through a `__nex_str_from_<T>` runtime helper.
+    * Aggregate types (complex/tuple/array/struct) surface `notYet`
+    * until the recursive formatter lands.
+    */
+  protected def emitValueToString(e: TExpr): String =
+    e.tpe match
+      case TyString  => emitExpr(e)
+      case TyInteger =>
+        val v = emitExpr(e)
+        val r = newReg()
+        emitLine(s"  $r = call ptr @__nex_str_from_i64(i64 $v)\n")
+        r
+      case TyReal =>
+        val v = emitExpr(e)
+        val r = newReg()
+        emitLine(s"  $r = call ptr @__nex_str_from_double(double $v)\n")
+        r
+      case TyBool =>
+        // Static "true" / "false" descriptors from the literal pool —
+        // no runtime allocation. Select the right one at runtime.
+        val v    = emitExpr(e)
+        val tPtr = internStringDescriptor("true")
+        val fPtr = internStringDescriptor("false")
+        val sel  = newReg()
+        emitLine(s"  $sel = select i1 $v, ptr $tPtr, ptr $fPtr\n")
+        sel
+      case other =>
+        notYet(s"value-to-string for $other in interpolated `s\"...\"` at value position")
+        // Return a sentinel empty-string descriptor so the concat chain
+        // doesn't trap. The notYet diagnostic already flagged the gap.
+        internStringDescriptor("")
+
+  /** Emit a concat chain that builds the full interpolated-string value.
+    * Empty parts list collapses to the empty-string literal descriptor.
+    */
+  protected def emitInterpStringValue(parts: List[TInterpPart]): String =
+    // Materialize each part as a %nex_str descriptor SSA value.
+    val partDescs: List[String] = parts.map {
+      case TInterpText(text) => internStringDescriptor(text)
+      case TInterpRef(sym)   => emitValueToString(TVarRef(sym, None, sym.tpe))
+      case TInterpExpr(x)    => emitValueToString(x)
+      case _: TInterpRaw     =>
+        notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
+        internStringDescriptor("")
+    }
+    partDescs match
+      case Nil      => internStringDescriptor("")
+      case List(d)  => d
+      case d :: ds  =>
+        ds.foldLeft(d) { (acc, next) =>
+          val r = newReg()
+          emitLine(s"  $r = call ptr @__nex_str_concat(ptr $acc, ptr $next)\n")
+          r
+        }
