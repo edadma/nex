@@ -66,3 +66,52 @@ class NexMLIRParityTests extends AnyWordSpec with NexMLIRParityBase:
       """.stripMargin,
       "32.0\n",
     )
+
+  "milestone 4 — rank-1 array print" should:
+    "print integer array literal" in parityCheck(
+      "def main() = print([1, 2, 3])",
+      "[1, 2, 3]\n",
+    )
+    "print single-element integer array literal" in parityCheck(
+      "def main() = print([42])",
+      "[42]\n",
+    )
+    "print real array literal with whole numbers" in parityCheck(
+      "def main() = print([1.0, 2.0, 3.0])",
+      "[1.0, 2.0, 3.0]\n",
+    )
+    "print result of element-wise integer add" in parityCheck(
+      "def main() = print([1, 2, 3] + [10, 20, 30])",
+      "[11, 22, 33]\n",
+    )
+    "print val-bound real element-wise multiply" in parityCheck(
+      """
+        |def main() =
+        |  val a = [1.0, 2.0, 3.0]
+        |  val b = [4.0, 5.0, 6.0]
+        |  print(a * b)
+      """.stripMargin,
+      "[4.0, 10.0, 18.0]\n",
+    )
+
+  "milestone 4 — rank-2 array print" should:
+    "print 2x3 integer matrix literal" in parityCheck(
+      "def main() = print([[1, 2, 3], [4, 5, 6]])",
+      "[[1, 2, 3], [4, 5, 6]]\n",
+    )
+    "print 2x2 real matrix literal" in parityCheck(
+      "def main() = print([[1.0, 2.0], [3.0, 4.0]])",
+      "[[1.0, 2.0], [3.0, 4.0]]\n",
+    )
+    "print 1x1 integer matrix literal" in parityCheck(
+      "def main() = print([[7]])",
+      "[[7]]\n",
+    )
+    "print val-bound 2x2 matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m)
+      """.stripMargin,
+      "[[1, 2], [3, 4]]\n",
+    )
