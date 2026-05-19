@@ -22,6 +22,63 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare i64 @strlen(ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
+        |; setjmp / longjmp — used by __nex_assert_traps to catch traps.
+        |; setjmp must be marked `returns_twice` so LLVM does not optimize
+        |; assuming a single control-flow exit from the call.
+        |declare i32 @setjmp(ptr) returns_twice
+        |declare void @longjmp(ptr, i32)
+        |
+        |; Thread-local pointer to the active trap jmp_buf chain head, or
+        |; null when no assert_traps is on the stack. The buffer is large
+        |; enough to hold any platform's `jmp_buf` (Darwin arm64 needs
+        |; ~192 bytes; 2 KB gives substantial headroom).
+        |@__nex_trap_buf = internal thread_local global ptr null, align 8
+        |
+        |; Thread-local pointer to the trap message that would be shown if
+        |; this trap escapes to the top level. Trap sites stash a message
+        |; here BEFORE calling `__nex_trap` instead of printing eagerly,
+        |; so a caught trap stays silent (matching the interpreter, where
+        |; `NexTrap.msg` is only printed when uncaught).
+        |@__nex_trap_msg = internal thread_local global ptr null, align 8
+        |
+        |@.assert_traps_fail_msg = private unnamed_addr constant [48 x i8] c"trap: assert_traps: expected trap, got no trap\0A\00"
+        |
+        |; __nex_trap is the single trap-emission point. If an enclosing
+        |; assert_traps has set up a jmp_buf, longjmp out of it (silently,
+        |; clearing the stashed message); otherwise print the stashed
+        |; message and abort. Every trap site stashes its message via
+        |; @__nex_trap_msg before calling here.
+        |define void @__nex_trap() noreturn {
+        |entry:
+        |  %buf = load ptr, ptr @__nex_trap_buf, align 8
+        |  %has = icmp ne ptr %buf, null
+        |  br i1 %has, label %lj, label %ab
+        |lj:
+        |  store ptr null, ptr @__nex_trap_msg, align 8
+        |  call void @longjmp(ptr %buf, i32 1)
+        |  unreachable
+        |ab:
+        |  %msg  = load ptr, ptr @__nex_trap_msg, align 8
+        |  %hasm = icmp ne ptr %msg, null
+        |  br i1 %hasm, label %prn, label %doab
+        |prn:
+        |  call i32 (ptr, ...) @printf(ptr %msg)
+        |  br label %doab
+        |doab:
+        |  call void @abort()
+        |  unreachable
+        |}
+        |
+        |; __nex_trap_msg sets the stashed message and calls __nex_trap.
+        |; Trap sites use this helper for the common "print this message,
+        |; then trap" pattern.
+        |define void @__nex_trap_with(ptr %msg) noreturn {
+        |entry:
+        |  store ptr %msg, ptr @__nex_trap_msg, align 8
+        |  call void @__nex_trap()
+        |  unreachable
+        |}
+        |
         |; --- Array descriptor types (§8.5) -------------------------------------
         |; rank-1: { refcount, length, data }                     ; 24 bytes
         |; rank-2: { refcount, rows,   cols, data }               ; 32 bytes
@@ -85,8 +142,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |entry:
         |  br i1 %cond, label %ok, label %fail
         |fail:
-        |  call i32 (ptr, ...) @printf(ptr @.assert_fail_msg)
-        |  call void @abort()
+        |  call void @__nex_trap_with(ptr @.assert_fail_msg)
         |  unreachable
         |ok:
         |  ret void
@@ -225,8 +281,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %bad = or i1 %lt, %ge
         |  br i1 %bad, label %trap, label %ok
         |trap:
-        |  call i32 (ptr, ...) @printf(ptr @.oob_msg)
-        |  call void @abort()
+        |  call void @__nex_trap_with(ptr @.oob_msg)
         |  unreachable
         |ok:
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
@@ -499,8 +554,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %bad = or i1 %ibad, %jbad
         |  br i1 %bad, label %trap, label %ok
         |trap:
-        |  call i32 (ptr, ...) @printf(ptr @.oob_msg)
-        |  call void @abort()
+        |  call void @__nex_trap_with(ptr @.oob_msg)
         |  unreachable
         |ok:
         |  %flat = mul i64 %i, %c

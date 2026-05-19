@@ -1354,3 +1354,68 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "7\n",
     )
   }
+
+  "assert_traps (catches a trap from the thunk)" should {
+    "thunk that fails an assert is caught" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false))
+        |  print(42)
+      """.stripMargin,
+      "42\n",
+    )
+    "thunk that fails assert_eq is caught" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert_eq(1, 2))
+        |  print(7)
+      """.stripMargin,
+      "7\n",
+    )
+    "thunk that hits an array out-of-bounds trap is caught" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> assert(xs[5] == 0))
+        |  print(99)
+      """.stripMargin,
+      "99\n",
+    )
+    "multiple sequential assert_traps each catch their trap" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false))
+        |  assert_traps(() -> assert_eq(1, 2))
+        |  assert_traps(() -> assert_approx(0.0, 1.0, 0.001))
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    )
+    "nested assert_traps — outer catches a non-trapping inner" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert_traps(() -> assert(true)))
+        |  print("nested-ok")
+      """.stripMargin,
+      "nested-ok\n",
+    )
+    "control flow continues after a caught trap" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false))
+        |  val x = 10
+        |  assert_traps(() -> assert(x == 11))
+        |  print(x + 1)
+      """.stripMargin,
+      "11\n",
+    )
+    "assert_traps that captures a local var sees the right value" in parityCheck(
+      """
+        |def main() =
+        |  val target = 99
+        |  assert_traps(() -> assert(target == 100))
+        |  print(target)
+      """.stripMargin,
+      "99\n",
+    )
+  }

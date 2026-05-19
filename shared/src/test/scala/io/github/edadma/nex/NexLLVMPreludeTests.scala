@@ -130,10 +130,48 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("call void @__nex_assert")
     }
 
-    "failing assert path includes a trap message and abort" in {
+    "failing assert path routes through __nex_trap_with for catch-aware printing" in {
       val ir = compile("def main() = assert(false)")
       ir should include("@.assert_fail_msg")
-      ir should include("call void @abort()")
+      // The trap site stashes the message and calls __nex_trap; the
+      // actual printf is deferred to __nex_trap's abort path so an
+      // enclosing assert_traps catches silently.
+      ir should include("call void @__nex_trap_with(ptr @.assert_fail_msg)")
+    }
+  }
+
+  "assert_traps (catches a trap from a thunk)" should {
+    "emits setjmp + closure-call dispatch inline at the call site" in {
+      val ir = compile("""
+        |def main() =
+        |  assert_traps(() -> assert(false))
+      """.stripMargin)
+      // setjmp/longjmp must be declared and the trap-buf global allocated.
+      ir should include("declare i32 @setjmp(ptr) returns_twice")
+      ir should include("declare void @longjmp(ptr, i32)")
+      ir should include("@__nex_trap_buf = internal thread_local global ptr null")
+      ir should include("@__nex_trap_msg = internal thread_local global ptr null")
+      // __nex_trap_with helper exists for printing on the abort path.
+      ir should include("define void @__nex_trap_with(ptr %msg)")
+      // The call site has a setjmp + branch and a labelled caught path.
+      ir should include regex """call i32 @setjmp\(ptr %t\d+\)"""
+      ir should include("@.assert_traps_fail_msg")
+      // The failure path (thunk returned without trapping) routes through
+      // __nex_trap_with so an enclosing assert_traps catches silently.
+      ir should include("call void @__nex_trap_with(ptr @.assert_traps_fail_msg)")
+    }
+
+    "saves the previous trap_buf for nested assert_traps" in {
+      val ir = compile("""
+        |def main() =
+        |  assert_traps(() -> assert_traps(() -> assert(true)))
+      """.stripMargin)
+      // Two setjmp call sites — one per assert_traps frame.
+      val sjs = """call i32 @setjmp""".r.findAllIn(ir).toList
+      sjs.size should be >= 2
+      // The volatile stack-slot save/restore of the previous buf appears
+      // (twice for nested) so a longjmp doesn't smash callee-saved regs.
+      ir should include regex """load volatile ptr, ptr %t\d+, align 8"""
     }
   }
 

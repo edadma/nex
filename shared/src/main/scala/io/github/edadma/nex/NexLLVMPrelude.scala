@@ -250,6 +250,8 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         emitAssertEq(a, b); "void"
       case ("assert_approx", List(a, b, eps)) =>
         emitAssertApprox(a, b, eps); "void"
+      case ("assert_traps", List(fn)) =>
+        emitAssertTraps(fn); "void"
 
       // §10.4 rank-1 reductions — counted loop + accumulator. Element
       // type may be integer (i64), real (double), or complex
@@ -479,6 +481,99 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       val ty = llvmType(a.tpe)
       emitLine(s"  $eq = icmp eq $ty $av, $bv\n")
     emitLine(s"  call void @__nex_assert(i1 $eq)\n")
+
+  /** Emit `assert_traps(fn)` — call the thunk and verify that it traps.
+    *
+    * Uses libc `setjmp` / `longjmp` to catch the trap. The thread-local
+    * `@__nex_trap_buf` global holds the jmp_buf chain head; `__nex_trap`
+    * (the single trap-emission point) reads it on every trap and
+    * `longjmp`s when set. After the thunk returns (or longjmp'd back to
+    * us), the previous chain head is restored.
+    *
+    * Stack slots holding the previous buf and the thunk's closure
+    * components are loaded/stored via `volatile` ops to keep them stable
+    * across the `returns_twice` setjmp call. Without volatile the LLVM
+    * optimizer is free to cache them in callee-saved registers that
+    * `longjmp` will clobber.
+    *
+    * On normal-return path (no trap fired): prints the failure message
+    * and routes through `__nex_trap` itself — so a caller's enclosing
+    * `assert_traps` would catch this nested miss, matching the
+    * interpreter's chained-trap semantics.
+    */
+  private def emitAssertTraps(fn: TExpr): Unit =
+    val cl = emitExpr(fn)
+
+    val fnPtr = newReg()
+    emitLine(s"  $fnPtr = extractvalue { ptr, ptr } $cl, 0\n")
+    val envPtr = newReg()
+    emitLine(s"  $envPtr = extractvalue { ptr, ptr } $cl, 1\n")
+
+    val retT = fn.tpe match
+      case TyFunc(_, r) => r
+      case _            => TyUnit
+
+    val buf       = newReg()
+    val prevSlot  = newReg()
+    val envSlot   = newReg()
+    val fnPtrSlot = newReg()
+    emitLine(s"  $buf = alloca [256 x i64], align 16\n")
+    emitLine(s"  $prevSlot = alloca ptr, align 8\n")
+    emitLine(s"  $envSlot = alloca ptr, align 8\n")
+    emitLine(s"  $fnPtrSlot = alloca ptr, align 8\n")
+
+    val prev = newReg()
+    emitLine(s"  $prev = load ptr, ptr @__nex_trap_buf, align 8\n")
+    emitLine(s"  store volatile ptr $prev, ptr $prevSlot, align 8\n")
+    emitLine(s"  store volatile ptr $envPtr, ptr $envSlot, align 8\n")
+    emitLine(s"  store volatile ptr $fnPtr, ptr $fnPtrSlot, align 8\n")
+    emitLine(s"  store ptr $buf, ptr @__nex_trap_buf, align 8\n")
+
+    val sjRes = newReg()
+    emitLine(s"  $sjRes = call i32 @setjmp(ptr $buf)\n")
+    val isFirst = newReg()
+    emitLine(s"  $isFirst = icmp eq i32 $sjRes, 0\n")
+
+    val callL    = freshLabel("at.call")
+    val caughtL  = freshLabel("at.caught")
+    val mergeL   = freshLabel("at.done")
+    emitTerminator(s"  br i1 $isFirst, label %$callL, label %$caughtL\n")
+
+    startBlock(callL)
+    val fnP2  = newReg()
+    val envP2 = newReg()
+    emitLine(s"  $fnP2  = load volatile ptr, ptr $fnPtrSlot, align 8\n")
+    emitLine(s"  $envP2 = load volatile ptr, ptr $envSlot, align 8\n")
+    val retLLT = llvmType(retT)
+    val sig    = s"$retLLT (ptr)"
+    retT match
+      case TyUnit =>
+        emitLine(s"  call $sig $fnP2(ptr $envP2)\n")
+      case _ =>
+        val dummy = newReg()
+        emitLine(s"  $dummy = call $sig $fnP2(ptr $envP2)\n")
+    // Got here without trapping — restore prev, dec env, trap with the
+    // "expected trap" message. Routing through __nex_trap_with keeps the
+    // message buffered so an enclosing assert_traps stays silent.
+    val prevA = newReg()
+    emitLine(s"  $prevA = load volatile ptr, ptr $prevSlot, align 8\n")
+    emitLine(s"  store ptr $prevA, ptr @__nex_trap_buf, align 8\n")
+    emitLine(s"  call void @__nex_env_dec(ptr $envP2)\n")
+    emitLine(s"  call void @__nex_trap_with(ptr @.assert_traps_fail_msg)\n")
+    emitTerminator(s"  unreachable\n")
+
+    startBlock(caughtL)
+    // longjmp brought us here — the trap fired. Restore prev buf.
+    // The env captured by the closure is leaked: state inside the thunk
+    // was abandoned mid-execution, and Nex's ARC scheme has no way to
+    // unwind a partial computation. assert_traps is a test-only feature,
+    // so this is acceptable.
+    val prevB = newReg()
+    emitLine(s"  $prevB = load volatile ptr, ptr $prevSlot, align 8\n")
+    emitLine(s"  store ptr $prevB, ptr @__nex_trap_buf, align 8\n")
+    emitTerminator(s"  br label %$mergeL\n")
+
+    startBlock(mergeL)
 
   /** Emit `|a - b| <= eps` check, aborting on mismatch. Mixed numeric
     * types promote to double.
@@ -1683,7 +1778,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitTerminator(s"  br label %$doneL\n")
 
     startBlock(badL)
-    emitLine(s"  call void @abort()\n")
+    emitLine(s"  call void @__nex_trap()\n")
     emitTerminator(s"  unreachable\n")
 
     startBlock(doneL)
