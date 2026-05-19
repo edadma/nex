@@ -522,18 +522,23 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret ptr %slot
         |}
         |
-        |; ---------- Closure env refcount (negative-offset i64 header) ----------
-        |; Layout: malloc returns a block of (size + 8) bytes. The first 8 bytes
-        |; hold the refcount; the env pointer we hand out points 8 bytes past the
-        |; start so the capture struct's field indices stay 0..N-1 unchanged.
-        |; inc/dec GEP back -8 to find the header. null is the empty-capture
-        |; sentinel and is silently skipped.
-        |define ptr @__nex_env_alloc(i64 %sz) {
+        |; ---------- Closure env refcount (negative-offset header) ----------
+        |; Layout: malloc returns a block of (size + 16) bytes. The first 16
+        |; bytes hold `[ refcount(i64) | dtor(ptr) ]`; the env pointer we hand
+        |; out points 16 bytes past the start so the capture struct's field
+        |; indices stay 0..N-1 unchanged. inc/dec GEP back -16 to find the
+        |; refcount; the dtor lives 8 bytes after the refcount. When rc hits
+        |; zero, dec calls `dtor(env)` if non-null (the dtor walks refcounted
+        |; captures and calls free itself), otherwise plain-frees the header.
+        |; null env is the empty-capture sentinel and is silently skipped.
+        |define ptr @__nex_env_alloc(i64 %sz, ptr %dtor) {
         |entry:
-        |  %total = add i64 %sz, 8
+        |  %total = add i64 %sz, 16
         |  %raw   = call ptr @malloc(i64 %total)
         |  store i64 1, ptr %raw
-        |  %env   = getelementptr inbounds i8, ptr %raw, i64 8
+        |  %dp    = getelementptr inbounds i8, ptr %raw, i64 8
+        |  store ptr %dtor, ptr %dp
+        |  %env   = getelementptr inbounds i8, ptr %raw, i64 16
         |  ret ptr %env
         |}
         |
@@ -542,7 +547,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %z = icmp eq ptr %env, null
         |  br i1 %z, label %nul, label %do
         |do:
-        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -16
         |  %rc  = load i64, ptr %hdr
         |  %rc1 = add i64 %rc, 1
         |  store i64 %rc1, ptr %hdr
@@ -556,13 +561,21 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %z = icmp eq ptr %env, null
         |  br i1 %z, label %nul, label %do
         |do:
-        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -16
         |  %rc  = load i64, ptr %hdr
         |  %rc1 = sub i64 %rc, 1
         |  store i64 %rc1, ptr %hdr
         |  %dead = icmp eq i64 %rc1, 0
         |  br i1 %dead, label %fr, label %ok
         |fr:
+        |  %dp   = getelementptr inbounds i8, ptr %hdr, i64 8
+        |  %dtor = load ptr, ptr %dp
+        |  %has  = icmp ne ptr %dtor, null
+        |  br i1 %has, label %dispatch, label %plain
+        |dispatch:
+        |  call void %dtor(ptr %env)
+        |  ret void
+        |plain:
         |  call void @free(ptr %hdr)
         |  ret void
         |ok:

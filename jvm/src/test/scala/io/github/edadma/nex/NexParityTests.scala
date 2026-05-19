@@ -968,6 +968,56 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "deep ARC for closure env captures" should {
+    // Capture a heap string by value into a closure. The dtor must dec
+    // it when the env's last share dies, so the descriptor doesn't leak.
+    "closure capturing a string releases the share when env is freed" in parityCheck(
+      """
+        |def callIt(f: (integer -> string)) = f(0)
+        |def main() =
+        |  val s = "hello" + " world"
+        |  print(callIt(_ -> s))
+      """.stripMargin,
+      "hello world\n",
+    )
+
+    "stress: many closures each capturing a fresh string, in a loop" in parityCheck(
+      """
+        |def callIt(f: (integer -> string)) = f(0)
+        |def main() =
+        |  var i = 0
+        |  while i < 6 do
+        |    val s = "tick " + "done"
+        |    print(callIt(_ -> s))
+        |    i = i + 1
+      """.stripMargin,
+      "tick done\ntick done\ntick done\ntick done\ntick done\ntick done\n",
+    )
+
+    "closure capturing an array releases the array on env free" in parityCheck(
+      """
+        |def callIt(f: (integer -> integer)) = f(0)
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  print(callIt(_ -> xs[1]))
+      """.stripMargin,
+      "20\n",
+    )
+
+    "stress: closures capturing arrays in a loop" in parityCheck(
+      """
+        |def callIt(f: (integer -> integer)) = f(0)
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val xs = [1, 2, 3, 4]
+        |    print(callIt(_ -> xs[2]))
+        |    i = i + 1
+      """.stripMargin,
+      "3\n3\n3\n3\n3\n",
+    )
+  }
+
   "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {
     "with an integer ref" in parityCheck(
       """

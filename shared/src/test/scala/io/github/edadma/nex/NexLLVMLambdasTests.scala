@@ -74,10 +74,11 @@ class NexLLVMLambdasTests extends AnyWordSpec with NexCodegenTestBase:
         |  print(callIt(x -> x + k, 5))
       """.stripMargin)
       // env is a single-field `{ i64 }` struct, sizeof = 8. Allocation
-      // goes through the refcounted `__nex_env_alloc` helper (negative-
-      // offset i64 rc header). The lambda body GEPs into env[0] and
-      // loads the i64 directly.
-      ir should include("call ptr @__nex_env_alloc(i64 8)")
+      // goes through the refcounted `__nex_env_alloc` helper (16-byte
+      // negative-offset header storing rc + dtor). No refcounted
+      // captures here, so the dtor operand is null and the dec path
+      // falls through to plain free.
+      ir should include("call ptr @__nex_env_alloc(i64 8, ptr null)")
       ir should include regex """getelementptr inbounds \{ i64 \}, ptr %env, i32 0, i32 0"""
     }
 
@@ -145,7 +146,36 @@ class NexLLVMLambdasTests extends AnyWordSpec with NexCodegenTestBase:
         |  val k = 10
         |  print(callIt(x -> x + k, 5))
       """.stripMargin)
-      ir should include("call ptr @__nex_env_alloc(i64 8)")
+      ir should include("call ptr @__nex_env_alloc(i64 8, ptr null)")
       ir should include regex """call void @__nex_env_dec\(ptr %t\d+\)"""
+    }
+
+    "captured string capture dtor walks the env and dec's the string" in {
+      val ir = compile("""
+        |def callIt(f: (integer -> string)) = f(0)
+        |def main() =
+        |  val s = "hi" + "!"
+        |  print(callIt(_ -> s))
+      """.stripMargin)
+      // env has one ByVal string capture, so the alloc passes a dtor
+      // operand pointing at the per-lambda dtor.
+      ir should include regex """call ptr @__nex_env_alloc\(i64 8, ptr @__nex_lambda_\d+_env_dtor\)"""
+      // The dtor function itself dec's the captured string and frees
+      // the env header.
+      ir should include regex """define void @__nex_lambda_\d+_env_dtor\(ptr %env\)"""
+      val dtor = ir.substring(ir.indexOf("_env_dtor(ptr %env)"))
+      dtor should include("call void @__nex_str_dec(ptr ")
+      dtor should include("call void @free(ptr ")
+    }
+
+    "non-refcounted captures still use the plain free path (no dtor)" in {
+      val ir = compile("""
+        |def callIt(f: (integer -> integer)) = f(0)
+        |def main() =
+        |  val k = 7
+        |  print(callIt(_ -> k))
+      """.stripMargin)
+      ir should include("call ptr @__nex_env_alloc(i64 8, ptr null)")
+      ir should not include "_env_dtor"
     }
   }
