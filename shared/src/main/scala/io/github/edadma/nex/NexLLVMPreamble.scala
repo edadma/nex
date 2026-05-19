@@ -15,16 +15,27 @@ protected trait NexLLVMPreamble extends NexLLVMState:
       """; Nex LLVM IR module (v0 scaffolding)
         |
         |declare i32 @printf(ptr, ...)
+        |declare i32 @snprintf(ptr, i64, ptr, ...)
         |declare ptr @malloc(i64)
         |declare void @free(ptr)
         |declare void @abort()
+        |declare i64 @strlen(ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
         |; --- Array descriptor types (§8.5) -------------------------------------
         |; rank-1: { refcount, length, data }                     ; 24 bytes
         |; rank-2: { refcount, rows,   cols, data }               ; 32 bytes
+        |; string: { refcount, length, data }                     ; 24 bytes
+        |; Strings are refcounted just like rank-1 arrays. Literal strings get
+        |; static descriptors with refcount=-1 (immortal sentinel); the inc/dec
+        |; helpers no-op when they see that sentinel. Computed strings (concat,
+        |; format, value-to-string) malloc fresh descriptors with refcount=1.
+        |; A string's `data` field always points at a NUL-terminated buffer so
+        |; we can hand it straight to libc (`printf("%s", data)`); `length`
+        |; tracks the byte count NOT counting the terminator.
         |%nex_arr1 = type { i64, i64, ptr }
         |%nex_arr2 = type { i64, i64, i64, ptr }
+        |%nex_str  = type { i64, i64, ptr }
         |
         |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
         |@.fmt_real    = private unnamed_addr constant [4 x i8] c"%g\0A\00"
@@ -223,6 +234,122 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %byte_off = mul i64 %idx, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
+        |}
+        |
+        |; --- String runtime helpers -------------------------------------------
+        |;
+        |; Strings parallel rank-1 arrays — same { refcount, length, data }
+        |; descriptor, but `data` always points at a NUL-terminated byte
+        |; buffer (so libc's printf("%s", data) and strlen(data) just work).
+        |;
+        |; Two allocation paths: __nex_str_alloc mallocs a heap descriptor +
+        |; data buffer (refcount=1); literals are emitted as static globals
+        |; with refcount=-1 (immortal sentinel). __nex_str_inc and _dec
+        |; no-op on the immortal sentinel so literals can be passed around
+        |; freely without leaking the descriptor.
+        |
+        |; Allocate a fresh string descriptor for a string of `len` bytes
+        |; (not counting the NUL terminator). The data buffer is `len+1`
+        |; bytes; the caller is responsible for filling bytes 0..len-1 and
+        |; writing a NUL at byte len.
+        |define ptr @__nex_str_alloc(i64 %len) {
+        |entry:
+        |  %desc = call ptr @malloc(i64 24)
+        |  %rcp  = getelementptr inbounds %nex_str, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %lp   = getelementptr inbounds %nex_str, ptr %desc, i32 0, i32 1
+        |  store i64 %len, ptr %lp
+        |  %dp   = getelementptr inbounds %nex_str, ptr %desc, i32 0, i32 2
+        |  %total = add i64 %len, 1
+        |  %buf   = call ptr @malloc(i64 %total)
+        |  store ptr %buf, ptr %dp
+        |  ret ptr %desc
+        |}
+        |
+        |; Bump refcount unless the descriptor is the immortal sentinel.
+        |define void @__nex_str_inc(ptr %s) {
+        |entry:
+        |  %is_null = icmp eq ptr %s, null
+        |  br i1 %is_null, label %done, label %check
+        |check:
+        |  %rcp = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %im  = icmp eq i64 %rc, -1
+        |  br i1 %im, label %done, label %inc
+        |inc:
+        |  %new = add i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |; Drop a share. On the immortal sentinel this is a no-op. On the
+        |; last live share, free the data buffer and the descriptor.
+        |define void @__nex_str_dec(ptr %s) {
+        |entry:
+        |  %is_null = icmp eq ptr %s, null
+        |  br i1 %is_null, label %done, label %check
+        |check:
+        |  %rcp = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %im  = icmp eq i64 %rc, -1
+        |  br i1 %im, label %done, label %dec
+        |dec:
+        |  %new = sub i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  %iz  = icmp eq i64 %new, 0
+        |  br i1 %iz, label %free_it, label %done
+        |free_it:
+        |  %dp  = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 2
+        |  %buf = load ptr, ptr %dp
+        |  call void @free(ptr %buf)
+        |  call void @free(ptr %s)
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |; Length of a string descriptor (NOT including the NUL terminator).
+        |define i64 @__nex_str_len(ptr %s) {
+        |entry:
+        |  %lp = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 1
+        |  %l  = load i64, ptr %lp
+        |  ret i64 %l
+        |}
+        |
+        |; Pointer to the NUL-terminated data buffer.
+        |define ptr @__nex_str_data(ptr %s) {
+        |entry:
+        |  %dp = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 2
+        |  %d  = load ptr, ptr %dp
+        |  ret ptr %d
+        |}
+        |
+        |; Allocate a new string descriptor for the concatenation of `a` and
+        |; `b`. Inputs may be immortal or heap-allocated; the result is a
+        |; fresh heap descriptor with refcount=1. Inputs are NOT dec'd — the
+        |; caller owns their shares and is responsible for releasing them.
+        |define ptr @__nex_str_concat(ptr %a, ptr %b) {
+        |entry:
+        |  %lap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 1
+        |  %la  = load i64, ptr %lap
+        |  %lbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 1
+        |  %lb  = load i64, ptr %lbp
+        |  %total = add i64 %la, %lb
+        |  %res = call ptr @__nex_str_alloc(i64 %total)
+        |  %dap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 2
+        |  %da  = load ptr, ptr %dap
+        |  %dbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 2
+        |  %db  = load ptr, ptr %dbp
+        |  %drp = getelementptr inbounds %nex_str, ptr %res, i32 0, i32 2
+        |  %dr  = load ptr, ptr %drp
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %dr, ptr %da, i64 %la, i1 false)
+        |  %off = getelementptr inbounds i8, ptr %dr, i64 %la
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %off, ptr %db, i64 %lb, i1 false)
+        |  %nulp = getelementptr inbounds i8, ptr %dr, i64 %total
+        |  store i8 0, ptr %nulp
+        |  ret ptr %res
         |}
         |
         |; --- Rank-2 runtime helpers -------------------------------------------

@@ -120,7 +120,9 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
         |  print(arr[0])
       """.stripMargin)
       ir should include("@__nex_arr1_alloc(i64 2, i64 8)")
-      ir should include("store ptr @.str.")
+      // String literals lower to %nex_str descriptors (@.strd.N);
+      // the per-slot store writes a ptr to that descriptor.
+      ir should include("store ptr @.strd.")
     }
 
     "passing an array to a user function uses `ptr` argument type" in {

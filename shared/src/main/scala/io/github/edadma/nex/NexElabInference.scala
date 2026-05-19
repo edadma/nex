@@ -668,6 +668,13 @@ protected trait NexElabInference extends NexElabState:
           return TBroadcast(l, r, op, scalarFirst = true, p, rt)
         case _ => ()
 
+    // string + string → string concat. Phase 2 of Wave 6 (string +). Mixed
+    // string + value (interpreter accepts via formatValue auto-promotion)
+    // is a phase-3 follow-up that requires the per-Type value-to-string
+    // runtime.
+    if op == "+" && lt == TyString && rt == TyString then
+      return TBinOp(op, l, r, p, TyString)
+
     // scalar arithmetic
     val t = inferArith(op, lt, rt, p)
     TBinOp(op, l, r, p, t)

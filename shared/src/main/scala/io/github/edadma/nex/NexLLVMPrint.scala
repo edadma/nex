@@ -54,7 +54,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
                 emitLine(s"  $sel = select i1 $v, ptr @.fmt_bool_t, ptr @.fmt_bool_f\n")
                 emitLine(s"  call i32 (ptr, ...) @printf(ptr $sel)\n")
               case TyString =>
-                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $v)\n")
+                val data = newReg()
+                emitLine(s"  $data = call ptr @__nex_str_data(ptr $v)\n")
+                emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $data)\n")
               case other =>
                 notYet(s"print(${other})")
 
@@ -81,7 +83,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitLine(s"  $sel2 = select i1 $v, ptr $tPtr, ptr $fPtr\n")
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel2)\n")
       case TyString =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
+        val data = newReg()
+        emitLine(s"  $data = call ptr @__nex_str_data(ptr $v)\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $data)\n")
       case TyArray(_, _) =>
         emitPrintArray(arg)
       case TyTuple(_) =>
@@ -289,7 +293,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitLine(s"  $sel = select i1 $v, ptr $tPtr, ptr $fPtr\n")
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $sel)\n")
       case TyString =>
-        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $v)\n")
+        val data = newReg()
+        emitLine(s"  $data = call ptr @__nex_str_data(ptr $v)\n")
+        emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $data)\n")
       case t @ TyTuple(es) =>
         // Inline tuple-element print using insertvalue/extractvalue.
         // Reuses emitPrintArrayElem recursively for each field.

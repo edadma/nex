@@ -52,6 +52,16 @@ protected trait NexLLVMState:
     */
   protected val stringPool = mutable.LinkedHashMap.empty[String, String]
 
+  /** Pool of literals that need a user-facing %nex_str descriptor.
+    * Maps literal text → (descriptor global name, byte length excluding
+    * the NUL terminator). Each entry emits a static descriptor with
+    * refcount=-1 (the immortal sentinel) wrapping the matching
+    * stringPool byte array. Populated by [[internStringDescriptor]]
+    * and flushed by [[flushStringPool]] right after the byte-array
+    * globals it references.
+    */
+  protected val stringDescPool = mutable.LinkedHashMap.empty[String, (String, Int)]
+
   /** Function-level array slots — currently only array-typed parameters.
     * Block-level `val` / `var` bindings live in [[blockArrayScopes]] and
     * are dec'd at block end, not function end. Cleared per function.
@@ -237,9 +247,23 @@ protected trait NexLLVMState:
   protected def internStringLiteral(s: String): String =
     stringPool.getOrElseUpdate(s, s"@.str.${stringPool.size}")
 
+  /** Intern a literal that's used as a user-facing Nex string value.
+    * Returns the descriptor global name (a `ptr`). The byte-array
+    * global is interned alongside; both are emitted by
+    * [[flushStringPool]] (the byte array first so the descriptor's
+    * `ptr` field can reference it).
+    */
+  protected def internStringDescriptor(s: String): String =
+    internStringLiteral(s)
+    stringDescPool.getOrElseUpdate(
+      s,
+      (s"@.strd.${stringDescPool.size}", s.getBytes("UTF-8").length),
+    )._1
+
   /** Emit all pooled string-literal globals. Called once between the
     * preamble and the @-bindings/init-function/user-functions section so
-    * every later reference can resolve.
+    * every later reference can resolve. Byte-array globals come first,
+    * then any descriptor globals that wrap them.
     */
   protected def flushStringPool(): Unit =
     if stringPool.nonEmpty then
@@ -247,6 +271,17 @@ protected trait NexLLVMState:
         val encoded = encodeIRString(text)
         val len     = encoded._2
         out.append(s"$name = private unnamed_addr constant [$len x i8] c\"${encoded._1}\"\n")
+      out.append("\n")
+    if stringDescPool.nonEmpty then
+      for (text, (descName, byteLen)) <- stringDescPool do
+        // Look up the matching byte-array global; it was interned by
+        // [[internStringDescriptor]] so it's guaranteed to exist.
+        val bytesName = stringPool(text)
+        // Immortal sentinel: refcount = -1, so inc/dec no-op. The byte
+        // count we store is the user-visible length (no NUL).
+        out.append(
+          s"$descName = private unnamed_addr constant %nex_str { i64 -1, i64 $byteLen, ptr $bytesName }\n",
+        )
       out.append("\n")
 
   /** Encode a String into LLVM IR's c"..." form. Returns the encoded

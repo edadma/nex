@@ -194,9 +194,11 @@ class NexLLVMCodegen
     case TUnitLit(_)       => "void"
 
     case TStringLit(s, _, _) =>
-      // String literals lower to a private global; the SSA value is the
-      // global's pointer. Identical literals share a single global.
-      internStringLiteral(s)
+      // String literals lower to a private %nex_str descriptor with the
+      // immortal-sentinel refcount; the SSA value is a pointer to that
+      // descriptor. Identical literals share one descriptor (and one
+      // byte-array global underneath it).
+      internStringDescriptor(s)
 
     case TInterpStringLit(parts, _, _) =>
       // For chunk-4 v0, only the print-statement form is fully
@@ -265,6 +267,16 @@ class NexLLVMCodegen
 
     case TBinOp("and", l, r, _, _) => emitShortCircuit(l, r, isAnd = true)
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
+
+    case TBinOp("+", l, r, _, TyString) =>
+      // String concat. Both operands are %nex_str descriptor pointers;
+      // result is a fresh heap descriptor with refcount=1 (leaked under
+      // the phase-1 ARC model — proper lifetime tracking is a follow-up).
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val res = newReg()
+      emitLine(s"  $res = call ptr @__nex_str_concat(ptr $lv, ptr $rv)\n")
+      res
 
     case TBinOp(op, l, r, _, TyComplex) =>
       // Complex arithmetic: promote any int/real operand to a complex

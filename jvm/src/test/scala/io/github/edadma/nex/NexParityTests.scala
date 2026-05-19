@@ -733,6 +733,55 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "string concat (Wave 6 phase 2)" should {
+    "literal + literal" in parityCheck(
+      """
+        |def main() = print("foo" + "bar")
+      """.stripMargin,
+      "foobar\n",
+    )
+    "concat via val bindings" in parityCheck(
+      """
+        |def main() =
+        |  val a = "hello, "
+        |  val b = "world"
+        |  print(a + b)
+      """.stripMargin,
+      "hello, world\n",
+    )
+    "associates left" in parityCheck(
+      """
+        |def main() = print("a" + "b" + "c" + "d")
+      """.stripMargin,
+      "abcd\n",
+    )
+    "empty string is the identity" in parityCheck(
+      """
+        |def main() =
+        |  print("" + "non-empty")
+        |  print("non-empty" + "")
+      """.stripMargin,
+      "non-empty\nnon-empty\n",
+    )
+    "concat result is a real string (can be re-concatenated)" in parityCheck(
+      """
+        |def main() =
+        |  val ab = "a" + "b"
+        |  val cd = "c" + "d"
+        |  print(ab + cd)
+      """.stripMargin,
+      "abcd\n",
+    )
+    "concat inside an interpolated print" in parityCheck(
+      """
+        |def main() =
+        |  val greeting = "hello" + ", " + "world"
+        |  print(s"msg: $greeting")
+      """.stripMargin,
+      "msg: hello, world\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """
