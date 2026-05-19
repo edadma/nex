@@ -234,12 +234,24 @@ protected trait NexLLVMState:
     f"0x${java.lang.Double.doubleToLongBits(d)}%016X"
 
   /** Record a "not yet supported" feature inline in the output so the
-    * resulting `.ll` is still readable; the CLI surfaces a friendlier
-    * top-level error. We don't throw because the test surface wants to
-    * see partial output for diagnosis.
+    * resulting `.ll` is still readable. Some call sites use this as a
+    * soft fallback (the surrounding code returns a placeholder that
+    * happens to compile for the cases the test corpus exercises);
+    * others use it as a hard barrier. A hard-fail variant ([[notImpl]])
+    * exists for the latter so future regressions surface at codegen
+    * time instead of as silent miscompiles.
     */
   protected def notYet(what: String): Unit =
     out.append(s"  ; TODO: $what not yet supported by NexLLVMCodegen\n")
+
+  /** Abort codegen with a clear error when we hit a feature the LLVM
+    * backend doesn't implement and there is no sensible placeholder.
+    * Caught by the CLI and the test harness so the diagnostic surfaces
+    * loudly. Use this in preference to [[notYet]] when a silent
+    * placeholder would produce a miscompiled binary.
+    */
+  protected def notImpl(what: String): Nothing =
+    throw NexCodegenError(s"$what not yet supported by NexLLVMCodegen")
 
   /** Add `s` to the literal pool if not already present, returning the
     * `@.str.<N>` global name as an SSA-usable pointer token. The actual
@@ -633,3 +645,10 @@ protected trait NexLLVMState:
       case (">",  TyReal) => ("fcmp ogt", "i1")
       case (">=", TyReal) => ("fcmp oge", "i1")
       case _                => notYet(s"binop `$op` on `$opT`"); ("add", "i64")
+
+/** Surfaces an unsupported codegen path from `notImpl`. Caught by the
+  * CLI's compile driver so users see a clean diagnostic instead of a
+  * silent miscompile, and by the test harness so any path that hits
+  * `notImpl` fails loudly during the test run.
+  */
+class NexCodegenError(msg: String) extends RuntimeException(msg)

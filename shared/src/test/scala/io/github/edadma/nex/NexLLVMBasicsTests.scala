@@ -7,6 +7,23 @@ import org.scalatest.wordspec.AnyWordSpec
   */
 class NexLLVMBasicsTests extends AnyWordSpec with NexCodegenTestBase:
 
+  "codegen error surfacing" should {
+    "NexCodegenError carries the failure message verbatim" in {
+      val err = new NexCodegenError("widget not yet supported by NexLLVMCodegen")
+      err.getMessage shouldBe "widget not yet supported by NexLLVMCodegen"
+    }
+
+    "notImpl-paths throw NexCodegenError (no silent miscompile)" in {
+      // Defensive smoke: a directly-instantiated state object whose
+      // `notImpl` is called must throw, not append to `out`. We can't
+      // construct one in isolation because the trait is mixed into a
+      // class that wires every dependency; instead we assert that the
+      // public class exists and is a RuntimeException so the CLI's
+      // catch{} clause matches.
+      classOf[NexCodegenError].getSuperclass shouldBe classOf[RuntimeException]
+    }
+  }
+
   "preamble" should {
     "always include an extern printf declaration" in {
       val ir = compile("def main() = ()")

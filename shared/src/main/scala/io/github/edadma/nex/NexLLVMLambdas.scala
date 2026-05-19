@@ -348,7 +348,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
   protected def emitLambdaConstruct(lam: TLambda): String =
     val info = lambdaTable.get(lam)
     if info == null then
-      notYet("lambda not registered in pre-pass — codegen bug"); "0"
+      notImpl("lambda not registered in pre-pass — codegen bug")
     else
       val envPtr =
         if info.captures.isEmpty then "null"
@@ -420,7 +420,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
             if isRefCountedType(t) then emitArrInc(reg, t)
             reg
           case None =>
-            notYet(s"capture of unbound `${s.name}`"); "0"
+            notImpl(s"capture of unbound `${s.name}`")
 
   /** Resolve a binding to a pointer for ByRef capture. Returns the
     * alloca / global pointer where the binding's value lives, so the
@@ -437,12 +437,12 @@ protected trait NexLLVMLambdas extends NexLLVMState:
         emitLine(s"  $pp = load ptr, ptr $pslot\n")
         pp
       case Some(_) =>
-        notYet(s"ByRef recapture of ByVal `${s.name}`"); "null"
+        notImpl(s"ByRef recapture of ByVal `${s.name}`")
       case None =>
         locals.get(s.id) match
           case Some(slot) => slot
           case None if globalBindings.contains(s.id) => s"@${s.name}"
-          case None       => notYet(s"ByRef capture of unbound `${s.name}`"); "null"
+          case None       => notImpl(s"ByRef capture of unbound `${s.name}`")
 
   /** Emit a TyFunc-typed call: extract `{fn_ptr, env_ptr}` and call
     * indirectly with `env` prepended to the arg list.
