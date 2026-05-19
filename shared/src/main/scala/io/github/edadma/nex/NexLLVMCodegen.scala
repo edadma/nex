@@ -588,15 +588,23 @@ class NexLLVMCodegen
     * when rank-2 lands.
     */
   private def emitForArray(loopVars: List[Symbol], iter: TExpr, body: TExpr): Unit =
-    if loopVars.size != 1 then
-      notYet("for-over-array with tuple destructuring")
-      return
-
     val rank = arrayRank(iter.tpe)
     val elem = arrayElem(iter.tpe)
     val esz  = elemSize(elem)
     val stT  = storageType(elem)
     val langT = llvmType(elem)
+
+    // Tuple destructuring: when the source array's element type is a
+    // tuple and the user wrote `for (a, b, ...) in arr do`, bind each
+    // loop var to one tuple field. The number of loop vars must match
+    // the tuple's arity.
+    val tupleFieldTypes: Option[List[Type]] = elem match
+      case TyTuple(fs) if loopVars.size == fs.size => Some(fs)
+      case _                                       => None
+
+    if loopVars.size != 1 && tupleFieldTypes.isEmpty then
+      notYet(s"for-over-array with ${loopVars.size}-way destructuring on element type $elem")
+      return
 
     // Compute the array ptr once, stash in a slot so the cond-block can
     // reload it (we don't have phi over array ptrs yet). The length is
@@ -616,10 +624,24 @@ class NexLLVMCodegen
     emitLine(s"  $iSlot = alloca i64\n")
     emitLine(s"  store i64 0, ptr $iSlot\n")
 
-    val loopVar = loopVars.head
-    val xSlot   = newReg()
-    emitLine(s"  $xSlot = alloca $langT\n")
-    locals(loopVar.id) = xSlot
+    // Per-loop-var slots. For the non-destructured case there's a
+    // single `langT` slot; for tuple destructuring there's one slot
+    // per tuple field, each typed by the field's LLVM type.
+    val perVarSlots: List[(String, String)] = tupleFieldTypes match
+      case Some(fs) =>
+        fs.zip(loopVars).map { case (fieldT, sym) =>
+          val s = newReg()
+          val ft = llvmType(fieldT)
+          emitLine(s"  $s = alloca $ft\n")
+          locals(sym.id) = s
+          (s, ft)
+        }
+      case None =>
+        val loopVar = loopVars.head
+        val xSlot   = newReg()
+        emitLine(s"  $xSlot = alloca $langT\n")
+        locals(loopVar.id) = xSlot
+        List((xSlot, langT))
 
     val condL = freshLabel("forarr.cond")
     val bodyL = freshLabel("forarr.body")
@@ -642,7 +664,18 @@ class NexLLVMCodegen
       case 2 => emitLine(s"  $slotPtr = call ptr @__nex_arr2_flat_slot(ptr $arrCur, i64 $cur, i64 $esz)\n")
       case _ => ()
     val v = loadElem(stT, slotPtr, langT)
-    emitLine(s"  store $langT $v, ptr $xSlot\n")
+    tupleFieldTypes match
+      case Some(fs) =>
+        // Extract each field from the tuple value and store into its
+        // corresponding loop-var slot.
+        for ((fieldT, idx) <- fs.zipWithIndex) do
+          val (slot, ft) = perVarSlots(idx)
+          val fv = newReg()
+          emitLine(s"  $fv = extractvalue $langT $v, $idx\n")
+          emitLine(s"  store $ft $fv, ptr $slot\n")
+      case None =>
+        val (xSlot, _) = perVarSlots.head
+        emitLine(s"  store $langT $v, ptr $xSlot\n")
     emitExpr(body)
     if currentBlock.isDefined then
       val cur2 = newReg()

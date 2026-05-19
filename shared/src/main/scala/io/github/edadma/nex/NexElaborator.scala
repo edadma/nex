@@ -1703,6 +1703,13 @@ class NexElaborator:
         args.head.tpe match
           case TyArray(e, 1) => e
           case _             => TyUnknown
+      // §10.4 rank-1 builders — materialize a fresh array. range and
+      // linspace are total-shape-known; enumerate/zip are handled in
+      // inferPreludeRank1Call already.
+      case "range" if args.size == 2 =>
+        TyArray(TyInteger, 1)
+      case "linspace" if args.size == 3 =>
+        TyArray(TyReal, 1)
       case _ => preludeReturnType(name)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =

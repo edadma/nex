@@ -470,6 +470,59 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "rank-1 builders (Wave 2)" should {
+    "range produces a materialized integer array" in parityCheck(
+      "def main() = print(range(0, 5))",
+      "[0, 1, 2, 3, 4]\n",
+    )
+    "range can feed sum" in parityCheck(
+      "def main() = print(range(1, 11).sum())",
+      "55\n",
+    )
+    "range can be filtered" in parityCheck(
+      "def main() = print(range(0, 10).filter(x -> x % 2 == 0))",
+      "[0, 2, 4, 6, 8]\n",
+    )
+    "enumerate pairs index with value" in parityCheck(
+      """
+        |def main() =
+        |  for (k, v) in enumerate([10, 20, 30]) do
+        |    print(k)
+        |    print(v)
+      """.stripMargin,
+      "0\n10\n1\n20\n2\n30\n",
+    )
+    "enumerate length matches source" in parityCheck(
+      "def main() = print(length(enumerate([7, 8, 9])))",
+      "3\n",
+    )
+    "zip walks two arrays in parallel" in parityCheck(
+      """
+        |def main() =
+        |  for (a, b) in zip([1, 2, 3], [10, 20, 30]) do
+        |    print(a + b)
+      """.stripMargin,
+      "11\n22\n33\n",
+    )
+    "zip stops at the shorter array" in parityCheck(
+      "def main() = print(length(zip([1, 2, 3, 4], [10, 20])))",
+      "2\n",
+    )
+    "linspace produces evenly-spaced reals" in parityCheck(
+      "def main() = print(linspace(0.0, 1.0, 5))",
+      "[0.0, 0.25, 0.5, 0.75, 1.0]\n",
+    )
+    "linspace endpoints exact" in parityCheck(
+      """
+        |def main() =
+        |  val xs = linspace(0.0, 10.0, 11)
+        |  print(xs[0])
+        |  print(xs[10])
+      """.stripMargin,
+      "0.0\n10.0\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

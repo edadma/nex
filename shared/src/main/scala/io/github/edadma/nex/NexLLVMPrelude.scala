@@ -259,6 +259,12 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("product", List(arr))              => emitProductCall(arr, resultT)
       case ("dot",     List(a, b))             => emitDotCall(a, b, resultT)
 
+      // §10.4 rank-1 builders.
+      case ("range",     List(lo, hi))         => emitRangeCall(lo, hi)
+      case ("enumerate", List(arr))            => emitEnumerateCall(arr, resultT)
+      case ("zip",       List(a, b))           => emitZipCall(a, b, resultT)
+      case ("linspace",  List(lo, hi, n))      => emitLinspaceCall(lo, hi, n)
+
       // §10.4 array HOFs — direct inlined loops that dispatch each
       // iteration through the chunk-9 closure call helper. Works
       // identically for inline TLambda args and TVarRef closure
@@ -1006,3 +1012,137 @@ protected trait NexLLVMPrelude extends NexLLVMState:
 
     emitArrDec(arrV, arr.tpe)
     res
+
+  // ---------------------------------------------------------------------------
+  // §10.4 rank-1 builders: range / enumerate / zip / linspace.
+  // ---------------------------------------------------------------------------
+
+  /** Emit `range(lo, hi)` — integer half-open range. Length is
+    * `max(0, hi - lo)`; element i is `lo + i`.
+    */
+  private def emitRangeCall(loE: TExpr, hiE: TExpr): String =
+    val lo = emitExpr(loE)
+    val hi = emitExpr(hiE)
+    val diff = newReg()
+    emitLine(s"  $diff = sub i64 $hi, $lo\n")
+    val neg  = newReg()
+    emitLine(s"  $neg = icmp slt i64 $diff, 0\n")
+    val len  = newReg()
+    emitLine(s"  $len = select i1 $neg, i64 0, i64 $diff\n")
+    val arr  = newReg()
+    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $len, i64 8)\n")
+    val buf  = bufPtr(arr, TyArray(TyInteger, 1))
+
+    emitCountingLoop(len, "range") { i =>
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds i64, ptr $buf, i64 $i\n")
+      val v    = newReg()
+      emitLine(s"  $v = add i64 $lo, $i\n")
+      emitLine(s"  store i64 $v, ptr $slot\n")
+    }
+    arr
+
+  /** Emit `enumerate(arr)` — pairs `(index, value)`. */
+  private def emitEnumerateCall(arr: TExpr, resultT: Type): String =
+    val srcElem = arrayElem(arr.tpe)
+    val srcStT  = storageType(srcElem)
+    val srcLLT  = llvmType(srcElem)
+    val outElem = arrayElem(resultT)
+    val outSize = elemSize(outElem)
+    val outTupTy = llvmType(outElem)
+
+    val src    = emitExpr(arr)
+    val len    = newReg(); emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $src)\n")
+    val srcBuf = bufPtr(src, arr.tpe)
+    val out    = newReg()
+    emitLine(s"  $out = call ptr @__nex_arr1_alloc(i64 $len, i64 $outSize)\n")
+    val outBuf = bufPtr(out, resultT)
+
+    emitCountingLoop(len, "enumerate") { i =>
+      val srcSlot = newReg()
+      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
+      val srcE    = loadElem(srcStT, srcSlot, srcLLT)
+      val acc0    = newReg()
+      emitLine(s"  $acc0 = insertvalue $outTupTy undef, i64 $i, 0\n")
+      val acc1    = newReg()
+      emitLine(s"  $acc1 = insertvalue $outTupTy $acc0, $srcLLT $srcE, 1\n")
+      val outSlot = newReg()
+      emitLine(s"  $outSlot = getelementptr inbounds $outTupTy, ptr $outBuf, i64 $i\n")
+      emitLine(s"  store $outTupTy $acc1, ptr $outSlot\n")
+    }
+    emitArrDec(src, arr.tpe)
+    out
+
+  /** Emit `zip(a, b)` — pairs of corresponding elements. Length is
+    * `min(len(a), len(b))`.
+    */
+  private def emitZipCall(a: TExpr, b: TExpr, resultT: Type): String =
+    val aElem = arrayElem(a.tpe)
+    val bElem = arrayElem(b.tpe)
+    val aStT  = storageType(aElem)
+    val bStT  = storageType(bElem)
+    val aLLT  = llvmType(aElem)
+    val bLLT  = llvmType(bElem)
+    val outElem = arrayElem(resultT)
+    val outSize = elemSize(outElem)
+    val outTupTy = llvmType(outElem)
+
+    val av    = emitExpr(a)
+    val bv    = emitExpr(b)
+    val aLen  = newReg(); emitLine(s"  $aLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val bLen  = newReg(); emitLine(s"  $bLen = call i64 @__nex_arr1_len(ptr $bv)\n")
+    val cmp   = newReg(); emitLine(s"  $cmp = icmp slt i64 $aLen, $bLen\n")
+    val len   = newReg(); emitLine(s"  $len = select i1 $cmp, i64 $aLen, i64 $bLen\n")
+    val aBuf  = bufPtr(av, a.tpe)
+    val bBuf  = bufPtr(bv, b.tpe)
+    val out   = newReg()
+    emitLine(s"  $out = call ptr @__nex_arr1_alloc(i64 $len, i64 $outSize)\n")
+    val outBuf = bufPtr(out, resultT)
+
+    emitCountingLoop(len, "zip") { i =>
+      val aS = newReg()
+      emitLine(s"  $aS = getelementptr inbounds $aStT, ptr $aBuf, i64 $i\n")
+      val ae = loadElem(aStT, aS, aLLT)
+      val bS = newReg()
+      emitLine(s"  $bS = getelementptr inbounds $bStT, ptr $bBuf, i64 $i\n")
+      val be = loadElem(bStT, bS, bLLT)
+      val acc0 = newReg()
+      emitLine(s"  $acc0 = insertvalue $outTupTy undef, $aLLT $ae, 0\n")
+      val acc1 = newReg()
+      emitLine(s"  $acc1 = insertvalue $outTupTy $acc0, $bLLT $be, 1\n")
+      val outSlot = newReg()
+      emitLine(s"  $outSlot = getelementptr inbounds $outTupTy, ptr $outBuf, i64 $i\n")
+      emitLine(s"  store $outTupTy $acc1, ptr $outSlot\n")
+    }
+    emitArrDec(av, a.tpe)
+    emitArrDec(bv, b.tpe)
+    out
+
+  /** Emit `linspace(lo, hi, n)` — n evenly-spaced reals from lo to hi.
+    * When n > 1, step is `(hi - lo) / (n - 1)`; when n <= 1, step is 0
+    * and the single element is `lo`.
+    */
+  private def emitLinspaceCall(loE: TExpr, hiE: TExpr, nE: TExpr): String =
+    val lo = liftToReal(loE)
+    val hi = liftToReal(hiE)
+    val n  = emitExpr(nE)
+    val arr = newReg()
+    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $n, i64 8)\n")
+    val buf = bufPtr(arr, TyArray(TyReal, 1))
+
+    val gt1     = newReg(); emitLine(s"  $gt1 = icmp sgt i64 $n, 1\n")
+    val nm1     = newReg(); emitLine(s"  $nm1 = sub i64 $n, 1\n")
+    val nm1d    = newReg(); emitLine(s"  $nm1d = sitofp i64 $nm1 to double\n")
+    val span    = newReg(); emitLine(s"  $span = fsub double $hi, $lo\n")
+    val rawStep = newReg(); emitLine(s"  $rawStep = fdiv double $span, $nm1d\n")
+    val step    = newReg(); emitLine(s"  $step = select i1 $gt1, double $rawStep, double 0.0\n")
+
+    emitCountingLoop(n, "linspace") { i =>
+      val id   = newReg(); emitLine(s"  $id = sitofp i64 $i to double\n")
+      val off  = newReg(); emitLine(s"  $off = fmul double $step, $id\n")
+      val v    = newReg(); emitLine(s"  $v = fadd double $lo, $off\n")
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds double, ptr $buf, i64 $i\n")
+      emitLine(s"  store double $v, ptr $slot\n")
+    }
+    arr
