@@ -1691,6 +1691,14 @@ class NexElaborator:
           case TyInteger                              => TyArray(TyInteger, 1)
           case TyTuple(List(TyInteger, TyInteger))    => TyArray(TyInteger, 2)
           case _                                       => TyUnknown
+      // `identity(n)` is the rank-2 n×n identity matrix. Interpreter
+      // builds integer cells (despite the spec's `[[real]]` signature
+      // — a known v0 divergence); typed accordingly so the parity
+      // tests print the integer form.
+      case "identity" if args.size == 1 =>
+        args.head.tpe match
+          case TyInteger => TyArray(TyInteger, 2)
+          case _         => TyUnknown
       // §10.4 rank-1 reductions — return the element type of the
       // (first) array argument. Without an arg-aware path, the static
       // default would be TyUnknown and downstream `print(sum(xs))`

@@ -575,6 +575,48 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "rank-2 construction (Wave 4)" should {
+    "zeros((2, 3)) builds a zero matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m = zeros((2, 3))
+        |  print(m)
+      """.stripMargin,
+      "[[0, 0, 0], [0, 0, 0]]\n",
+    )
+    "ones((3, 2)) builds a ones matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m = ones((3, 2))
+        |  print(m)
+      """.stripMargin,
+      "[[1, 1], [1, 1], [1, 1]]\n",
+    )
+    "zeros and ones interact with sum" in parityCheck(
+      """
+        |def main() =
+        |  print(sum(zeros((4, 5))))
+        |  print(sum(ones((4, 5))))
+      """.stripMargin,
+      "0\n20\n",
+    )
+    "identity(3) puts 1 on the diagonal" in parityCheck(
+      """
+        |def main() =
+        |  val m = identity(3)
+        |  print(m)
+      """.stripMargin,
+      "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]\n",
+    )
+    "identity(n).sum() equals n" in parityCheck(
+      """
+        |def main() =
+        |  print(sum(identity(5)))
+      """.stripMargin,
+      "5\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

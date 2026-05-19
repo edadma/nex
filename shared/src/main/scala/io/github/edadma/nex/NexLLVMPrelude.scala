@@ -279,9 +279,10 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       // comes from `v.tpe` and was already propagated into resultT by
       // the elaborator. `zeros(n)` / `ones(n)` are convenience wrappers
       // that lower through fill with a 0 / 1 integer constant.
-      case ("fill",  List(n, v))               => emitFillCall(n, v, resultT)
-      case ("zeros", List(n))                  => emitConstFill(n, "0", TyInteger, resultT)
-      case ("ones",  List(n))                  => emitConstFill(n, "1", TyInteger, resultT)
+      case ("fill",     List(n, v))            => emitFillCall(n, v, resultT)
+      case ("zeros",    List(n))               => emitConstFill(n, "0", TyInteger, resultT)
+      case ("ones",     List(n))               => emitConstFill(n, "1", TyInteger, resultT)
+      case ("identity", List(n))               => emitIdentityCall(n, resultT)
 
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
@@ -760,28 +761,73 @@ protected trait NexLLVMPrelude extends NexLLVMState:
 
   /** Emit a fill-with-constant for `zeros(n)` / `ones(n)`. The constant
     * is materialised as an LLVM literal (no separate SSA), and the loop
-    * shape matches [[emitFillCall]].
+    * shape matches [[emitFillCall]]. Rank-1 takes `n: integer`; rank-2
+    * takes `n: (integer, integer)` and allocates rows × cols.
     */
   private def emitConstFill(n: TExpr, constStr: String, elemT: Type, resultT: Type): String =
-    if arrayRank(resultT) != 1 then
-      notYet(s"zeros/ones rank-${arrayRank(resultT)}")
+    val rank = arrayRank(resultT)
+    if rank != 1 && rank != 2 then
+      notYet(s"zeros/ones rank-$rank")
       return "null"
 
     val elem = arrayElem(resultT)
     val esz  = elemSize(elem)
     val stT  = storageType(elem)
-    val nVal = emitExpr(n)
-    val arr  = newReg()
-    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
-    // Tier-1 perf: hoist buf and index directly.
-    val buf  = bufPtr(arr, resultT)
 
-    emitCountingLoop(nVal, "constfill") { i =>
+    val (arr, len) = rank match
+      case 1 =>
+        val nVal = emitExpr(n)
+        val a    = newReg()
+        emitLine(s"  $a = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+        (a, nVal)
+      case _ =>
+        val tup  = emitExpr(n)
+        val rows = newReg(); emitLine(s"  $rows = extractvalue { i64, i64 } $tup, 0\n")
+        val cols = newReg(); emitLine(s"  $cols = extractvalue { i64, i64 } $tup, 1\n")
+        val a    = newReg()
+        emitLine(s"  $a = call ptr @__nex_arr2_alloc(i64 $rows, i64 $cols, i64 $esz)\n")
+        val l    = newReg(); emitLine(s"  $l = mul i64 $rows, $cols\n")
+        (a, l)
+
+    val buf = bufPtr(arr, resultT)
+    emitCountingLoop(len, "constfill") { i =>
       val slot = newReg()
       emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
       storeElem(stT, constStr, slot)
     }
+    arr
 
+  /** Emit `identity(n)` — n × n integer identity matrix. Element type
+    * matches the interpreter's VInt-typed cells (a v0 divergence from
+    * the spec's `[[real]]` signature). Allocates n*n integer slots
+    * with 0, then walks the diagonal writing 1.
+    */
+  private def emitIdentityCall(n: TExpr, resultT: Type): String =
+    if arrayRank(resultT) != 2 then
+      notYet(s"identity rank ${arrayRank(resultT)}"); return "null"
+    val elem = arrayElem(resultT)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val nVal = emitExpr(n)
+    val arr  = newReg()
+    emitLine(s"  $arr = call ptr @__nex_arr2_alloc(i64 $nVal, i64 $nVal, i64 $esz)\n")
+    val buf  = bufPtr(arr, resultT)
+    val total = newReg(); emitLine(s"  $total = mul i64 $nVal, $nVal\n")
+
+    // Zero-fill every slot.
+    emitCountingLoop(total, "identity.zero") { i =>
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
+      storeElem(stT, "0", slot)
+    }
+    // Walk the diagonal: index i*n + i for i in 0..n.
+    emitCountingLoop(nVal, "identity.diag") { i =>
+      val nplus1 = newReg(); emitLine(s"  $nplus1 = add i64 $nVal, 1\n")
+      val idx    = newReg(); emitLine(s"  $idx = mul i64 $i, $nplus1\n")
+      val slot   = newReg()
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $idx\n")
+      storeElem(stT, "1", slot)
+    }
     arr
 
   // ---------------------------------------------------------------------------
