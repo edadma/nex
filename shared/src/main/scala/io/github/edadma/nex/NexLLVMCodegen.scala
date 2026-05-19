@@ -339,6 +339,23 @@ class NexLLVMCodegen
       val (rre, rim) = toComplex(rv, r.tpe)
       emitComplexArith(op, lre, lim, rre, rim)
 
+    case TBinOp(op @ ("==" | "!="), l, r, _, TyBool) if l.tpe == TyString && r.tpe == TyString =>
+      // String equality: descriptor-level memcmp via the runtime
+      // helper. Mirrors the interpreter's value-equality on strings.
+      // Both source shares are released — emitExpr handed them to us
+      // with refcount inc'd and the comparison is read-only.
+      val lv  = emitExpr(l)
+      val rv  = emitExpr(r)
+      val eq  = newReg()
+      emitLine(s"  $eq = call i1 @__nex_str_eq(ptr $lv, ptr $rv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $lv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $rv)\n")
+      if op == "==" then eq
+      else
+        val neg = newReg()
+        emitLine(s"  $neg = xor i1 $eq, 1\n")
+        neg
+
     case TBinOp("==", l, r, _, TyBool) if l.tpe == TyComplex || r.tpe == TyComplex =>
       // Complex equality: both real and imaginary parts must match.
       val lv = emitExpr(l)

@@ -629,6 +629,32 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret i64 %l
         |}
         |
+        |declare i32 @memcmp(ptr, ptr, i64)
+        |
+        |; Equality of two string descriptors — same length AND same bytes.
+        |; Used by the AOT lowering of `==` / `!=` on TyString operands;
+        |; mirrors the interpreter's value-level string comparison. Doesn't
+        |; affect refcounts (the caller still owns both shares).
+        |define i1 @__nex_str_eq(ptr %a, ptr %b) {
+        |entry:
+        |  %lap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 1
+        |  %la  = load i64, ptr %lap
+        |  %lbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 1
+        |  %lb  = load i64, ptr %lbp
+        |  %sl  = icmp eq i64 %la, %lb
+        |  br i1 %sl, label %check, label %neq
+        |check:
+        |  %dap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 2
+        |  %da  = load ptr, ptr %dap
+        |  %dbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 2
+        |  %db  = load ptr, ptr %dbp
+        |  %cmp = call i32 @memcmp(ptr %da, ptr %db, i64 %la)
+        |  %eq  = icmp eq i32 %cmp, 0
+        |  ret i1 %eq
+        |neq:
+        |  ret i1 false
+        |}
+        |
         |; Pointer to the NUL-terminated data buffer.
         |define ptr @__nex_str_data(ptr %s) {
         |entry:

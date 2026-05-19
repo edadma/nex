@@ -227,6 +227,36 @@ object NexProgramCorpus:
       """def main() = print(not false)""",
       "true\n",
     ),
+    Case(
+      "comparison + logical",
+      "string == compares by content",
+      """
+        |def main() =
+        |  print("hi" == "hi")
+        |  print("hi" == "bye")
+      """.stripMargin,
+      "true\nfalse\n",
+    ),
+    Case(
+      "comparison + logical",
+      "string != is the negation of ==",
+      """
+        |def main() =
+        |  print("a" != "b")
+        |  print("a" != "a")
+      """.stripMargin,
+      "true\nfalse\n",
+    ),
+    Case(
+      "comparison + logical",
+      "string == works on concatenated descriptors",
+      """
+        |def main() =
+        |  val a = "foo" + "bar"
+        |  print(a == "foobar")
+      """.stripMargin,
+      "true\n",
+    ),
 
     // ========================================================================
     // control flow
@@ -1106,7 +1136,22 @@ object NexProgramCorpus:
         |  print(s == "5")
       """.stripMargin,
       "5\ntrue\n",
-      pending = Some("AOT codegen for `format()` missing — clang rejects the produced IR"),
+    ),
+    Case(
+      "prelude",
+      "format joins multiple args with a single space",
+      """
+        |def main() = print(format(1, 2, 3))
+      """.stripMargin,
+      "1 2 3\n",
+    ),
+    Case(
+      "prelude",
+      "format with mixed types (int / real / string)",
+      """
+        |def main() = print(format(1, 2.5, "ok"))
+      """.stripMargin,
+      "1 2.5 ok\n",
     ),
     Case(
       "prelude",

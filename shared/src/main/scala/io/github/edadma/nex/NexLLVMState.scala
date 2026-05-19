@@ -164,6 +164,13 @@ protected trait NexLLVMState:
 
   protected def emitPreludeCall(name: String, args: List[TExpr], resultT: Type): String
 
+  /** Lower an arbitrary-typed expression to a %nex_str descriptor.
+    * Concrete impl lives in [[NexLLVMCodegen]]; declared here so other
+    * traits (Prelude / Print) can route values through it without a
+    * trait-dependency cycle.
+    */
+  protected def emitValueToString(e: TExpr): String
+
   protected def emitLambdaConstruct(lam: TLambda): String
   protected def emitClosureCall(callee: TExpr, args: List[TExpr], retT: Type): String
   protected def emitLambdaFunctions(): Unit
