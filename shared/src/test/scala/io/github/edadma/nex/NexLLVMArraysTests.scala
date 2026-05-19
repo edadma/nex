@@ -232,6 +232,53 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
+  "deep ARC for refcounted array elements" should {
+    "emit a per-element-type deep-dec helper for [string]" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = ["a" + "b"]
+        |  print(arr[0])
+      """.stripMargin)
+      // The deep variant is defined and routed at the array's dec site.
+      ir should include("define void @__nex_arr1_dec_str(ptr %a)")
+      ir should include("call void @__nex_arr1_dec_str(ptr")
+      // The deep body walks elements and dec's each via __nex_str_dec.
+      val helper = ir.substring(ir.indexOf("@__nex_arr1_dec_str"))
+      helper should include("call void @__nex_str_dec(ptr %v)")
+    }
+
+    "[string] element load is inc'd so callers own their share" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = ["x" + "y"]
+        |  print(arr[0])
+      """.stripMargin)
+      // The element load is followed by a __nex_str_inc on the loaded ptr.
+      ir should include regex """load ptr, ptr %t\d+\n\s+call void @__nex_str_inc"""
+    }
+
+    "non-refcounted-element arrays keep the plain flat dec helper" in {
+      val ir = compile("""
+        |def main() =
+        |  val arr = [1, 2, 3]
+        |  print(arr[0])
+      """.stripMargin)
+      // The flat dec is reachable; no deep variant is emitted.
+      ir should include("call void @__nex_arr1_dec(ptr")
+      ir should not include "__nex_arr1_dec_"
+    }
+
+    "rank-2 array of strings gets its own deep-dec variant" in {
+      val ir = compile("""
+        |def main() =
+        |  val g = [["a" + "1", "b" + "2"]]
+        |  print(g[0, 0])
+      """.stripMargin)
+      ir should include("define void @__nex_arr2_dec_str(ptr %a)")
+      ir should include("call void @__nex_arr2_dec_str(ptr")
+    }
+  }
+
   "arrays (rank-2)" should {
     "emit __nex_arr2_alloc for a 2x3 literal with 6 stores" in {
       val ir = compile("""

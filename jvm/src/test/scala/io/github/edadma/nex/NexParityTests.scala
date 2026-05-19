@@ -902,6 +902,250 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "deep ARC for arrays of refcounted elements" should {
+    // Reading the same element twice used to corrupt the slot: index-load
+    // gave a borrowed ptr; print's dec drove the string to rc=0 and freed
+    // the descriptor while the slot still pointed at it. The deep-dec
+    // patch adds an inc on element load so the caller has its own share.
+    "reading the same string element twice is safe" in parityCheck(
+      """
+        |def main() =
+        |  val arr = ["x" + "y"]
+        |  print(arr[0])
+        |  print(arr[0])
+      """.stripMargin,
+      "xy\nxy\n",
+    )
+
+    "freeing an array of computed strings doesn't leak the elements" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 4 do
+        |    val arr = ["a" + "b", "c" + "d"]
+        |    print(arr[0])
+        |    print(arr[1])
+        |    i = i + 1
+      """.stripMargin,
+      "ab\ncd\nab\ncd\nab\ncd\nab\ncd\n",
+    )
+
+    "var-captured string + array share the same descriptor cleanly" in parityCheck(
+      """
+        |def main() =
+        |  val s = "hi" + " there"
+        |  val arr = [s, s]
+        |  print(arr[0])
+        |  print(arr[1])
+        |  print(s)
+      """.stripMargin,
+      "hi there\nhi there\nhi there\n",
+    )
+
+    "stress: array of strings built and released in a loop" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 8 do
+        |    val arr = ["k=" + "v", "n=" + "m"]
+        |    val first = arr[0]
+        |    print(first)
+        |    i = i + 1
+      """.stripMargin,
+      "k=v\nk=v\nk=v\nk=v\nk=v\nk=v\nk=v\nk=v\n",
+    )
+
+    "rank-2 array of strings releases every element on free" in parityCheck(
+      """
+        |def main() =
+        |  val grid = [["a" + "1", "b" + "2"], ["c" + "3", "d" + "4"]]
+        |  print(grid[0, 0])
+        |  print(grid[0, 1])
+        |  print(grid[1, 0])
+        |  print(grid[1, 1])
+      """.stripMargin,
+      "a1\nb2\nc3\nd4\n",
+    )
+  }
+
+  "deep ARC for tuples and structs" should {
+    // Tuple holding a heap string. The slot's drop must release the
+    // string when the tuple goes out of scope. Tuples are addressed
+    // by destructuring in Nex source.
+    "tuple with a heap string destructures and the source var still works" in parityCheck(
+      """
+        |def main() =
+        |  val s = "hi" + "!"
+        |  val t = (s, 42)
+        |  val a, b = t
+        |  print(a)
+        |  print(s)
+      """.stripMargin,
+      "hi!\nhi!\n",
+    )
+
+    "stress: tuples-with-strings built and released in a loop" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 6 do
+        |    val s = "k=" + "v"
+        |    val t = (s, i)
+        |    val a, b = t
+        |    print(a)
+        |    i = i + 1
+      """.stripMargin,
+      "k=v\nk=v\nk=v\nk=v\nk=v\nk=v\n",
+    )
+
+    "struct with a string field releases it cleanly" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val w = Wrap("hello" + " world", 7)
+        |  print(w.msg)
+        |  print(w.n)
+      """.stripMargin,
+      "hello world\n7\n",
+    )
+
+    "stress: struct-with-string built and released in a loop" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val w = Wrap("tag" + "X", i)
+        |    print(w.msg)
+        |    i = i + 1
+      """.stripMargin,
+      "tagX\ntagX\ntagX\ntagX\ntagX\n",
+    )
+
+    "nested struct (Inner of string) releases every share" in parityCheck(
+      """
+        |struct Inner
+        |  s: string
+        |struct Outer
+        |  inner: Inner
+        |  tag: string
+        |def main() =
+        |  val o = Outer(Inner("a" + "1"), "b" + "2")
+        |  print(o.inner.s)
+        |  print(o.tag)
+      """.stripMargin,
+      "a1\nb2\n",
+    )
+
+    "struct re-binding inc's shares so both vars stay valid" in parityCheck(
+      """
+        |struct Wrap
+        |  s: string
+        |def main() =
+        |  val a = Wrap("x" + "y")
+        |  val b = a
+        |  print(a.s)
+        |  print(b.s)
+      """.stripMargin,
+      "xy\nxy\n",
+    )
+
+    "array of struct-with-string releases every element on free" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val xs = [Wrap("k" + "v", 1), Wrap("a" + "b", 2)]
+        |  print(xs[0].msg)
+        |  print(xs[1].msg)
+      """.stripMargin,
+      "kv\nab\n",
+    )
+
+    "stress: array of struct-with-string built and released in a loop" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val xs = [Wrap("tag" + "X", i), Wrap("end" + "Y", i + 1)]
+        |    print(xs[0].msg)
+        |    print(xs[1].msg)
+        |    i = i + 1
+      """.stripMargin,
+      "tagX\nendY\ntagX\nendY\ntagX\nendY\ntagX\nendY\ntagX\nendY\n",
+    )
+
+    "rank-2 array of tuple-with-string releases every cell" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [[("a" + "1", 1), ("b" + "2", 2)], [("c" + "3", 3), ("d" + "4", 4)]]
+        |  val a0, n0 = xs[0, 0]
+        |  val a1, n1 = xs[1, 1]
+        |  print(a0)
+        |  print(a1)
+      """.stripMargin,
+      "a1\nd4\n",
+    )
+  }
+
+  "deep ARC for closure env captures" should {
+    // Capture a heap string by value into a closure. The dtor must dec
+    // it when the env's last share dies, so the descriptor doesn't leak.
+    "closure capturing a string releases the share when env is freed" in parityCheck(
+      """
+        |def callIt(f: (integer -> string)) = f(0)
+        |def main() =
+        |  val s = "hello" + " world"
+        |  print(callIt(_ -> s))
+      """.stripMargin,
+      "hello world\n",
+    )
+
+    "stress: many closures each capturing a fresh string, in a loop" in parityCheck(
+      """
+        |def callIt(f: (integer -> string)) = f(0)
+        |def main() =
+        |  var i = 0
+        |  while i < 6 do
+        |    val s = "tick " + "done"
+        |    print(callIt(_ -> s))
+        |    i = i + 1
+      """.stripMargin,
+      "tick done\ntick done\ntick done\ntick done\ntick done\ntick done\n",
+    )
+
+    "closure capturing an array releases the array on env free" in parityCheck(
+      """
+        |def callIt(f: (integer -> integer)) = f(0)
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  print(callIt(_ -> xs[1]))
+      """.stripMargin,
+      "20\n",
+    )
+
+    "stress: closures capturing arrays in a loop" in parityCheck(
+      """
+        |def callIt(f: (integer -> integer)) = f(0)
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val xs = [1, 2, 3, 4]
+        |    print(callIt(_ -> xs[2]))
+        |    i = i + 1
+      """.stripMargin,
+      "3\n3\n3\n3\n3\n",
+    )
+  }
+
   "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {
     "with an integer ref" in parityCheck(
       """
@@ -1072,6 +1316,40 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
         |def main() =
         |  assert_approx(0.1 + 0.2, 0.3, 1.0e-9)
         |  print(7)
+      """.stripMargin,
+      "7\n",
+    )
+  }
+
+  "`;` as a statement separator (spec §2.8)" should {
+    "join two block-level decls on a single source line" in parityCheck(
+      """
+        |def main() =
+        |  val x = 1; val y = 2
+        |  print(x + y)
+      """.stripMargin,
+      "3\n",
+    )
+    "three decls separated by `;` on one line" in parityCheck(
+      """
+        |def main() =
+        |  val a = 10; val b = 20; val c = 30
+        |  print(a + b + c)
+      """.stripMargin,
+      "60\n",
+    )
+    "two top-level functions on a single source line" in parityCheck(
+      """
+        |def f() = 1; def g() = 2
+        |def main() = print(f() + g())
+      """.stripMargin,
+      "3\n",
+    )
+    "trailing `;` is harmless" in parityCheck(
+      """
+        |def main() =
+        |  val x = 7;
+        |  print(x)
       """.stripMargin,
       "7\n",
     )

@@ -174,14 +174,16 @@ protected trait NexLLVMLambdas extends NexLLVMState:
 
   /** Size of a captured value's slot in the env struct when stored
     * by-value (ByRef slots are always 8 bytes — `ptr`). Aggregates
-    * use [[elemSize]] which already sums field sizes.
+    * use [[elemSize]] which already sums field sizes. Closure values
+    * are `{ ptr, ptr }` — 16 bytes by value.
     */
   private def captureSlotSize(t: Type): Int = t match
-    case TyBool    => 1
-    case TyInteger => 8
-    case TyReal    => 8
-    case TyString  => 8
-    case _         => elemSize(t)
+    case TyBool       => 1
+    case TyInteger    => 8
+    case TyReal       => 8
+    case TyString     => 8
+    case TyFunc(_, _) => 16
+    case _            => elemSize(t)
 
   // ---------------------------------------------------------------------------
   // Synthetic lambda functions.
@@ -208,6 +210,69 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     sorted.sortInPlaceBy(_.id)
     for info <- sorted do
       emitOneLambda(info)
+      if needsEnvDtor(info) then emitEnvDtor(info)
+
+  /** A lambda needs a dedicated env-dtor function when its env owns
+    * any refcounted shares — i.e., at least one ByVal capture of a
+    * refcounted type. ByRef captures store parent-owned pointers and
+    * must NOT be dec'd here.
+    */
+  private def needsEnvDtor(info: LambdaInfo): Boolean =
+    info.captures.exists {
+      case (_, t, CaptureMode.ByVal) => isRefCountedType(t)
+      case _                         => false
+    }
+
+  /** Operand for the `dtor` argument to `__nex_env_alloc`. Returns
+    * either `@__nex_lambda_<id>_env_dtor` (when the env owns
+    * refcounted shares) or the literal `null` (plain free is correct
+    * when there's nothing to dec).
+    */
+  private def envDtorOperand(info: LambdaInfo): String =
+    if needsEnvDtor(info) then s"@${info.llvmName}_env_dtor" else "null"
+
+  /** Emit `void @__nex_lambda_<id>_env_dtor(ptr %env)` — walks each
+    * refcounted ByVal capture and dec's it, then frees the header.
+    * ByRef captures are skipped (they store parent-owned pointers).
+    * Closure-valued captures extract the env from the `{ fn, env }`
+    * value before routing through the generic env_dec.
+    */
+  private def emitEnvDtor(info: LambdaInfo): Unit =
+    val name = s"${info.llvmName}_env_dtor"
+    val sb = new StringBuilder
+    sb.append(s"define void @$name(ptr %env) {\n")
+    sb.append("entry:\n")
+    var localCtr = 0
+    def freshLocal(): String =
+      localCtr += 1
+      s"%v$localCtr"
+    for (((s, t, mode), idx) <- info.captures.zipWithIndex) do
+      mode match
+        case CaptureMode.ByVal if isRefCountedType(t) =>
+          val slot = freshLocal()
+          sb.append(s"  $slot = getelementptr inbounds ${info.envTy}, ptr %env, i32 0, i32 $idx\n")
+          val v = freshLocal()
+          sb.append(s"  $v = load ${llvmType(t)}, ptr $slot\n")
+          t match
+            case TyString =>
+              sb.append(s"  call void @__nex_str_dec(ptr $v)\n")
+            case TyArray(_, _) =>
+              sb.append(s"  call void ${arrDecFor(t)}(ptr $v)\n")
+            case TyFunc(_, _) =>
+              val env = freshLocal()
+              sb.append(s"  $env = extractvalue { ptr, ptr } $v, 1\n")
+              sb.append(s"  call void @__nex_env_dec(ptr $env)\n")
+            case _ if aggregateContainsRefCounted(t) =>
+              requestAggHelper(t)
+              sb.append(s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $v)\n")
+            case _ => ()
+        case _ => ()
+    val hdr = freshLocal()
+    sb.append(s"  $hdr = getelementptr inbounds i8, ptr %env, i64 -16\n")
+    sb.append(s"  call void @free(ptr $hdr)\n")
+    sb.append("  ret void\n")
+    sb.append("}\n\n")
+    out.append(sb.toString)
 
   private def emitOneLambda(info: LambdaInfo): Unit =
     regCounter   = 0
@@ -289,7 +354,8 @@ protected trait NexLLVMLambdas extends NexLLVMState:
         if info.captures.isEmpty then "null"
         else
           val ep = newReg()
-          emitLine(s"  $ep = call ptr @__nex_env_alloc(i64 ${info.envSize})\n")
+          val dtor = envDtorOperand(info)
+          emitLine(s"  $ep = call ptr @__nex_env_alloc(i64 ${info.envSize}, ptr $dtor)\n")
           // Store each capture into its env slot. ByVal captures emit
           // a TVarRef-style load of the source value; ByRef captures
           // store a pointer to the source binding's alloca (or @global)
@@ -312,9 +378,13 @@ protected trait NexLLVMLambdas extends NexLLVMState:
       c1
 
   /** Read the current value of a binding referenced from a closure-
-    * construction site (the parent scope). Mirrors the non-capturing
-    * branch of the [[TVarRef]] case in `emitExpr` but DOES NOT inc
-    * an array share (captures don't yet support arrays).
+    * construction site (the parent scope), inc'ing any refcounted
+    * value so the env owns its own share. The matching dec lives in
+    * the per-lambda env-dtor (see [[emitEnvDtor]]) — without the inc
+    * here, the dtor would dec a share that was never produced and the
+    * source binding would be over-freed when its own scope closes.
+    * ByRef captures store a pointer to the parent alloca and must NOT
+    * inc (the parent's slot is the sole owner).
     */
   private def readCapturedValue(s: Symbol, t: Type): String =
     lambdaCaptures.get(s.id) match
@@ -327,6 +397,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
             emitLine(s"  $slot = getelementptr inbounds $lambdaEnvTy, ptr %env, i32 0, i32 $idx\n")
             val reg = newReg()
             emitLine(s"  $reg = load ${llvmType(capT)}, ptr $slot\n")
+            if isRefCountedType(capT) then emitArrInc(reg, capT)
             reg
           case CaptureMode.ByRef =>
             val pslot = newReg()
@@ -341,10 +412,12 @@ protected trait NexLLVMLambdas extends NexLLVMState:
           case Some(slot) =>
             val reg = newReg()
             emitLine(s"  $reg = load ${llvmType(t)}, ptr $slot\n")
+            if isRefCountedType(t) then emitArrInc(reg, t)
             reg
           case None if globalBindings.contains(s.id) =>
             val reg = newReg()
             emitLine(s"  $reg = load ${llvmType(t)}, ptr @${s.name}\n")
+            if isRefCountedType(t) then emitArrInc(reg, t)
             reg
           case None =>
             notYet(s"capture of unbound `${s.name}`"); "0"

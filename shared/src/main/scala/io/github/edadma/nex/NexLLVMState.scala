@@ -398,9 +398,33 @@ protected trait NexLLVMState:
     * the registration / decrement timing is identical. String literals
     * carry the immortal sentinel (rc=-1), so inc/dec on them is a
     * no-op — only heap-allocated descriptors actually free.
+    *
+    * Tuples and structs are SSA values, not heap allocations, so they
+    * have no direct refcount; however when an aggregate carries any
+    * refcounted field, the aggregate's slot still needs scope-end inc /
+    * dec so that the per-field shares are released — see
+    * [[aggregateContainsRefCounted]]. The inc / dec routes through
+    * per-aggregate-type helpers generated on demand.
     */
   protected def isRefCountedType(t: Type): Boolean =
-    isArrayType(t) || isClosureType(t) || t == TyString
+    isArrayType(t) || isClosureType(t) || t == TyString || aggregateContainsRefCounted(t)
+
+  /** True when `t` is a tuple or struct (transitively) carrying at
+    * least one refcounted leaf. Memoized because the same type shows
+    * up across many call sites (var-decl, projection, capture, etc.).
+    */
+  protected def aggregateContainsRefCounted(t: Type): Boolean =
+    aggContainsMemo.get(t) match
+      case Some(b) => b
+      case None =>
+        val r = t match
+          case TyTuple(es)     => es.exists(isRefCountedType)
+          case TyStruct(_, fs) => fs.exists(f => isRefCountedType(f._2))
+          case _               => false
+        aggContainsMemo(t) = r
+        r
+
+  private val aggContainsMemo = mutable.Map.empty[Type, Boolean]
 
   /** Pick the right ARC inc helper based on the array's static rank. */
   protected def arrIncFor(t: Type): String = arrayRank(t) match
@@ -408,16 +432,99 @@ protected trait NexLLVMState:
     case 2 => "@__nex_arr2_inc"
     case _ => "@__nex_arr1_inc"
 
-  /** Pick the right ARC dec helper based on the array's static rank. */
-  protected def arrDecFor(t: Type): String = arrayRank(t) match
-    case 1 => "@__nex_arr1_dec"
-    case 2 => "@__nex_arr2_dec"
-    case _ => "@__nex_arr1_dec"
+  /** Pick the right ARC dec helper based on the array's rank AND element
+    * type. For arrays whose element type is itself refcounted (strings,
+    * nested arrays), this returns a per-element-type deep-dec variant
+    * and registers it for emission. The deep variant walks the buffer
+    * and dec's each element before freeing — without it, releasing the
+    * outer descriptor would leak every inner refcounted descriptor.
+    */
+  protected def arrDecFor(t: Type): String =
+    val rank = arrayRank(t)
+    val elem = arrayElem(t)
+    val flat = rank match
+      case 1 => "@__nex_arr1_dec"
+      case 2 => "@__nex_arr2_dec"
+      case _ => "@__nex_arr1_dec"
+    if !deepDecEligible(elem) then flat
+    else
+      val name = s"@__nex_arr${rank}_dec_${typeMangle(elem)}"
+      val key  = (rank, elem)
+      if !deepDecEmitted.contains(key) then deepDecPending += key
+      name
+
+  /** Element types for which we generate per-element-type deep-dec
+    * helpers. Strings and nested arrays carry refcounts and are stored
+    * as plain ptr slots, so a single load + matching dec call works
+    * uniformly. Aggregates carrying refcounted leaves use the
+    * aggregate's storage type for the slot load and route through the
+    * per-aggregate drop helper. Closure values are `{ ptr, ptr }` (16
+    * bytes) — they don't fit the v0 by-pointer element pattern and are
+    * not yet supported as array elements.
+    */
+  protected def deepDecEligible(elem: Type): Boolean = elem match
+    case TyString                                          => true
+    case TyArray(_, _)                                     => true
+    case t if aggregateContainsRefCounted(t)               => true
+    case _                                                 => false
+
+  /** Stable mangling of a Nex type for use in generated symbol names.
+    * Strings and primitive scalars get short tags; nested arrays
+    * recurse so `[[String]]` mangles to `arr1_str`. Aggregates encode
+    * their field shape so distinct tuple / struct layouts map to
+    * distinct helper names: `tup_<f0>_<f1>...`,
+    * `struct_<name>_<f0>_<f1>...`. Anything outside the helper-
+    * generating set falls through to `any` (unused — guarded by
+    * [[deepDecEligible]] / [[aggregateContainsRefCounted]]).
+    */
+  protected def typeMangle(t: Type): String = t match
+    case TyString        => "str"
+    case TyInteger       => "i64"
+    case TyReal          => "f64"
+    case TyBool          => "i1"
+    case TyComplex       => "complex"
+    case TyArray(e, r)   => s"arr${r}_${typeMangle(e)}"
+    case TyTuple(es)     => "tup_" + es.map(typeMangle).mkString("_")
+    case TyStruct(n, fs) => s"struct_${n}_" + fs.map(f => typeMangle(f._2)).mkString("_")
+    case _               => "any"
+
+  /** Per-element-type deep-dec helpers that still need an emitted
+    * definition. Populated by [[arrDecFor]] each time a previously
+    * unseen `(rank, elem)` pair is requested; drained by
+    * `flushDeepDecs` at end-of-module.
+    */
+  protected val deepDecPending = mutable.LinkedHashSet.empty[(Int, Type)]
+  protected val deepDecEmitted = mutable.Set.empty[(Int, Type)]
+
+  /** Per-aggregate-type inc / drop helpers (`__nex_inc_<mangle>` /
+    * `__nex_drop_<mangle>`) that still need an emitted definition.
+    * Populated by [[emitArrInc]] / [[emitArrDec]] each time they see a
+    * previously unseen aggregate type; drained by `flushAggHelpers` at
+    * end-of-module. Helper bodies recursively register nested
+    * aggregates / array helpers, so the flush loop runs to fixed point.
+    */
+  protected val aggHelperPending = mutable.LinkedHashSet.empty[Type]
+  protected val aggHelperEmitted = mutable.Set.empty[Type]
+
+  protected def aggIncHelperName(t: Type): String = s"@__nex_inc_${typeMangle(t)}"
+  protected def aggDropHelperName(t: Type): String = s"@__nex_drop_${typeMangle(t)}"
+
+  /** Mark an aggregate type as needing inc / drop helpers if not
+    * already emitted. Idempotent. Called from [[emitArrInc]] /
+    * [[emitArrDec]] and from helper bodies that recurse into nested
+    * aggregates.
+    */
+  protected def requestAggHelper(t: Type): Unit =
+    if !aggHelperEmitted.contains(t) then aggHelperPending += t
 
   /** Emit an inc-refcount call appropriate for [[t]]. For arrays the
     * SSA `value` is the array descriptor ptr; for closures it's the
     * `{ ptr, ptr }` value, from which we extract env_ptr before
-    * routing to `__nex_env_inc`. Other types are silently skipped.
+    * routing to `__nex_env_inc`. Aggregates (tuples / structs)
+    * carrying refcounted leaves route through a per-aggregate-type
+    * `__nex_inc_<mangle>` helper that walks fields and inc's each
+    * refcounted share — value is the aggregate SSA, passed by value
+    * to the helper. Other types are silently skipped.
     */
   protected def emitArrInc(value: String, t: Type): Unit =
     if isArrayType(t) then
@@ -428,6 +535,9 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_inc(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_inc(ptr $value)\n")
+    else if aggregateContainsRefCounted(t) then
+      requestAggHelper(t)
+      emitLine(s"  call void ${aggIncHelperName(t)}(${llvmType(t)} $value)\n")
 
   /** Symmetric dec — see [[emitArrInc]] for shape semantics. */
   protected def emitArrDec(value: String, t: Type): Unit =
@@ -439,6 +549,9 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_dec(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_dec(ptr $value)\n")
+    else if aggregateContainsRefCounted(t) then
+      requestAggHelper(t)
+      emitLine(s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $value)\n")
 
   /** Decrement-ref every slot registered as an array-typed local in the
     * current function — innermost block first, then the function-level

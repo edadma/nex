@@ -522,18 +522,23 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret ptr %slot
         |}
         |
-        |; ---------- Closure env refcount (negative-offset i64 header) ----------
-        |; Layout: malloc returns a block of (size + 8) bytes. The first 8 bytes
-        |; hold the refcount; the env pointer we hand out points 8 bytes past the
-        |; start so the capture struct's field indices stay 0..N-1 unchanged.
-        |; inc/dec GEP back -8 to find the header. null is the empty-capture
-        |; sentinel and is silently skipped.
-        |define ptr @__nex_env_alloc(i64 %sz) {
+        |; ---------- Closure env refcount (negative-offset header) ----------
+        |; Layout: malloc returns a block of (size + 16) bytes. The first 16
+        |; bytes hold `[ refcount(i64) | dtor(ptr) ]`; the env pointer we hand
+        |; out points 16 bytes past the start so the capture struct's field
+        |; indices stay 0..N-1 unchanged. inc/dec GEP back -16 to find the
+        |; refcount; the dtor lives 8 bytes after the refcount. When rc hits
+        |; zero, dec calls `dtor(env)` if non-null (the dtor walks refcounted
+        |; captures and calls free itself), otherwise plain-frees the header.
+        |; null env is the empty-capture sentinel and is silently skipped.
+        |define ptr @__nex_env_alloc(i64 %sz, ptr %dtor) {
         |entry:
-        |  %total = add i64 %sz, 8
+        |  %total = add i64 %sz, 16
         |  %raw   = call ptr @malloc(i64 %total)
         |  store i64 1, ptr %raw
-        |  %env   = getelementptr inbounds i8, ptr %raw, i64 8
+        |  %dp    = getelementptr inbounds i8, ptr %raw, i64 8
+        |  store ptr %dtor, ptr %dp
+        |  %env   = getelementptr inbounds i8, ptr %raw, i64 16
         |  ret ptr %env
         |}
         |
@@ -542,7 +547,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %z = icmp eq ptr %env, null
         |  br i1 %z, label %nul, label %do
         |do:
-        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -16
         |  %rc  = load i64, ptr %hdr
         |  %rc1 = add i64 %rc, 1
         |  store i64 %rc1, ptr %hdr
@@ -556,13 +561,21 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %z = icmp eq ptr %env, null
         |  br i1 %z, label %nul, label %do
         |do:
-        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -8
+        |  %hdr = getelementptr inbounds i8, ptr %env, i64 -16
         |  %rc  = load i64, ptr %hdr
         |  %rc1 = sub i64 %rc, 1
         |  store i64 %rc1, ptr %hdr
         |  %dead = icmp eq i64 %rc1, 0
         |  br i1 %dead, label %fr, label %ok
         |fr:
+        |  %dp   = getelementptr inbounds i8, ptr %hdr, i64 8
+        |  %dtor = load ptr, ptr %dp
+        |  %has  = icmp ne ptr %dtor, null
+        |  br i1 %has, label %dispatch, label %plain
+        |dispatch:
+        |  call void %dtor(ptr %env)
+        |  ret void
+        |plain:
         |  call void @free(ptr %hdr)
         |  ret void
         |ok:
@@ -572,6 +585,255 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |}
         |
         |""".stripMargin,
+    )
+
+  /** Flush every pending per-element-type deep-dec helper to the module.
+    * Drains [[deepDecPending]] (which may grow during emission — a deep
+    * dec for `[[String]]` registers an inner helper for `[String]`)
+    * until stable.
+    */
+  protected def flushDeepDecs(): Unit =
+    while deepDecPending.nonEmpty do
+      val key @ (rank, elem) = deepDecPending.head
+      deepDecPending -= key
+      if !deepDecEmitted.contains(key) then
+        deepDecEmitted += key
+        rank match
+          case 1 => emitDeepDec1Helper(elem)
+          case 2 => emitDeepDec2Helper(elem)
+          case _ => ()
+
+  /** Flush every pending per-aggregate-type inc / drop helper to the
+    * module. Drains [[aggHelperPending]] (which may grow during
+    * emission — a drop for `(string, (string, integer))` registers an
+    * inner drop helper for the inner tuple) until stable.
+    */
+  protected def flushAggHelpers(): Unit =
+    while aggHelperPending.nonEmpty do
+      val t = aggHelperPending.head
+      aggHelperPending -= t
+      if !aggHelperEmitted.contains(t) then
+        aggHelperEmitted += t
+        emitAggIncHelper(t)
+        emitAggDropHelper(t)
+
+  /** Return the (type, index) list of fields for an aggregate type.
+    * Tuples are positional; structs use their declared field order.
+    * Non-aggregates return Nil — emitters should guard with
+    * [[aggregateContainsRefCounted]] before requesting helpers.
+    */
+  private def aggFields(t: Type): List[(Type, Int)] = t match
+    case TyTuple(es)     => es.zipWithIndex
+    case TyStruct(_, fs) => fs.zipWithIndex.map { case ((_, ft), i) => (ft, i) }
+    case _               => Nil
+
+  /** IR text for a single inc / dec call on a field's loaded value
+    * `fv`. Aggregate fields recurse via their own helpers (and request
+    * them for emission); other refcounted leaves call the direct
+    * runtime helper. Non-refcounted fields produce an empty string.
+    */
+  private def fieldIncIR(fT: Type, fv: String, freshLocal: () => String): String =
+    if isArrayType(fT) then
+      s"  call void ${arrIncFor(fT)}(ptr $fv)\n"
+    else if isClosureType(fT) then
+      val env = freshLocal()
+      s"  $env = extractvalue { ptr, ptr } $fv, 1\n" +
+        s"  call void @__nex_env_inc(ptr $env)\n"
+    else if fT == TyString then
+      s"  call void @__nex_str_inc(ptr $fv)\n"
+    else if aggregateContainsRefCounted(fT) then
+      requestAggHelper(fT)
+      s"  call void ${aggIncHelperName(fT)}(${llvmType(fT)} $fv)\n"
+    else ""
+
+  private def fieldDecIR(fT: Type, fv: String, freshLocal: () => String): String =
+    if isArrayType(fT) then
+      s"  call void ${arrDecFor(fT)}(ptr $fv)\n"
+    else if isClosureType(fT) then
+      val env = freshLocal()
+      s"  $env = extractvalue { ptr, ptr } $fv, 1\n" +
+        s"  call void @__nex_env_dec(ptr $env)\n"
+    else if fT == TyString then
+      s"  call void @__nex_str_dec(ptr $fv)\n"
+    else if aggregateContainsRefCounted(fT) then
+      requestAggHelper(fT)
+      s"  call void ${aggDropHelperName(fT)}(${llvmType(fT)} $fv)\n"
+    else ""
+
+  /** Emit `define void @__nex_inc_<mangle>(<aggTy> %v)` — extracts each
+    * refcounted field by index and inc's the share. Used when an
+    * aggregate-typed local var is loaded into a fresh consumer (the
+    * symmetric inc to the slot-end drop) and when an aggregate is
+    * stashed into a closure env. Non-refcounted fields are skipped.
+    */
+  protected def emitAggIncHelper(t: Type): Unit =
+    val name = aggIncHelperName(t).drop(1)
+    val tyL  = llvmType(t)
+    val sb   = new StringBuilder
+    sb.append(s"define void @$name($tyL %v) {\n")
+    sb.append("entry:\n")
+    var ctr = 0
+    def fresh(): String =
+      ctr += 1
+      s"%r$ctr"
+    for ((fT, idx) <- aggFields(t)) do
+      if isRefCountedType(fT) then
+        val fv = fresh()
+        sb.append(s"  $fv = extractvalue $tyL %v, $idx\n")
+        sb.append(fieldIncIR(fT, fv, () => fresh()))
+    sb.append("  ret void\n")
+    sb.append("}\n\n")
+    out.append(sb.toString)
+
+  /** Emit `define void @__nex_drop_<mangle>(<aggTy> %v)` — extracts
+    * each refcounted field by index and dec's the share. Aggregate
+    * fields recurse via their own drop helper. Called when an
+    * aggregate-typed slot leaves scope (block / function end) or when
+    * a parent aggregate's drop walks a nested aggregate field.
+    */
+  protected def emitAggDropHelper(t: Type): Unit =
+    val name = aggDropHelperName(t).drop(1)
+    val tyL  = llvmType(t)
+    val sb   = new StringBuilder
+    sb.append(s"define void @$name($tyL %v) {\n")
+    sb.append("entry:\n")
+    var ctr = 0
+    def fresh(): String =
+      ctr += 1
+      s"%r$ctr"
+    for ((fT, idx) <- aggFields(t)) do
+      if isRefCountedType(fT) then
+        val fv = fresh()
+        sb.append(s"  $fv = extractvalue $tyL %v, $idx\n")
+        sb.append(fieldDecIR(fT, fv, () => fresh()))
+    sb.append("  ret void\n")
+    sb.append("}\n\n")
+    out.append(sb.toString)
+
+  /** Element-dec call text for a single element of a deep-dec body. The
+    * value register `valReg` holds the slot's loaded value (a ptr for
+    * string / array element types, an aggregate by value for tuple /
+    * struct element types). Calling [[arrDecFor]] / [[requestAggHelper]]
+    * here may register additional deep helpers for nested arrays or
+    * aggregates.
+    */
+  private def elemDecCallIR(elem: Type, valReg: String): String = elem match
+    case TyString                            =>
+      s"  call void @__nex_str_dec(ptr $valReg)\n"
+    case TyArray(_, _)                       =>
+      s"  call void ${arrDecFor(elem)}(ptr $valReg)\n"
+    case t if aggregateContainsRefCounted(t) =>
+      requestAggHelper(t)
+      s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $valReg)\n"
+    case other                               =>
+      s"  ; unsupported deep-dec elem $other\n"
+
+  /** Storage type and LLVM type used inside a deep-dec helper's loop
+    * body. For pointer-keyed elements (string / array) we load through
+    * `ptr` (matching what the buffer holds and what the existing inner
+    * helpers expect); for aggregates we load by the element's
+    * natural llvm type (a struct value).
+    */
+  private def deepDecSlotTy(elem: Type): String = elem match
+    case TyString | TyArray(_, _) => "ptr"
+    case _                        => llvmType(elem)
+
+  /** Emit `define void @__nex_arr1_dec_<mangle>(ptr %a)` — the deep-dec
+    * variant that walks each refcounted element before freeing the
+    * descriptor and buffer. Body otherwise mirrors `__nex_arr1_dec`.
+    * The slot's load type depends on the element: pointer-keyed
+    * elements (string / array) keep `ptr`, aggregates load the struct
+    * by value and route through the per-aggregate drop helper.
+    */
+  protected def emitDeepDec1Helper(elem: Type): Unit =
+    val name    = s"__nex_arr1_dec_${typeMangle(elem)}"
+    val slotTy  = deepDecSlotTy(elem)
+    val elemDec = elemDecCallIR(elem, "%v")
+    out.append(
+      s"""define void @$name(ptr %a) {
+         |entry:
+         |  %is_null = icmp eq ptr %a, null
+         |  br i1 %is_null, label %done, label %dec
+         |dec:
+         |  %rcp = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 0
+         |  %rc  = load i64, ptr %rcp
+         |  %new = sub i64 %rc, 1
+         |  store i64 %new, ptr %rcp
+         |  %iz  = icmp eq i64 %new, 0
+         |  br i1 %iz, label %walk, label %done
+         |walk:
+         |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
+         |  %len = load i64, ptr %lp
+         |  %dp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
+         |  %buf = load ptr, ptr %dp
+         |  br label %loop_hdr
+         |loop_hdr:
+         |  %i = phi i64 [0, %walk], [%i1, %loop_body]
+         |  %cmp = icmp slt i64 %i, %len
+         |  br i1 %cmp, label %loop_body, label %free_it
+         |loop_body:
+         |  %slot = getelementptr inbounds $slotTy, ptr %buf, i64 %i
+         |  %v = load $slotTy, ptr %slot
+         |${elemDec}  %i1 = add i64 %i, 1
+         |  br label %loop_hdr
+         |free_it:
+         |  call void @free(ptr %buf)
+         |  call void @free(ptr %a)
+         |  br label %done
+         |done:
+         |  ret void
+         |}
+         |
+         |""".stripMargin,
+    )
+
+  /** Rank-2 sibling of [[emitDeepDec1Helper]]. Length is `rows * cols`;
+    * the buffer is row-major (matches `emitArrayLit`). Slot load type
+    * tracks the element kind — see [[emitDeepDec1Helper]].
+    */
+  protected def emitDeepDec2Helper(elem: Type): Unit =
+    val name    = s"__nex_arr2_dec_${typeMangle(elem)}"
+    val slotTy  = deepDecSlotTy(elem)
+    val elemDec = elemDecCallIR(elem, "%v")
+    out.append(
+      s"""define void @$name(ptr %a) {
+         |entry:
+         |  %is_null = icmp eq ptr %a, null
+         |  br i1 %is_null, label %done, label %dec
+         |dec:
+         |  %rcp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 0
+         |  %rc  = load i64, ptr %rcp
+         |  %new = sub i64 %rc, 1
+         |  store i64 %new, ptr %rcp
+         |  %iz  = icmp eq i64 %new, 0
+         |  br i1 %iz, label %walk, label %done
+         |walk:
+         |  %rp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
+         |  %rs  = load i64, ptr %rp
+         |  %cp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+         |  %cs  = load i64, ptr %cp
+         |  %len = mul i64 %rs, %cs
+         |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+         |  %buf = load ptr, ptr %dp
+         |  br label %loop_hdr
+         |loop_hdr:
+         |  %i = phi i64 [0, %walk], [%i1, %loop_body]
+         |  %cmp = icmp slt i64 %i, %len
+         |  br i1 %cmp, label %loop_body, label %free_it
+         |loop_body:
+         |  %slot = getelementptr inbounds $slotTy, ptr %buf, i64 %i
+         |  %v = load $slotTy, ptr %slot
+         |${elemDec}  %i1 = add i64 %i, 1
+         |  br label %loop_hdr
+         |free_it:
+         |  call void @free(ptr %buf)
+         |  call void @free(ptr %a)
+         |  br label %done
+         |done:
+         |  ret void
+         |}
+         |
+         |""".stripMargin,
     )
 
   /** Runs every top-level binding initializer in declaration order. The
