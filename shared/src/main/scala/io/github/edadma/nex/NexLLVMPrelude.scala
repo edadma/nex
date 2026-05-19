@@ -291,6 +291,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("diag",      List(a))              => emitDiagCall(a, resultT)
       case ("reshape",   List(a, r, c))        => emitReshapeCall(a, r, c, resultT)
       case ("flatten",   List(a))              => emitFlattenCall(a, resultT)
+      case ("sum_axis",  List(m, ax))          => emitSumAxisCall(m, ax, resultT)
 
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
@@ -1583,4 +1584,110 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case r => notYet(s"flatten on rank $r"); "null"
 
     emitArrDec(arrV, arr.tpe)
+    result
+
+  /** Emit `sum_axis(m, axis)` — collapse one axis of a rank-2 matrix
+    * into a rank-1 vector. axis=0 sums down columns (result len = cols);
+    * axis=1 sums across rows (result len = rows). The axis value is a
+    * runtime integer and we dispatch on it; anything outside {0, 1}
+    * traps via @abort. Element type is preserved.
+    */
+  private def emitSumAxisCall(m: TExpr, axisE: TExpr, resultT: Type): String =
+    if arrayRank(m.tpe) != 2 then
+      notYet(s"sum_axis on rank ${arrayRank(m.tpe)} (only rank-2 supported)")
+      return "0"
+    val elem   = arrayElem(m.tpe)
+    val esz    = elemSize(elem)
+    val stT    = storageType(elem)
+    val llT    = llvmType(elem)
+    val accLLT = llT
+
+    val mV   = emitExpr(m)
+    val axV  = emitExpr(axisE)
+    val rows = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $mV)\n")
+    val cols = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $mV)\n")
+    val buf  = bufPtr(mV, m.tpe)
+
+    val resSlot = newReg()
+    emitLine(s"  $resSlot = alloca ptr\n")
+
+    val ax0L    = freshLabel("sumax.0")
+    val ax1Try  = freshLabel("sumax.tryax1")
+    val ax1L    = freshLabel("sumax.1")
+    val badL    = freshLabel("sumax.bad")
+    val doneL   = freshLabel("sumax.done")
+
+    val isZero  = newReg()
+    emitLine(s"  $isZero = icmp eq i64 $axV, 0\n")
+    emitTerminator(s"  br i1 $isZero, label %$ax0L, label %$ax1Try\n")
+
+    // axis = 0: result has `cols` slots, each is the sum over `rows`
+    // elements at column j (source idx = i*cols + j).
+    startBlock(ax0L)
+    val res0  = newReg()
+    emitLine(s"  $res0 = call ptr @__nex_arr1_alloc(i64 $cols, i64 $esz)\n")
+    val dst0  = bufPtr(res0, resultT)
+    emitCountingLoop(cols, "sumax.0.col") { j =>
+      val accSlot = newReg()
+      emitLine(s"  $accSlot = alloca $accLLT\n")
+      storeElem(stT, zeroOf(elem), accSlot)
+      emitCountingLoop(rows, "sumax.0.row") { i =>
+        val rowOff = newReg(); emitLine(s"  $rowOff = mul i64 $i, $cols\n")
+        val k      = newReg(); emitLine(s"  $k = add i64 $rowOff, $j\n")
+        val slot   = newReg(); emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $k\n")
+        val e      = loadElem(stT, slot, llT)
+        val cur    = newReg(); emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
+        val nxt    = emitScalarBinOpSimple("+", cur, e, elem)
+        storeElem(stT, nxt, accSlot)
+      }
+      val accV  = newReg()
+      emitLine(s"  $accV = load $accLLT, ptr $accSlot\n")
+      val dstSl = newReg()
+      emitLine(s"  $dstSl = getelementptr inbounds $stT, ptr $dst0, i64 $j\n")
+      storeElem(stT, accV, dstSl)
+    }
+    emitLine(s"  store ptr $res0, ptr $resSlot\n")
+    emitTerminator(s"  br label %$doneL\n")
+
+    startBlock(ax1Try)
+    val isOne = newReg()
+    emitLine(s"  $isOne = icmp eq i64 $axV, 1\n")
+    emitTerminator(s"  br i1 $isOne, label %$ax1L, label %$badL\n")
+
+    // axis = 1: result has `rows` slots, each is the sum over `cols`
+    // elements at row i (source idx = i*cols + j).
+    startBlock(ax1L)
+    val res1 = newReg()
+    emitLine(s"  $res1 = call ptr @__nex_arr1_alloc(i64 $rows, i64 $esz)\n")
+    val dst1 = bufPtr(res1, resultT)
+    emitCountingLoop(rows, "sumax.1.row") { i =>
+      val accSlot = newReg()
+      emitLine(s"  $accSlot = alloca $accLLT\n")
+      storeElem(stT, zeroOf(elem), accSlot)
+      val rowOff = newReg(); emitLine(s"  $rowOff = mul i64 $i, $cols\n")
+      emitCountingLoop(cols, "sumax.1.col") { j =>
+        val k    = newReg(); emitLine(s"  $k = add i64 $rowOff, $j\n")
+        val slot = newReg(); emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $k\n")
+        val e    = loadElem(stT, slot, llT)
+        val cur  = newReg(); emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
+        val nxt  = emitScalarBinOpSimple("+", cur, e, elem)
+        storeElem(stT, nxt, accSlot)
+      }
+      val accV  = newReg()
+      emitLine(s"  $accV = load $accLLT, ptr $accSlot\n")
+      val dstSl = newReg()
+      emitLine(s"  $dstSl = getelementptr inbounds $stT, ptr $dst1, i64 $i\n")
+      storeElem(stT, accV, dstSl)
+    }
+    emitLine(s"  store ptr $res1, ptr $resSlot\n")
+    emitTerminator(s"  br label %$doneL\n")
+
+    startBlock(badL)
+    emitLine(s"  call void @abort()\n")
+    emitTerminator(s"  unreachable\n")
+
+    startBlock(doneL)
+    val result = newReg()
+    emitLine(s"  $result = load ptr, ptr $resSlot\n")
+    emitArrDec(mV, m.tpe)
     result

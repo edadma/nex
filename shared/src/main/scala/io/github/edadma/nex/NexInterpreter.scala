@@ -451,6 +451,40 @@ class NexInterpreter:
             col += 1
           VArray1(out)
         case _ => trap(s"flatten expects 1 arg", None)
+    case "sum_axis" =>
+      // Spec §10.4: collapse one axis of a rank-2 matrix into a rank-1
+      // vector by summing along it. axis=0 collapses rows → result of
+      // len = cols (sum down each column); axis=1 collapses cols →
+      // result of len = rows (sum across each row). Storage is
+      // row-major: m(row*cols + col).
+      args match
+        case List(VArray2(b, r, c), VInt(0)) =>
+          val out = mutable.ArrayBuffer.empty[Value]
+          var j = 0
+          while j < c do
+            var acc: Value = VInt(0)
+            var i = 0
+            while i < r do
+              acc = addV(acc, b(i * c + j))
+              i += 1
+            out += acc
+            j += 1
+          VArray1(out)
+        case List(VArray2(b, r, c), VInt(1)) =>
+          val out = mutable.ArrayBuffer.empty[Value]
+          var i = 0
+          while i < r do
+            var acc: Value = VInt(0)
+            var j = 0
+            while j < c do
+              acc = addV(acc, b(i * c + j))
+              j += 1
+            out += acc
+            i += 1
+          VArray1(out)
+        case List(VArray2(_, _, _), VInt(k)) =>
+          trap(s"sum_axis: axis must be 0 or 1, got $k", None)
+        case _ => trap(s"sum_axis expects (rank-2 array, integer axis)", None)
     case "zeros" =>
       args match
         case List(VInt(n))                 => VArray1(mutable.ArrayBuffer.fill(n.toInt)(VInt(0).asInstanceOf[Value]))

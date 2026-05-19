@@ -1083,6 +1083,13 @@ protected trait NexElabInference extends NexElabState:
         args.head.tpe match
           case TyArray(e, _) => TyArray(e, 1)
           case _             => TyUnknown
+      case "sum_axis" if args.size == 2 =>
+        // §10.4: rank-2 matrix collapsed along axis 0 or 1. The result
+        // is always rank-1; the axis value picks which axis goes away
+        // but doesn't change the result element type or rank.
+        args.head.tpe match
+          case TyArray(e, 2) => TyArray(e, 1)
+          case _             => TyUnknown
       case _ => preludeReturnType(name)
 
   // ==========================================================================

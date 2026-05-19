@@ -763,6 +763,51 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "[1, 2, 3, 4, 5, 6]\n",
     )
+    "sum_axis(m, 0) collapses rows into a row-vector of len cols" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 0))
+      """.stripMargin,
+      "[5, 7, 9]\n",
+    )
+
+    "sum_axis(m, 1) collapses cols into a col-vector of len rows" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 1))
+      """.stripMargin,
+      "[6, 15]\n",
+    )
+
+    "sum_axis on a real matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[real]] = [[1.0, 2.0], [3.0, 4.0]]
+        |  print(sum_axis(m, 0))
+      """.stripMargin,
+      "[4.0, 6.0]\n",
+    )
+
+    "sum_axis on a single-row matrix is just the row" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[10, 20, 30]]
+        |  print(sum_axis(m, 0))
+      """.stripMargin,
+      "[10, 20, 30]\n",
+    )
+
+    "sum_axis 1 on a single-col matrix is the per-row sum" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1], [2], [3]]
+        |  print(sum_axis(m, 1))
+      """.stripMargin,
+      "[1, 2, 3]\n",
+    )
+
     "flatten round-trips with reshape" in parityCheck(
       """
         |def main() =
