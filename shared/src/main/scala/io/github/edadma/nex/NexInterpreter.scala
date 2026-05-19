@@ -1360,8 +1360,12 @@ class NexInterpreter:
       val imag = math.signum(i) * math.sqrt((mag - r) / 2)
       VComplex(real, if i == 0 && r < 0 then math.sqrt(-r) else imag)
     case _ =>
-      val x = asReal(v)
-      if x < 0 then VComplex(0.0, math.sqrt(-x)) else VReal(math.sqrt(x))
+      // Spec §10.2: sqrt is overloaded over `real` and `complex`. For
+      // the `real` overload negative inputs produce NaN — the IEEE-754
+      // result of libm `sqrt` on a negative double. Programs that want
+      // a complex result from a possibly-negative argument must
+      // explicitly convert (`sqrt(x + 0i)` or `sqrt(to_complex(x))`).
+      VReal(math.sqrt(asReal(v)))
 
   private def mapArray(arr: Value, fn: VFunc): Value = arr match
     case VArray1(b)       => VArray1(b.map(x => callFunction(fn, List(x), None)))

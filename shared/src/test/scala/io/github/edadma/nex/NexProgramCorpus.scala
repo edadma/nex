@@ -1047,10 +1047,15 @@ object NexProgramCorpus:
     ),
     Case(
       "prelude",
-      "sqrt of negative → complex",
+      "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
+      "nan\n",
+    ),
+    Case(
+      "prelude",
+      "sqrt of negative complex returns the principal imaginary root",
+      """def main() = print(sqrt(-4.0 + 0i))""",
       "0.0+2.0i\n",
-      pending = Some("AOT routes sqrt(real) straight to libm; needs to promote to complex on negative"),
     ),
     Case(
       "prelude",
