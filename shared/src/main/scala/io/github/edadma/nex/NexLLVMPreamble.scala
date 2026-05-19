@@ -20,6 +20,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare void @free(ptr)
         |declare void @abort()
         |declare i64 @strlen(ptr)
+        |declare ptr @strstr(ptr, ptr)
         |declare double @strtod(ptr, ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
@@ -55,7 +56,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %has = icmp ne ptr %buf, null
         |  br i1 %has, label %lj, label %ab
         |lj:
-        |  store ptr null, ptr @__nex_trap_msg, align 8
+        |  ; The message stays in @__nex_trap_msg after longjmp so
+        |  ; assert_traps(fn, "substr") can substring-check it. The
+        |  ; assert_traps lowering clears the slot on the caught path
+        |  ; before returning to caller code.
         |  call void @longjmp(ptr %buf, i32 1)
         |  unreachable
         |ab:
@@ -63,7 +67,9 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %hasm = icmp ne ptr %msg, null
         |  br i1 %hasm, label %prn, label %doab
         |prn:
-        |  call i32 (ptr, ...) @printf(ptr %msg)
+        |  ; Print via "%s" so a user-provided message with a literal `%`
+        |  ; cannot be interpreted as a format specifier.
+        |  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr %msg)
         |  br label %doab
         |doab:
         |  call void @abort()
@@ -136,9 +142,16 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare i64 @llabs(i64)
         |declare double @copysign(double, double)
         |
-        |@.assert_fail_msg = private unnamed_addr constant [21 x i8] c"trap: assert failed\0A\00"
+        |; Trap messages mirror the interpreter's `NexTrap.msg` so a
+        |; cross-backend `assert_traps(fn, "substring")` finds the same
+        |; substring regardless of which backend executed the thunk.
+        |; All three strings end with `\n\0` because they go to stdout
+        |; via the trap path that uses `%s`.
+        |@.assert_fail_msg = private unnamed_addr constant [24 x i8] c"trap: assertion failed\0A\00"
         |@.assert_eq_msg   = private unnamed_addr constant [24 x i8] c"trap: assert_eq failed\0A\00"
         |@.assert_approx_msg = private unnamed_addr constant [28 x i8] c"trap: assert_approx failed\0A\00"
+        |@.assert_msg_fmt  = private unnamed_addr constant [28 x i8] c"trap: assertion failed: %s\0A\00"
+        |@.assert_traps_substr_msg = private unnamed_addr constant [60 x i8] c"trap: assert_traps: expected substring not present in trap\0A\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:
@@ -147,6 +160,32 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  call void @__nex_trap_with(ptr @.assert_fail_msg)
         |  unreachable
         |ok:
+        |  ret void
+        |}
+        |
+        |; Two-arg `assert(cond, msg)`: when the assertion fails, build
+        |; a heap-allocated trap message `"trap: assertion failed: <msg>\n"`
+        |; via snprintf and route through __nex_trap_with. The buffer is
+        |; intentionally leaked because the trap either aborts the
+        |; program or is caught by `assert_traps`, in which case it is
+        |; about to be discarded anyway.
+        |;
+        |; The msg string descriptor is dec'd on the happy path; on the
+        |; trap path it leaks (same reason — the program is unwinding).
+        |define void @__nex_assert_with_msg(i1 %cond, ptr %msg_desc) {
+        |entry:
+        |  br i1 %cond, label %ok, label %fail
+        |fail:
+        |  %data = call ptr @__nex_str_data(ptr %msg_desc)
+        |  %sz0  = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr @.assert_msg_fmt, ptr %data)
+        |  %sz   = sext i32 %sz0 to i64
+        |  %need = add i64 %sz, 1
+        |  %buf  = call ptr @malloc(i64 %need)
+        |  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 %need, ptr @.assert_msg_fmt, ptr %data)
+        |  call void @__nex_trap_with(ptr %buf)
+        |  unreachable
+        |ok:
+        |  call void @__nex_str_dec(ptr %msg_desc)
         |  ret void
         |}
         |

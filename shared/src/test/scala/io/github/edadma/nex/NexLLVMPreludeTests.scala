@@ -111,10 +111,13 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """call void @__nex_assert\(i1 %t\d+\)"""
     }
 
-    "assert_eq lowers to icmp eq + assert" in {
+    "assert_eq lowers to icmp eq + trap_with(assert_eq_msg)" in {
       val ir = compile("def main() = assert_eq(3 * 4, 12)")
       ir should include regex """icmp eq i64 %t\d+, 12"""
-      ir should include regex """call void @__nex_assert\(i1 %t\d+\)"""
+      // The check branches to a fail block that traps with the
+      // specific message — so a parent assert_traps' substring check
+      // for "assert_eq" finds it.
+      ir should include("call void @__nex_trap_with(ptr @.assert_eq_msg)")
     }
 
     "assert_eq on reals uses fcmp oeq with double promotion" in {
@@ -122,12 +125,12 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("fcmp oeq double")
     }
 
-    "assert_approx emits fabs(diff) <= eps + assert" in {
+    "assert_approx emits fabs(diff) <= eps + trap_with(assert_approx_msg)" in {
       val ir = compile("def main() = assert_approx(0.1, 0.2, 0.5)")
       ir should include regex """fsub double 0x3FB[0-9A-F]+, 0x3FC[0-9A-F]+"""
       ir should include("call double @fabs(double")
       ir should include("fcmp ole double")
-      ir should include("call void @__nex_assert")
+      ir should include("call void @__nex_trap_with(ptr @.assert_approx_msg)")
     }
 
     "failing assert path routes through __nex_trap_with for catch-aware printing" in {

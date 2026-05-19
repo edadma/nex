@@ -535,6 +535,7 @@ class NexInterpreter:
     case "assert" =>
       args match
         case List(VBool(true))                  => VUnit
+        case List(VBool(true), VString(_))      => VUnit
         case List(VBool(false))                 => trap("assertion failed", None)
         case List(VBool(false), VString(msg))   => trap(s"assertion failed: $msg", None)
         case _                                   => trap(s"assert expects (bool) or (bool, string)", None)

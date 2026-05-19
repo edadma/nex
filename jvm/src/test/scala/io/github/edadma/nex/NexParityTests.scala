@@ -1420,6 +1420,59 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "two-arg `assert(cond, msg)` and `assert_traps(fn, substr)`" should {
+    "assert(true, msg) is silent" in parityCheck(
+      """
+        |def main() =
+        |  assert(1 + 1 == 2, "math should work")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    )
+    "assert_traps catches assert(false, msg) and the substring check sees the msg" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false, "boom"), "boom")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "substring match against the generic assertion-failure text" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false), "assertion failed")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    )
+    "substring match against an assert_eq failure" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert_eq(1, 2), "assert_eq")
+        |  print("eq-caught")
+      """.stripMargin,
+      "eq-caught\n",
+    )
+    "assert_traps with mismatched substring itself traps and is caught by an outer trap" in parityCheck(
+      """
+        |def main() =
+        |  val inner = () -> assert_traps(() -> assert(false, "alpha"), "beta")
+        |  assert_traps(inner, "expected substring")
+        |  print("nested-caught")
+      """.stripMargin,
+      "nested-caught\n",
+    )
+    "user-provided message containing `%` is safe (no format-string injection)" in parityCheck(
+      """
+        |def main() =
+        |  assert_traps(() -> assert(false, "100% broken: %s %d"), "100%")
+        |  print("safe")
+      """.stripMargin,
+      "safe\n",
+    )
+  }
+
+
   "real shortest-round-trip print (Ryu-equivalent via iterative %.Ng)" should {
     "0.1 + 0.2 prints all 17 round-trip digits, not %g's 6" in parityCheck(
       "def main() = print(0.1 + 0.2)",

@@ -240,18 +240,22 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         val cv = emitExpr(c)
         emitLine(s"  call void @__nex_assert(i1 $cv)\n")
         "void"
-      case ("assert", List(c, _)) =>
-        // Two-arg form: we drop the message and reuse the generic trap
-        // for v0. Matches the interpreter's print-then-abort contract.
+      case ("assert", List(c, msg)) =>
+        // Two-arg form: thread the user message into the trap text so
+        // a downstream `assert_traps(fn, "<substr>")` matches the
+        // interpreter's behavior.
         val cv = emitExpr(c)
-        emitLine(s"  call void @__nex_assert(i1 $cv)\n")
+        val mv = emitExpr(msg)
+        emitLine(s"  call void @__nex_assert_with_msg(i1 $cv, ptr $mv)\n")
         "void"
       case ("assert_eq", List(a, b)) =>
         emitAssertEq(a, b); "void"
       case ("assert_approx", List(a, b, eps)) =>
         emitAssertApprox(a, b, eps); "void"
       case ("assert_traps", List(fn)) =>
-        emitAssertTraps(fn); "void"
+        emitAssertTraps(fn, expectedSubstr = None); "void"
+      case ("assert_traps", List(fn, sub)) =>
+        emitAssertTraps(fn, expectedSubstr = Some(sub)); "void"
 
       // §10.4 rank-1 reductions — counted loop + accumulator. Element
       // type may be integer (i64), real (double), or complex
@@ -464,9 +468,10 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       emitLine(s"  $sel = select i1 $cmp, double $av, double $bv\n")
       sel
 
-  /** Emit an equality check between two values, aborting via
-    * `__nex_assert(false)` on mismatch. Supports integer / real / bool
-    * (with optional sitofp promotion when types differ).
+  /** Emit an equality check between two values, trapping on mismatch
+    * with the `assert_eq` message — so a parent `assert_traps`
+    * substring check can find "assert_eq". Supports integer / real /
+    * bool (with optional sitofp promotion when types differ).
     */
   private def emitAssertEq(a: TExpr, b: TExpr): Unit =
     val isReal = a.tpe == TyReal || b.tpe == TyReal
@@ -480,9 +485,24 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       val bv = emitExpr(b)
       val ty = llvmType(a.tpe)
       emitLine(s"  $eq = icmp eq $ty $av, $bv\n")
-    emitLine(s"  call void @__nex_assert(i1 $eq)\n")
+    emitTrapOnFalse(eq, "@.assert_eq_msg", "aeq")
 
-  /** Emit `assert_traps(fn)` — call the thunk and verify that it traps.
+  /** Common pattern: branch on a bool; trap-with-msg on false, fall
+    * through on true. Used by `assert_eq` / `assert_approx` so each
+    * carries its own message (vs. the generic `__nex_assert` form).
+    */
+  private def emitTrapOnFalse(cond: String, msgSymbol: String, labelPrefix: String): Unit =
+    val okL   = freshLabel(s"$labelPrefix.ok")
+    val failL = freshLabel(s"$labelPrefix.fail")
+    emitTerminator(s"  br i1 $cond, label %$okL, label %$failL\n")
+    startBlock(failL)
+    emitLine(s"  call void @__nex_trap_with(ptr $msgSymbol)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL)
+
+  /** Emit `assert_traps(fn)` or `assert_traps(fn, expectedSubstr)` —
+    * call the thunk and verify that it traps, optionally checking that
+    * the stashed trap message contains a given substring.
     *
     * Uses libc `setjmp` / `longjmp` to catch the trap. The thread-local
     * `@__nex_trap_buf` global holds the jmp_buf chain head; `__nex_trap`
@@ -496,12 +516,17 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     * optimizer is free to cache them in callee-saved registers that
     * `longjmp` will clobber.
     *
-    * On normal-return path (no trap fired): prints the failure message
-    * and routes through `__nex_trap` itself — so a caller's enclosing
-    * `assert_traps` would catch this nested miss, matching the
-    * interpreter's chained-trap semantics.
+    * Two-arg form: after the trap is caught, load `@__nex_trap_msg`
+    * (which `__nex_trap` deliberately preserves across longjmp), the
+    * substring's data, and call libc `strstr`. A null result means the
+    * substring was not present — trap with the matching interpreter
+    * message so a parent `assert_traps` sees the same verdict.
+    *
+    * On normal-return path (no trap fired): trap with the
+    * "expected trap" message, also routed through `__nex_trap_with`
+    * so a parent `assert_traps` catches silently.
     */
-  private def emitAssertTraps(fn: TExpr): Unit =
+  private def emitAssertTraps(fn: TExpr, expectedSubstr: Option[TExpr]): Unit =
     val cl = emitExpr(fn)
 
     val fnPtr = newReg()
@@ -509,24 +534,36 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val envPtr = newReg()
     emitLine(s"  $envPtr = extractvalue { ptr, ptr } $cl, 1\n")
 
+    // Evaluate the substring argument (if any) BEFORE setjmp, otherwise
+    // its computation might involve allocations the longjmp would skip
+    // past. We hold the descriptor across the setjmp via the same
+    // volatile-stash pattern as the closure components.
+    val substrPtr = expectedSubstr.map(emitExpr)
+
     val retT = fn.tpe match
       case TyFunc(_, r) => r
       case _            => TyUnit
 
-    val buf       = newReg()
-    val prevSlot  = newReg()
-    val envSlot   = newReg()
-    val fnPtrSlot = newReg()
+    val buf         = newReg()
+    val prevSlot    = newReg()
+    val envSlot     = newReg()
+    val fnPtrSlot   = newReg()
+    val substrSlot  = if substrPtr.isDefined then Some(newReg()) else None
     emitLine(s"  $buf = alloca [256 x i64], align 16\n")
     emitLine(s"  $prevSlot = alloca ptr, align 8\n")
     emitLine(s"  $envSlot = alloca ptr, align 8\n")
     emitLine(s"  $fnPtrSlot = alloca ptr, align 8\n")
+    substrSlot.foreach { ss => emitLine(s"  $ss = alloca ptr, align 8\n") }
 
     val prev = newReg()
     emitLine(s"  $prev = load ptr, ptr @__nex_trap_buf, align 8\n")
     emitLine(s"  store volatile ptr $prev, ptr $prevSlot, align 8\n")
     emitLine(s"  store volatile ptr $envPtr, ptr $envSlot, align 8\n")
     emitLine(s"  store volatile ptr $fnPtr, ptr $fnPtrSlot, align 8\n")
+    (substrSlot, substrPtr) match
+      case (Some(ss), Some(sp)) =>
+        emitLine(s"  store volatile ptr $sp, ptr $ss, align 8\n")
+      case _ => ()
     emitLine(s"  store ptr $buf, ptr @__nex_trap_buf, align 8\n")
 
     val sjRes = newReg()
@@ -552,13 +589,19 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case _ =>
         val dummy = newReg()
         emitLine(s"  $dummy = call $sig $fnP2(ptr $envP2)\n")
-    // Got here without trapping — restore prev, dec env, trap with the
-    // "expected trap" message. Routing through __nex_trap_with keeps the
-    // message buffered so an enclosing assert_traps stays silent.
+    // Got here without trapping — restore prev, dec env + substring,
+    // trap with the "expected trap" message. Routing through
+    // __nex_trap_with keeps the message buffered so an enclosing
+    // assert_traps stays silent.
     val prevA = newReg()
     emitLine(s"  $prevA = load volatile ptr, ptr $prevSlot, align 8\n")
     emitLine(s"  store ptr $prevA, ptr @__nex_trap_buf, align 8\n")
     emitLine(s"  call void @__nex_env_dec(ptr $envP2)\n")
+    substrSlot.foreach { ss =>
+      val sp = newReg()
+      emitLine(s"  $sp = load volatile ptr, ptr $ss, align 8\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $sp)\n")
+    }
     emitLine(s"  call void @__nex_trap_with(ptr @.assert_traps_fail_msg)\n")
     emitTerminator(s"  unreachable\n")
 
@@ -571,12 +614,50 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val prevB = newReg()
     emitLine(s"  $prevB = load volatile ptr, ptr $prevSlot, align 8\n")
     emitLine(s"  store ptr $prevB, ptr @__nex_trap_buf, align 8\n")
+
+    // Two-arg form: pull the substring descriptor's C-string, strstr
+    // against the stashed trap message, and emit a follow-up trap on
+    // miss. The miss path uses a static message — full parity with the
+    // interpreter's verbose form ("expected substring `X`, got `Y`")
+    // would require building a runtime string and is deferred.
+    substrSlot.foreach { ss =>
+      val subDesc = newReg()
+      emitLine(s"  $subDesc = load volatile ptr, ptr $ss, align 8\n")
+      val subData = newReg()
+      emitLine(s"  $subData = call ptr @__nex_str_data(ptr $subDesc)\n")
+      val trapMsg = newReg()
+      emitLine(s"  $trapMsg = load ptr, ptr @__nex_trap_msg, align 8\n")
+
+      // strstr(needle, haystack) — but BSD/glibc strstr is
+      // strstr(haystack, needle). We pass trap msg as haystack.
+      val found = newReg()
+      emitLine(s"  $found = call ptr @strstr(ptr $trapMsg, ptr $subData)\n")
+      val ok = newReg()
+      emitLine(s"  $ok = icmp ne ptr $found, null\n")
+
+      val okL   = freshLabel("at.substr.ok")
+      val failL = freshLabel("at.substr.fail")
+      emitTerminator(s"  br i1 $ok, label %$okL, label %$failL\n")
+
+      startBlock(failL)
+      emitLine(s"  call void @__nex_str_dec(ptr $subDesc)\n")
+      emitLine(s"  call void @__nex_trap_with(ptr @.assert_traps_substr_msg)\n")
+      emitTerminator(s"  unreachable\n")
+
+      startBlock(okL)
+      emitLine(s"  call void @__nex_str_dec(ptr $subDesc)\n")
+    }
+    // Clear the stashed trap message now that we have processed it
+    // (either matched the substring or there was no substring check).
+    // Failing to clear would let an unrelated later abort() inherit a
+    // stale message.
+    emitLine(s"  store ptr null, ptr @__nex_trap_msg, align 8\n")
     emitTerminator(s"  br label %$mergeL\n")
 
     startBlock(mergeL)
 
-  /** Emit `|a - b| <= eps` check, aborting on mismatch. Mixed numeric
-    * types promote to double.
+  /** Emit `|a - b| <= eps` check, trapping on mismatch with the
+    * `assert_approx` message. Mixed numeric types promote to double.
     */
   private def emitAssertApprox(a: TExpr, b: TExpr, eps: TExpr): Unit =
     val av = liftToReal(a)
@@ -588,7 +669,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  $ad = call double @fabs(double $d)\n")
     val ok = newReg()
     emitLine(s"  $ok = fcmp ole double $ad, $ev\n")
-    emitLine(s"  call void @__nex_assert(i1 $ok)\n")
+    emitTrapOnFalse(ok, "@.assert_approx_msg", "aap")
 
   /** Emit a length-ish call (length / rows / cols). The runtime helper
     * picked depends on the array's static rank.
