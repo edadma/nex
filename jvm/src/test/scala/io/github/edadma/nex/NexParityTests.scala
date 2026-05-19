@@ -515,6 +515,57 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "range as a value-producing expression (spec §4.12)" should {
+    "exclusive range bound to a `val` and printed" in parityCheck(
+      "def main() = print(0..5)",
+      "[0, 1, 2, 3, 4]\n",
+    )
+    "inclusive range bound to a `val` and printed" in parityCheck(
+      "def main() = print(0..=5)",
+      "[0, 1, 2, 3, 4, 5]\n",
+    )
+    "empty exclusive range (lo == hi)" in parityCheck(
+      "def main() = print(3..3)",
+      "[]\n",
+    )
+    "negative-direction range produces an empty array" in parityCheck(
+      "def main() = print(7..3)",
+      "[]\n",
+    )
+    "range stored in a val survives reuse" in parityCheck(
+      """
+        |def main() =
+        |  val r = 1..4
+        |  print(r)
+        |  print(r)
+      """.stripMargin,
+      "[1, 2, 3]\n[1, 2, 3]\n",
+    )
+    "range with negative bounds" in parityCheck(
+      "def main() = print(-2..=2)",
+      "[-2, -1, 0, 1, 2]\n",
+    )
+    "range with variable bounds" in parityCheck(
+      """
+        |def main() =
+        |  val lo = 2
+        |  val hi = 6
+        |  print(lo..hi)
+      """.stripMargin,
+      "[2, 3, 4, 5]\n",
+    )
+    "for-loop over a range still consumes lazily (no array allocated)" in parityCheck(
+      """
+        |def main() =
+        |  var s = 0
+        |  for i in 0..5 do
+        |    s = s + i
+        |  print(s)
+      """.stripMargin,
+      "10\n",
+    )
+  }
+
   "rank-1 HOFs" should {
     "map (inline lambda)"   in parityCheck(
       "def main() = print(map([1, 2, 3, 4], x -> x * x))",

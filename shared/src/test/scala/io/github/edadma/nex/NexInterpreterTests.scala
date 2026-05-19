@@ -240,6 +240,28 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "0\n1\n2\n"
     }
 
+    "range at value position produces an integer array" in {
+      runOut("""
+        |def main() =
+        |  val r = 0..5
+        |  print(r)
+      """.stripMargin) shouldBe "[0, 1, 2, 3, 4]\n"
+    }
+
+    "inclusive range at value position" in {
+      runOut("""
+        |def main() = print(1..=3)
+      """.stripMargin) shouldBe "[1, 2, 3]\n"
+    }
+
+    "empty range at value position" in {
+      runOut("""
+        |def main() =
+        |  print(5..5)
+        |  print(8..3)
+      """.stripMargin) shouldBe "[]\n[]\n"
+    }
+
     "for with tuple destructuring on enumerate(xs)" in {
       runOut("""
         |def main() =

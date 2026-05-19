@@ -287,6 +287,9 @@ class NexLLVMCodegen
     case TBinOp("and", l, r, _, _) => emitShortCircuit(l, r, isAnd = true)
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
 
+    case TBinOp("..", lo, hi, _, _)  => emitRangeValue(lo, hi, inclusive = false)
+    case TBinOp("..=", lo, hi, _, _) => emitRangeValue(lo, hi, inclusive = true)
+
     case TBinOp("+", l, r, _, TyString) =>
       // String concat. Both operands are owning %nex_str descriptor
       // pointers (TVarRef inc'd a share at load, or they're already-
@@ -811,6 +814,41 @@ class NexLLVMCodegen
       emitTerminator(s"  br label %$condL\n")
 
     startBlock(exitL)
+
+  /** Lower a range expression at value position (`lo..hi` / `lo..=hi`)
+    * to a freshly-allocated rank-1 integer array containing the
+    * sequence. The interpreter materialises ranges this way; the for-
+    * loop path consumes them lazily via [[emitForRange]], so this
+    * helper only fires when the range escapes a loop header. Empty
+    * ranges (`lo > hi`, or `lo == hi` for exclusive) produce a zero-
+    * length array — matching the interpreter. */
+  private def emitRangeValue(lo: TExpr, hi: TExpr, inclusive: Boolean): String =
+    val loV = emitExpr(lo)
+    val hiV = emitExpr(hi)
+
+    // length = max(0, hi - lo + (inclusive ? 1 : 0))
+    val diff = newReg()
+    emitLine(s"  $diff = sub i64 $hiV, $loV\n")
+    val rawLen = if inclusive then
+      val r = newReg(); emitLine(s"  $r = add i64 $diff, 1\n"); r
+    else diff
+    val isNeg = newReg()
+    emitLine(s"  $isNeg = icmp slt i64 $rawLen, 0\n")
+    val length = newReg()
+    emitLine(s"  $length = select i1 $isNeg, i64 0, i64 $rawLen\n")
+
+    val desc = newReg()
+    emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $length, i64 8)\n")
+    val buf = bufPtr(desc, TyArray(TyInteger, 1))
+
+    emitCountingLoop(length, "range") { i =>
+      val v = newReg()
+      emitLine(s"  $v = add i64 $loV, $i\n")
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds i64, ptr $buf, i64 $i\n")
+      emitLine(s"  store i64 $v, ptr $slot\n")
+    }
+    desc
 
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
