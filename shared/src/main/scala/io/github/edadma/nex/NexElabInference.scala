@@ -965,14 +965,15 @@ protected trait NexElabInference extends NexElabState:
     "length"         -> TyInteger,
     "rows"           -> TyInteger,
     "cols"           -> TyInteger,
-    // §10.2 scalar math — all return real regardless of arg type.
-    "sqrt" -> TyReal, "cbrt" -> TyReal,
-    "exp"  -> TyReal, "log"  -> TyReal, "log2" -> TyReal, "log10" -> TyReal,
+    // §10.2 scalar math — entries still routed by name through the
+    // legacy SymKind.Prelude path. The unambiguous real-only siblings
+    // (cbrt, floor, ceil, round, trunc, asin, acos, atan, atan2,
+    // sinh, cosh, tanh, asinh, acosh, atanh, log2, log10) live in
+    // `prelude/scalar.nex` and arrive as TyFunc-typed Function symbols
+    // — they no longer need an entry here.
+    "sqrt" -> TyReal,
+    "exp"  -> TyReal, "log"  -> TyReal,
     "sin"  -> TyReal, "cos"  -> TyReal, "tan"  -> TyReal,
-    "asin" -> TyReal, "acos" -> TyReal, "atan" -> TyReal, "atan2" -> TyReal,
-    "sinh" -> TyReal, "cosh" -> TyReal, "tanh" -> TyReal,
-    "asinh"-> TyReal, "acosh"-> TyReal, "atanh"-> TyReal,
-    "floor"-> TyReal, "ceil" -> TyReal, "round"-> TyReal, "trunc" -> TyReal,
     // §10.3 complex
     "arg"  -> TyReal,
   ).withDefaultValue(TyUnknown)

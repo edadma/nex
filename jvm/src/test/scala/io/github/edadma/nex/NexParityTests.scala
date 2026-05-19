@@ -748,6 +748,34 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     "to_real (int → real)"     in parityCheck("def main() = print(to_real(5))", "5.0\n")
   }
 
+  // Stage 2 — entries that now live in `prelude/scalar.nex` as bodyless
+  // `@intrinsic` declarations. The interpreter dispatches via
+  // [[NexInterpreter.intrinsicDispatch]]; AOT emits the libm call
+  // inline at every call site (no LLVM wrapper exists because it would
+  // collide with the libm symbol of the same name).
+  "scalar prelude (Stage 2 source intrinsics)" should {
+    "cbrt of perfect cube"                       in parityCheck("def main() = print(cbrt(27.0))", "3.0\n")
+    "cbrt of integer arg (promotes to real)"     in parityCheck("def main() = print(cbrt(8))",    "2.0\n")
+    "trunc rounds toward zero (positive)"        in parityCheck("def main() = print(trunc(3.9))", "3.0\n")
+    "trunc rounds toward zero (negative)"        in parityCheck("def main() = print(trunc(-3.9))", "-3.0\n")
+    "atan2(0, 1) = 0"                            in parityCheck("def main() = print(atan2(0.0, 1.0))", "0.0\n")
+    "atan2(1, 1) = π/4"                          in parityCheck(
+      "def main() = print(atan2(1.0, 1.0) * 4.0)",
+      "3.141592653589793\n",
+    )
+    "asinh(0) = 0"                               in parityCheck("def main() = print(asinh(0.0))", "0.0\n")
+    "acosh(1) = 0"                               in parityCheck("def main() = print(acosh(1.0))", "0.0\n")
+    "atanh(0) = 0"                               in parityCheck("def main() = print(atanh(0.0))", "0.0\n")
+    "log2(8) = 3"                                in parityCheck("def main() = print(log2(8.0))",  "3.0\n")
+    "log10(100) = 2"                             in parityCheck("def main() = print(log10(100.0))", "2.0\n")
+    "asin(0) = 0"                                in parityCheck("def main() = print(asin(0.0))",  "0.0\n")
+    "acos(1) = 0"                                in parityCheck("def main() = print(acos(1.0))",  "0.0\n")
+    "atan(0) = 0"                                in parityCheck("def main() = print(atan(0.0))",  "0.0\n")
+    "sinh(0) = 0"                                in parityCheck("def main() = print(sinh(0.0))",  "0.0\n")
+    "cosh(0) = 1"                                in parityCheck("def main() = print(cosh(0.0))",  "1.0\n")
+    "tanh(0) = 0"                                in parityCheck("def main() = print(tanh(0.0))",  "0.0\n")
+  }
+
   "rank-1 prelude reductions" should {
     "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
     "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")

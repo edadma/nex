@@ -59,7 +59,24 @@ class NexElaborator
     val modDecl  = prog.decls.collectFirst { case m: ModuleDeclAST => m }
     val path     = modDecl.map(_.path).getOrElse(Nil)
     val testOnly = modDecl.exists(_.isTestOnly)
-    elaborateProject(List(LoadedModule(path, List(FileEntry("<inline>", prog)), testOnly, Nil)))
+    val userMod  = LoadedModule(path, List(FileEntry("<inline>", prog)), testOnly, Nil)
+    // Auto-discover and prepend the source prelude so single-program
+    // elaboration (used by NexInterpreterTests, NexParityBase, and
+    // every other test that calls `elaborate` directly without going
+    // through the module loader) sees the same prelude bindings the
+    // CLI's `loadAndElaborate` provides. Modules whose path already
+    // starts with `prelude` are themselves prelude content and must
+    // not self-inject.
+    val modules =
+      if path.headOption.contains("prelude") then List(userMod)
+      else
+        NexSysroot.findPreludeRoot(None) match
+          case Some(root) =>
+            NexModuleLoader.loadPreludeAsModule(root) match
+              case Right(p) => List(p, userMod)
+              case Left(_)  => List(userMod)
+          case None => List(userMod)
+    elaborateProject(modules)
 
   /** Elaborate a project — multiple modules in topological order, each one
     * containing one-or-more files. The first module is processed in a
@@ -91,6 +108,12 @@ class NexElaborator
     val exports = mutable.Map.empty[List[String], mutable.LinkedHashMap[String, Symbol]]
 
     val allLowered = mutable.ListBuffer.empty[TDecl]
+    // Decls coming from `module prelude` source files. Separated from
+    // user decls so structural test assertions on TProgram.decls (Pass
+    // 1's "the program contains two top-bindings") are not perturbed
+    // by an arbitrary number of source-prelude `@intrinsic` defs
+    // — see [[TProgram.auxDecls]].
+    val preludeLowered = mutable.ListBuffer.empty[TDecl]
 
     for module <- modules do
       // Fresh module scope on top of the prelude. We re-create rather than
@@ -221,7 +244,8 @@ class NexElaborator
       // scope too. Mode validation reads paramModes / mutableSymIds —
       // both global — so cross-module forwarding works.
       val perModuleLowered = lowerProgram(perModuleInferred)
-      allLowered ++= perModuleLowered.decls
+      if isPreludeMod then preludeLowered ++= perModuleLowered.decls
+      else                 allLowered     ++= perModuleLowered.decls
 
     // Restore root scope for any post-loop work.
     current = rootScope
@@ -238,7 +262,7 @@ class NexElaborator
     // in [[TClone]] so the original buffer stays usable after the move.
     // Also enforces §4.11: a var-array binding may be captured by at
     // most one closure.
-    val pre        = TProgram(rootPath, allLowered.toList, symbols)
+    val pre        = TProgram(rootPath, allLowered.toList, symbols, preludeLowered.toList)
     val lifetime   = new NexLifetime(
       mutableSymIds = mutableSymIds.contains,
       symbolType    = id => symbols.get(id).map(_.tpe).getOrElse(TyUnknown),

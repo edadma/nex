@@ -501,9 +501,13 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
     }
 
     "elaborate a real-typed intrinsic and preserve its return type" in {
+      // Use a fresh name because the source prelude already binds
+      // `cbrt` via its own `@intrinsic("libm.cbrt")` declaration; a
+      // duplicate top-level `def cbrt` here would clash with the
+      // wildcard-imported source-prelude symbol.
       val tp = elab("""
         |@intrinsic("libm.cbrt")
-        |def cbrt(x: real): real
+        |def my_cbrt(x: real): real
       """.stripMargin)
       val fn = tp.decls.head.asInstanceOf[TFunDecl]
       fn.returnType shouldBe TyReal

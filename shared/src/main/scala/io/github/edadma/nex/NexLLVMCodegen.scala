@@ -80,9 +80,23 @@ class NexLLVMCodegen
     // forward references, so this ordering is for human readability only.
     emitLambdaFunctions()
 
-    for d <- tp.decls do d match
+    // Pre-scan: record every `@intrinsic` function so the call-site path
+    // can dispatch inline. These functions get no LLVM wrapper emitted —
+    // a wrapper would either collide with the libm symbol of the same
+    // name (when the source `def` reuses the libm name verbatim) or
+    // recurse into itself, so the call site emits the libm call directly.
+    // Walk `allDecls` (user + source-prelude) so prelude-bundled
+    // intrinsics get registered alongside user-defined ones.
+    for d <- tp.allDecls do d match
       case f: TFunDecl =>
-        emitFunction(f)
+        f.body match
+          case TIntrinsic(opId, _, _) => intrinsicFunctionOpIds(f.sym.id) = opId
+          case _                       => ()
+      case _ => ()
+
+    for d <- tp.allDecls do d match
+      case f: TFunDecl =>
+        if !intrinsicFunctionOpIds.contains(f.sym.id) then emitFunction(f)
       case _: TTopBinding | _: TStructDecl | _: TModuleDecl | _: TImportDecl =>
         () // top-bindings already emitted as globals; struct/module are metadata
 
@@ -232,6 +246,94 @@ class NexLLVMCodegen
         throw new RuntimeException(
           s"intrinsic `$other` has no LLVM implementation — register one in NexLLVMCodegen.emitIntrinsicBody",
         )
+
+  /** Call-site dispatch for an `@intrinsic` function. The user wrote
+    * `f(args)` where `f` is registered in [[intrinsicFunctionOpIds]];
+    * we emit the intrinsic body inline at the call site so no wrapper
+    * function (which would collide with the libm symbol of the same
+    * name) ever appears in the module.
+    *
+    * `liftToReal` is reused from the legacy prelude path so integer
+    * arguments to `cbrt(8)`-style calls promote to `double` before the
+    * libm call, matching the behaviour the SymKind.Prelude branch
+    * provided when the entries lived in [[NexLLVMPrelude]].
+    */
+  protected def emitIntrinsicCall(opId: String, args: List[TExpr], resultT: Type): String =
+    NexIntrinsics.require(opId)
+    opId match
+      case "test.identity" =>
+        if args.size != 1 then
+          throw new RuntimeException(s"test.identity expects 1 arg, got ${args.size}")
+        emitExpr(args.head)
+
+      case _ if libmUnaryName.isDefinedAt(opId) =>
+        val xv  = liftToRealForIntrinsic(args.head)
+        val reg = newReg()
+        emitLine(s"  $reg = call double @${libmUnaryName(opId)}(double $xv)\n")
+        reg
+
+      case "libm.atan2" =>
+        val yv = liftToRealForIntrinsic(args.head)
+        val xv = liftToRealForIntrinsic(args(1))
+        val reg = newReg()
+        emitLine(s"  $reg = call double @atan2(double $yv, double $xv)\n")
+        reg
+
+      case "libm.asinh" =>
+        val xv = liftToRealForIntrinsic(args.head)
+        val reg = newReg()
+        emitLine(s"  $reg = call double @__nex_asinh(double $xv)\n")
+        reg
+      case "libm.acosh" =>
+        val xv = liftToRealForIntrinsic(args.head)
+        val reg = newReg()
+        emitLine(s"  $reg = call double @__nex_acosh(double $xv)\n")
+        reg
+      case "libm.atanh" =>
+        val xv = liftToRealForIntrinsic(args.head)
+        val reg = newReg()
+        emitLine(s"  $reg = call double @__nex_atanh(double $xv)\n")
+        reg
+
+      case other =>
+        throw new RuntimeException(
+          s"intrinsic `$other` has no LLVM implementation — register one in NexLLVMCodegen.emitIntrinsicCall",
+        )
+
+  /** Mapping from intrinsic opId to the libm function name for unary
+    * real → real intrinsics that bridge to a direct libm call. asinh /
+    * acosh / atanh route through the `__nex_*` wrappers (which compose
+    * the analytic form because libm declarations are absent on some
+    * targets) so they live in their own match arms above.
+    */
+  private val libmUnaryName: PartialFunction[String, String] =
+    case "libm.cbrt"  => "cbrt"
+    case "libm.floor" => "floor"
+    case "libm.ceil"  => "ceil"
+    case "libm.round" => "round"
+    case "libm.trunc" => "trunc"
+    case "libm.asin"  => "asin"
+    case "libm.acos"  => "acos"
+    case "libm.atan"  => "atan"
+    case "libm.sinh"  => "sinh"
+    case "libm.cosh"  => "cosh"
+    case "libm.tanh"  => "tanh"
+    case "libm.log2"  => "log2"
+    case "libm.log10" => "log10"
+
+  /** Same shape as NexLLVMPrelude.liftToReal but visible from
+    * [[emitIntrinsicCall]]. The sibling helper is `private`; rather than
+    * loosen its access, copy the four-line conversion locally — it has
+    * no per-call-site state so the duplication is harmless.
+    */
+  private def liftToRealForIntrinsic(e: TExpr): String =
+    val v = emitExpr(e)
+    e.tpe match
+      case TyInteger =>
+        val r = newReg()
+        emitLine(s"  $r = sitofp i64 $v to double\n")
+        r
+      case _ => v
 
   // ---------------------------------------------------------------------------
   // Expression emission. Returns the LLVM operand text for the value
@@ -455,6 +557,10 @@ class NexLLVMCodegen
           // Struct constructor: `Point(x, y)` lowers like a tuple
           // literal — insertvalue chain into the struct's `{ ... }` type.
           emitStructConstruct(s, args, e.tpe)
+        case TVarRef(s, _, _) if intrinsicFunctionOpIds.contains(s.id) =>
+          // Source-prelude `@intrinsic` function — no wrapper exists,
+          // emit the libm body inline at the call site.
+          emitIntrinsicCall(intrinsicFunctionOpIds(s.id), args, e.tpe)
         case TVarRef(s, _, calleeT) if s.kind == SymKind.Function =>
           emitUserCall(s, calleeT, args)
         case _ =>

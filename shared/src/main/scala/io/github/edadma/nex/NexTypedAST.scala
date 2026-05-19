@@ -331,11 +331,29 @@ enum BindingKind:
 // Program
 // ============================================================================
 
+/** Elaborated, lowered program.
+  *
+  *  - `decls` carries the user-written declarations only — what every
+  *    walker / test inspecting the user's source should see.
+  *  - `auxDecls` carries declarations injected by the toolchain itself,
+  *    today exclusively the source-prelude's `@intrinsic` declarations
+  *    (`prelude/scalar.nex`'s `cbrt`, `floor`, etc.). They live here so
+  *    codegen can pick them up — populating intrinsic dispatch tables,
+  *    skipping wrapper emission for collision-prone libm bridges, etc.
+  *    — without bloating the user's `decls` list and breaking every
+  *    structural assertion in the elaborator test suite.
+  */
 case class TProgram(
     modulePath: List[String],
     decls:      List[TDecl],
     symbols:    SymbolTable,
-)
+    auxDecls:   List[TDecl] = Nil,
+):
+  /** All declarations the codegen layer needs to see, in elaboration
+    * order (aux first so prelude intrinsics are registered before any
+    * user call site that references them).
+    */
+  def allDecls: List[TDecl] = auxDecls ++ decls
 
 /** A flat registry of every symbol minted during elaboration, indexed by
   * `id`. Useful for debugging and for the interpreter's environment.

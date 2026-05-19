@@ -146,7 +146,13 @@ class NexInterpreter:
     // ahead of `def f() = ...` would observe `f` as VUnit and trap.
     val funcInits    = mutable.ListBuffer.empty[() => Unit]
     val bindingInits = mutable.ListBuffer.empty[() => Unit]
-    for d <- p.decls do d match
+    // Source-prelude decls (`@intrinsic` defs from prelude/*.nex) live
+    // in `auxDecls`; the interpreter has to bind them in the global
+    // environment so a user call to `floor(3.7)` resolves to a
+    // VUserFunc with a TIntrinsic body, which evalUserBody then
+    // dispatches via [[intrinsicDispatch]]. Walking `allDecls` covers
+    // user decls + source-prelude decls in a single pass.
+    for d <- p.allDecls do d match
       case f: TFunDecl =>
         val cell = globalEnv.define(f.sym.id, VUnit)
         funcInits += (() => cell.v = VUserFunc(f.params, f.body, globalEnv))
@@ -953,12 +959,43 @@ class NexInterpreter:
         if args.size != 1 then trap(s"test.identity: expected 1 arg, got ${args.size}", p)
         args.head
       },
-      "libm.cbrt" -> { (args, p) =>
+      "libm.cbrt"  -> realUnary("libm.cbrt",  math.cbrt),
+      "libm.floor" -> realUnary("libm.floor", math.floor),
+      "libm.ceil"  -> realUnary("libm.ceil",  math.ceil),
+      "libm.round" -> realUnary("libm.round", x => math.round(x).toDouble),
+      "libm.trunc" -> realUnary("libm.trunc", x => if x < 0 then math.ceil(x) else math.floor(x)),
+      "libm.asin"  -> realUnary("libm.asin",  math.asin),
+      "libm.acos"  -> realUnary("libm.acos",  math.acos),
+      "libm.atan"  -> realUnary("libm.atan",  math.atan),
+      "libm.sinh"  -> realUnary("libm.sinh",  math.sinh),
+      "libm.cosh"  -> realUnary("libm.cosh",  math.cosh),
+      "libm.tanh"  -> realUnary("libm.tanh",  math.tanh),
+      "libm.asinh" -> realUnary("libm.asinh", x => math.log(x + math.sqrt(x * x + 1.0))),
+      "libm.acosh" -> realUnary("libm.acosh", x => math.log(x + math.sqrt(x * x - 1.0))),
+      "libm.atanh" -> realUnary("libm.atanh", x => 0.5 * math.log((1.0 + x) / (1.0 - x))),
+      "libm.log2"  -> realUnary("libm.log2",  x => math.log(x) / math.log(2.0)),
+      "libm.log10" -> realUnary("libm.log10", math.log10),
+      "libm.atan2" -> { (args, p) =>
         args match
-          case List(VReal(x)) => VReal(math.cbrt(x))
-          case _              => trap(s"libm.cbrt: expected real argument, got ${args.map(formatValue).mkString(", ")}", p)
+          case List(VReal(y), VReal(x)) => VReal(math.atan2(y, x))
+          case _ => trap(s"libm.atan2: expected (real, real), got ${args.map(formatValue).mkString(", ")}", p)
       },
     )
+
+  /** Bridge a unary real → real libm function into the intrinsic
+    * dispatch table. Reports a typed trap if a non-real argument
+    * arrives (the elaborator's signature check should make this
+    * unreachable from user code; the guard catches codegen drift).
+    */
+  private def realUnary(
+      opId: String,
+      f:    Double => Double,
+  ): (List[Value], Option[scala.util.parsing.input.Position]) => Value =
+    (args, p) =>
+      args match
+        case List(VReal(x)) => VReal(f(x))
+        case _              =>
+          trap(s"$opId: expected real argument, got ${args.map(formatValue).mkString(", ")}", p)
 
   /** Mode-aware user-function call. For each `mut` parameter whose
     * call-site argument is a [[TVarRef]] (or projection thereof) the

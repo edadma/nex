@@ -23,7 +23,19 @@ object NexIntrinsics:
     */
   val Ids: Set[String] = Set(
     "test.identity",
+    // §10.2 real-only scalar math that the source prelude carries via
+    // bodyless `@intrinsic` declarations. Each id names a libm function
+    // the backend bridges to directly. Adding a new entry here requires
+    // a registration in every backend's dispatch table — interpreter
+    // (NexInterpreter.intrinsicDispatch) and LLVM (emitIntrinsicCall),
+    // plus an explicit notYet in MLIR until that backend grows libm
+    // wiring.
     "libm.cbrt",
+    "libm.floor", "libm.ceil", "libm.round", "libm.trunc",
+    "libm.asin",  "libm.acos", "libm.atan",  "libm.atan2",
+    "libm.sinh",  "libm.cosh", "libm.tanh",
+    "libm.asinh", "libm.acosh","libm.atanh",
+    "libm.log2",  "libm.log10",
   )
 
   /** Throw if `opId` is not a known intrinsic. Use this at the top of each

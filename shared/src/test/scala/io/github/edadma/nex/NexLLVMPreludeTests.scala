@@ -532,12 +532,14 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
-  // Stage 0 — `@intrinsic` dispatch shows up in the IR as a direct body
-  // emission keyed off the opId. We assert the shape of the emitted IR
-  // here; cross-backend parity (interpreter ↔ AOT) is verified in
-  // NexParityTests under "intrinsic functions (Stage 0)".
+  // Stage 0 — `@intrinsic` dispatch keys off the opId attribute. The
+  // function declaration becomes purely a typing surface; the actual
+  // libm call is emitted INLINE at every call site (no wrapper exists
+  // in the IR — a wrapper would either collide with the libm symbol or
+  // recurse into itself). Cross-backend parity (interpreter ↔ AOT) is
+  // verified in NexParityTests under "intrinsic functions (Stage 0)".
   "intrinsic functions (Stage 0)" should {
-    "test.identity emits a single-ret pass-through" in {
+    "test.identity is fully eliminated at the call site" in {
       val ir = compile(
         """@intrinsic("test.identity")
           |def id(x: integer): integer
@@ -545,11 +547,12 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
           |def main() = print(id(7))
           |""".stripMargin,
       )
-      ir should include("define i64 @id(i64 %arg0)")
-      ir should include("ret i64 %arg0")
+      // No `define @id` wrapper — the function body is consumed at the
+      // call site; here `id(7)` returns 7 directly via emitExpr.
+      ir shouldNot include("define i64 @id")
     }
 
-    "libm.cbrt emits a call to @cbrt" in {
+    "libm.cbrt emits a call to @cbrt at every user call site" in {
       val ir = compile(
         """@intrinsic("libm.cbrt")
           |def cb(x: real): real
@@ -557,7 +560,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
           |def main() = print(cb(8.0))
           |""".stripMargin,
       )
-      ir should include("define double @cb(double")
-      ir should include("call double @cbrt(double %arg0)")
+      ir shouldNot include("define double @cb")
+      ir should include("call double @cbrt(double 0x4020000000000000)")
     }
   }

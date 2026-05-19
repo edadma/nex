@@ -144,6 +144,14 @@ protected trait NexLLVMState:
     */
   protected val varBindings = mutable.Set.empty[Int]
 
+  /** Symbol id → opId for every `@intrinsic` top-level function. These
+    * functions have no LLVM wrapper definition emitted (a wrapper would
+    * either collide with the libm symbol or recurse into itself). Instead
+    * the call site looks up the opId in this table and emits the
+    * intrinsic body inline.
+    */
+  protected val intrinsicFunctionOpIds = mutable.Map.empty[Int, String]
+
   // ---------------------------------------------------------------------------
   // Cross-trait abstract methods. Concrete definitions live in
   // [[NexLLVMCodegen]] (compile / emitExpr / control flow / tuples / structs)

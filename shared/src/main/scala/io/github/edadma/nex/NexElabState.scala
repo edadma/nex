@@ -129,12 +129,16 @@ protected trait NexElabState:
     defineNoError("i",   SymKind.Prelude, TyComplex)
 
     val preludeFuncs = List(
-      // §10.2 scalar math
-      "sqrt", "cbrt", "abs", "sign",
-      "exp", "log", "log2", "log10",
-      "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-      "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-      "floor", "ceil", "round", "trunc",
+      // §10.2 scalar math — overloaded names that still need compiler
+      // name-based dispatch (sqrt/log/exp/sin/cos/tan accept complex
+      // arguments; abs/sign/min/max change return type by arg type).
+      // The unambiguous real-only entries (cbrt, floor, ceil, round,
+      // trunc, asin, acos, atan, atan2, sinh, cosh, tanh, asinh,
+      // acosh, atanh, log2, log10) live in `prelude/scalar.nex` and
+      // come in via the source-prelude auto-import.
+      "sqrt", "abs", "sign",
+      "exp", "log",
+      "sin", "cos", "tan",
       "min", "max",
       // §10.3 complex
       "conj", "arg",

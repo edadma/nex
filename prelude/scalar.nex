@@ -1,3 +1,63 @@
 module prelude
 
-// Stage 1 placeholder. Real content (pi, e, scalar math) lands in Stage 2.
+// Scalar math intrinsics — real-only declarations bridged to the host's
+// libm (or wrappers thereof) via the `@intrinsic("libm.<name>")`
+// attribute. Each declaration is bodyless: the elaborator stamps a
+// TIntrinsic body and every backend dispatches by opId.
+//
+// Overloaded entries (sqrt, log, exp, sin, cos, tan — which the spec
+// extends to complex arguments — plus abs / sign / min / max, which
+// vary their return type by argument type) remain in the compiler's
+// `registerPrelude` for now. They land in source after overload-by-
+// input-type lands in a follow-up stage.
+
+@intrinsic("libm.cbrt")
+def cbrt(x: real): real
+
+@intrinsic("libm.floor")
+def floor(x: real): real
+
+@intrinsic("libm.ceil")
+def ceil(x: real): real
+
+@intrinsic("libm.round")
+def round(x: real): real
+
+@intrinsic("libm.trunc")
+def trunc(x: real): real
+
+@intrinsic("libm.asin")
+def asin(x: real): real
+
+@intrinsic("libm.acos")
+def acos(x: real): real
+
+@intrinsic("libm.atan")
+def atan(x: real): real
+
+@intrinsic("libm.atan2")
+def atan2(y: real, x: real): real
+
+@intrinsic("libm.sinh")
+def sinh(x: real): real
+
+@intrinsic("libm.cosh")
+def cosh(x: real): real
+
+@intrinsic("libm.tanh")
+def tanh(x: real): real
+
+@intrinsic("libm.asinh")
+def asinh(x: real): real
+
+@intrinsic("libm.acosh")
+def acosh(x: real): real
+
+@intrinsic("libm.atanh")
+def atanh(x: real): real
+
+@intrinsic("libm.log2")
+def log2(x: real): real
+
+@intrinsic("libm.log10")
+def log10(x: real): real

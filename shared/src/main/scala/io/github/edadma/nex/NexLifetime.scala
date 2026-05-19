@@ -68,7 +68,10 @@ class NexLifetime(
     */
   def rewrite(p: TProgram): TProgram =
     capturedBy.clear()
-    p.copy(decls = p.decls.map(rewriteDecl))
+    p.copy(
+      decls    = p.decls.map(rewriteDecl),
+      auxDecls = p.auxDecls.map(rewriteDecl),
+    )
 
   private def rewriteDecl(d: TDecl): TDecl = d match
     case f: TFunDecl    => f.copy(body = transformContainer(f.body))
