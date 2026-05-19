@@ -538,8 +538,9 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     * only needs an indirect call.
     */
   private def emitMapCall(arr: TExpr, fn: TExpr, resultT: Type): String =
-    if arrayRank(arr.tpe) != 1 then
-      notYet(s"map on rank ${arrayRank(arr.tpe)} (only rank-1 supported)")
+    val rank = arrayRank(arr.tpe)
+    if rank != 1 && rank != 2 then
+      notYet(s"map on rank $rank")
       return "0"
 
     val srcElem = arrayElem(arr.tpe)
@@ -552,13 +553,22 @@ protected trait NexLLVMPrelude extends NexLLVMState:
 
     val arrV    = emitExpr(arr)
     val (fnPtr, envPtr) = splitClosure(fn)
-    val len     = newReg()
-    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
-    val res     = newReg()
-    emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $len, i64 $resEsz)\n")
-    // Tier-1 perf: hoist both buffer pointers out of the loop and
-    // index via direct GEP. Both bounds are provably safe — `i` ranges
-    // over `0..len` and both arrays have length `len` by construction.
+
+    // Rank-1: len = arr.len; alloc(len, esz). Rank-2: rows, cols from
+    // source; alloc rank-2 with the same shape, walk flat over
+    // rows*cols.
+    val (len, res) = rank match
+      case 1 =>
+        val l = newReg(); emitLine(s"  $l = call i64 @__nex_arr1_len(ptr $arrV)\n")
+        val r = newReg(); emitLine(s"  $r = call ptr @__nex_arr1_alloc(i64 $l, i64 $resEsz)\n")
+        (l, r)
+      case _ =>
+        val rows = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+        val cols = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+        val l    = newReg(); emitLine(s"  $l = mul i64 $rows, $cols\n")
+        val r    = newReg(); emitLine(s"  $r = call ptr @__nex_arr2_alloc(i64 $rows, i64 $cols, i64 $resEsz)\n")
+        (l, r)
+
     val srcBuf  = bufPtr(arrV, arr.tpe)
     val dstBuf  = bufPtr(res, resultT)
 
@@ -581,9 +591,11 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     * we can update-in-place each iteration without phi nodes.
     */
   private def emitReduceCall(arr: TExpr, init: TExpr, fn: TExpr, resultT: Type): String =
-    if arrayRank(arr.tpe) != 1 then
-      notYet(s"reduce on rank ${arrayRank(arr.tpe)} (only rank-1 supported)")
+    val rank = arrayRank(arr.tpe)
+    if rank != 1 && rank != 2 then
+      notYet(s"reduce on rank $rank")
       return "0"
+    val lenFn = if rank == 1 then "__nex_arr1_len" else "__nex_arr2_len"
 
     val srcElem = arrayElem(arr.tpe)
     val srcStT  = storageType(srcElem)
@@ -597,8 +609,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  $accSlot = alloca $accLLT\n")
     emitLine(s"  store $accLLT $iv, ptr $accSlot\n")
     val len  = newReg()
-    emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
-    // Tier-1 perf: hoist srcBuf and index directly.
+    emitLine(s"  $len = call i64 @$lenFn(ptr $arrV)\n")
     val srcBuf  = bufPtr(arrV, arr.tpe)
 
     emitCountingLoop(len, "hof.reduce") { i =>
@@ -704,31 +715,47 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   // (no per-element re-evaluation).
   // ---------------------------------------------------------------------------
 
-  /** Emit `fill(n, v)` — allocate a rank-1 array of length `n` and
-    * store `v` into every slot. Rank-2 form (`fill((rows, cols), v)`)
-    * is not yet supported in codegen and surfaces a notYet diag.
+  /** Emit `fill(n, v)` — allocate a rank-1 or rank-2 array and store
+    * `v` into every slot. The shape comes from the `n` argument's
+    * type: integer → rank-1 of length `n`; tuple (rows, cols) →
+    * rank-2 of shape (rows, cols). `v` is evaluated once.
     */
   private def emitFillCall(n: TExpr, v: TExpr, resultT: Type): String =
-    if arrayRank(resultT) != 1 then
-      notYet(s"fill(rank-${arrayRank(resultT)})")
+    val rank = arrayRank(resultT)
+    if rank != 1 && rank != 2 then
+      notYet(s"fill(rank-$rank)")
       return "null"
 
-    val elem  = arrayElem(resultT)
-    val esz   = elemSize(elem)
-    val stT   = storageType(elem)
-    val nVal  = emitExpr(n)
-    val vVal  = emitExpr(v)
-    val arr   = newReg()
-    emitLine(s"  $arr = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
-    // Tier-1 perf: hoist data-buffer pointer once and index directly.
-    val buf   = bufPtr(arr, resultT)
+    val elem = arrayElem(resultT)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val vVal = emitExpr(v)
 
-    emitCountingLoop(nVal, "fill") { i =>
+    // Rank-1 path takes `n` directly. Rank-2 expects `n` to be a
+    // (integer, integer) tuple — extract rows / cols via extractvalue
+    // on the SSA tuple value, then compute the flat length for the
+    // counting loop.
+    val (arr, len) = rank match
+      case 1 =>
+        val nVal = emitExpr(n)
+        val a    = newReg()
+        emitLine(s"  $a = call ptr @__nex_arr1_alloc(i64 $nVal, i64 $esz)\n")
+        (a, nVal)
+      case _ =>
+        val tup  = emitExpr(n)
+        val rows = newReg(); emitLine(s"  $rows = extractvalue { i64, i64 } $tup, 0\n")
+        val cols = newReg(); emitLine(s"  $cols = extractvalue { i64, i64 } $tup, 1\n")
+        val a    = newReg()
+        emitLine(s"  $a = call ptr @__nex_arr2_alloc(i64 $rows, i64 $cols, i64 $esz)\n")
+        val l    = newReg(); emitLine(s"  $l = mul i64 $rows, $cols\n")
+        (a, l)
+
+    val buf = bufPtr(arr, resultT)
+    emitCountingLoop(len, "fill") { i =>
       val slot = newReg()
       emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
       storeElem(stT, vVal, slot)
     }
-
     arr
 
   /** Emit a fill-with-constant for `zeros(n)` / `ones(n)`. The constant
@@ -765,21 +792,22 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   // supported: integer (i64), real (double), complex ({double, double}).
   // ---------------------------------------------------------------------------
 
-  /** Emit `sum(arr)` — fold rank-1 array with +. Result element type
-    * matches the array element type.
+  /** Emit `sum(arr)` — fold the array with +, walking every element
+    * regardless of rank. Result type matches the element type. The
+    * rank-1 and rank-2 paths share `emitReduceOver`; only the length
+    * helper differs (`__nex_arr1_len` vs `__nex_arr2_len`, which the
+    * helper picks via the rank).
     */
   private def emitSumCall(arr: TExpr, resultT: Type): String =
-    if arrayRank(arr.tpe) != 1 then
-      notYet(s"sum on rank ${arrayRank(arr.tpe)}")
-      return "0"
-    emitReduceOver(arr, resultT, "+", zeroOf(resultT))
+    arrayRank(arr.tpe) match
+      case 1 | 2 => emitReduceOver(arr, resultT, "+", zeroOf(resultT))
+      case other => notYet(s"sum on rank $other"); "0"
 
-  /** Emit `product(arr)` — fold rank-1 array with *. */
+  /** Emit `product(arr)` — same shape as sum, identity 1, op `*`. */
   private def emitProductCall(arr: TExpr, resultT: Type): String =
-    if arrayRank(arr.tpe) != 1 then
-      notYet(s"product on rank ${arrayRank(arr.tpe)}")
-      return "0"
-    emitReduceOver(arr, resultT, "*", oneOf(resultT))
+    arrayRank(arr.tpe) match
+      case 1 | 2 => emitReduceOver(arr, resultT, "*", oneOf(resultT))
+      case other => notYet(s"product on rank $other"); "0"
 
   /** Emit `dot(a, b)` — inner product. Both arrays must be rank-1 with
     * the same element type; result is the element type. Two source
@@ -823,21 +851,34 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     emitLine(s"  $r = load $accLLT, ptr $accSlot\n")
     r
 
-  /** Shared loop for sum and product. */
+  /** Shared loop for sum / product. Walks every element of a rank-1
+    * or rank-2 array (row-major flat order for rank-2). The element
+    * type and op are fixed per call; the accumulator lives in an
+    * alloca slot that the loop updates in place.
+    */
   private def emitReduceOver(arr: TExpr, resultT: Type, op: String, identity: String): String =
-    val elem = arrayElem(arr.tpe)
-    val stT  = storageType(elem)
-    val llT  = llvmType(elem)
+    val rank   = arrayRank(arr.tpe)
+    val elem   = arrayElem(arr.tpe)
+    val stT    = storageType(elem)
+    val llT    = llvmType(elem)
     val accLLT = llvmType(resultT)
+    val lenFn  = rank match
+      case 1 => "__nex_arr1_len"
+      case 2 => "__nex_arr2_len"
+      case _ => "__nex_arr1_len" // unreached — caller filtered ranks
+    val labelPrefix = op match
+      case "+" => "hof.sum"
+      case "*" => "hof.product"
+      case _   => "hof.fold"
 
-    val arrV = emitExpr(arr)
-    val len  = newReg(); emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
-    val buf  = bufPtr(arrV, arr.tpe)
+    val arrV    = emitExpr(arr)
+    val len     = newReg(); emitLine(s"  $len = call i64 @$lenFn(ptr $arrV)\n")
+    val buf     = bufPtr(arrV, arr.tpe)
     val accSlot = newReg()
     emitLine(s"  $accSlot = alloca $accLLT\n")
     storeElem(stT, identity, accSlot)
 
-    emitCountingLoop(len, op match { case "+" => "hof.sum"; case "*" => "hof.product"; case _ => "hof.fold" }) { i =>
+    emitCountingLoop(len, labelPrefix) { i =>
       val slot = newReg()
       emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
       val e   = loadElem(stT, slot, llT)

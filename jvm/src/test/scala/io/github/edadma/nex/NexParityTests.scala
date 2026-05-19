@@ -523,6 +523,58 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "rank-2 HOFs (Wave 3)" should {
+    "sum of a 2x3 integer matrix sums all elements" in parityCheck(
+      """
+        |def main() =
+        |  val m = fill((2, 3), 4)
+        |  print(sum(m))
+      """.stripMargin,
+      "24\n",
+    )
+    "sum of a real matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m = fill((2, 2), 1.5)
+        |  print(sum(m))
+      """.stripMargin,
+      "6.0\n",
+    )
+    "product of a small integer matrix" in parityCheck(
+      """
+        |def main() =
+        |  val m = fill((2, 2), 3)
+        |  print(product(m))
+      """.stripMargin,
+      "81\n",
+    )
+    "map preserves shape (rank-2)" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1, 2, 3], [4, 5, 6]]
+        |  val sq = m.map(x -> x * x)
+        |  print(sq)
+      """.stripMargin,
+      "[[1, 4, 9], [16, 25, 36]]\n",
+    )
+    "map then sum on rank-2" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1, 2], [3, 4]]
+        |  print(m.map(x -> x + 10).sum())
+      """.stripMargin,
+      "50\n",
+    )
+    "reduce over rank-2 walks every element" in parityCheck(
+      """
+        |def main() =
+        |  val m: [[integer]] = [[1, 2], [3, 4]]
+        |  print(reduce(m, 0, (acc, x) -> acc + x))
+      """.stripMargin,
+      "10\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

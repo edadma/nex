@@ -1697,7 +1697,7 @@ class NexElaborator:
       // would silently drop the value.
       case "sum" | "product" if args.size == 1 =>
         args.head.tpe match
-          case TyArray(e, 1) => e
+          case TyArray(e, _) => e // sum/product walk all elements regardless of rank
           case _             => TyUnknown
       case "dot" if args.size == 2 =>
         args.head.tpe match

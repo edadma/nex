@@ -204,13 +204,18 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """getelementptr inbounds %nex_arr1, ptr %t\d+, i32 0, i32 1"""
     }
 
-    "map on rank-2 surfaces a notYet diagnostic (rank-1 only at v0)" in {
+    "map on rank-2 lowers to __nex_arr2_alloc + a flat counting loop (Wave 3)" in {
       val ir = compile("""
         |def main() =
-        |  val m = [[1, 2], [3, 4]]
-        |  print(map(m, x -> x + 1))
+        |  val m: [[integer]] = [[1, 2], [3, 4]]
+        |  val r = map(m, x -> x + 1)
+        |  print(r)
       """.stripMargin)
-      ir should include("not yet supported")
+      ir should not include "not yet supported"
+      // Rank-2 result allocation: __nex_arr2_alloc(rows, cols, esz).
+      ir should include regex """call ptr @__nex_arr2_alloc\(i64 %t\d+, i64 %t\d+, i64 8\)"""
+      // Element-wise loop indexes the flat buffer.
+      ir should include("hof.map")
     }
 
     "map preserves the result element type (real → real)" in {
