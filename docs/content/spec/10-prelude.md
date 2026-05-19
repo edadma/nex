@@ -71,12 +71,31 @@ min(a: [T]): T                          // T must be ordered numeric
 max(a: [T]): T                          // T must be ordered numeric
 dot(a: [T], b: [T]): T                  // inner product; T numeric
 map(a: [T], f: T -> U): [U]
+flatMap(a: [T], f: T -> [U]): [U]              // concat results
 reduce(a: [T], init: U, f: (U, T) -> U): U
 filter(a: [T], pred: T -> bool): [T]
 range(lo: integer, hi: integer): [integer]    // materialize range
 enumerate(a: [T]): [(integer, T)]
 zip(a: [T], b: [U]): [(T, U)]
 ```
+
+**Calling convention.** All the higher-order array functions
+(`map` / `flatMap` / `reduce` / `filter`) and the rank-1 accessors
+(`length` / `sum` / `product` / `dot` / `enumerate` / `zip`)
+are typically called via method-call sugar (§4.9). The two forms
+are equivalent — the dot form just sugars `arr.name(...)` into
+`name(arr, ...)`:
+
+```nex
+// Preferred — reads as a pipeline:
+xs.map(x -> x * x).filter(y -> y > 10).sum()
+
+// Same call shape, free-function form:
+sum(filter(map(xs, x -> x * x), y -> y > 10))
+```
+
+Either compiles to the same AST; the dot form is the documented
+convention for chains.
 
 **Rank-2 operations:**
 

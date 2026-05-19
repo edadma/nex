@@ -141,7 +141,7 @@ class NexElaborator:
       "conj", "arg",
       // §10.4 array ops
       "length", "sum", "product", "dot",
-      "map", "reduce", "filter", "range", "enumerate", "zip",
+      "map", "flatMap", "reduce", "filter", "range", "enumerate", "zip",
       "rows", "cols", "shape",
       "transpose", "matmul", "diag",
       "reshape", "flatten",
@@ -1431,7 +1431,7 @@ class NexElaborator:
     * TyUnknown. Limited to those that actually take a lambda — adding more
     * is cheap but needs a per-name entry in [[inferPreludeHOFCall]].
     */
-  private val preludeHOFNames: Set[String] = Set("map", "reduce", "filter")
+  private val preludeHOFNames: Set[String] = Set("map", "flatMap", "reduce", "filter")
 
   private def isPreludeHOF(s: Symbol): Boolean =
     s.kind == SymKind.Prelude && preludeHOFNames.contains(s.name)
@@ -1514,6 +1514,26 @@ class NexElaborator:
       val outT          = f.tpe match
         case TyFunc(_, ret) if ret != TyUnknown => TyArray(ret, srcR)
         case _                                  => TyUnknown
+      TCall(callee, List(arr, f), p, outT)
+
+    // `flatMap(arr, f)` where `f: T -> [U]`. Result is `[U]` —
+    // always rank-1 since the inner arrays are concatenated. Reject
+    // rank-2 sources at elaborate time (semantics on a matrix would
+    // be ambiguous — flat-iterate the elements? concat the rows?).
+    case "flatMap" if args.size == 2 =>
+      val arr   = infExpr(args.head)
+      arr.tpe match
+        case TyArray(_, r) if r > 1 =>
+          err(s"flatMap requires a rank-1 array, got rank $r", p)
+        case _ =>
+      val elemT = elemOf(arr.tpe).map(_._1).getOrElse(TyUnknown)
+      val f     = inferArg(
+        args(1),
+        TyFunc(List((elemT, ParamMode.Read)), TyArray(TyUnknown, 1)),
+      )
+      val outT = f.tpe match
+        case TyFunc(_, TyArray(u, _)) if u != TyUnknown => TyArray(u, 1)
+        case _                                          => TyUnknown
       TCall(callee, List(arr, f), p, outT)
 
     case "reduce" if args.size == 3 =>

@@ -22,9 +22,10 @@ def main() =
 [= playground =]
 def main() =
   val xs = [1, 2, 3, 4, 5]
-  print(map(xs, x -> x * x))
-  print(reduce(xs, 0, (a, x) -> a + x))
-  print(filter(xs, x -> x % 2 == 1))
+  print(xs.map(x -> x * x))
+  print(xs.reduce(0, (a, x) -> a + x))
+  print(xs.filter(x -> x % 2 == 1))
+  print(xs.flatMap(x -> [x, -x]))
 [= /playground =]
 
 ## Complex numbers

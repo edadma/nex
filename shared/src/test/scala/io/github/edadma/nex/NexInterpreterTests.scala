@@ -380,6 +380,28 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "6\n"
     }
 
+    "prelude HOF `flatMap` concatenates inner arrays" in {
+      runOut("""
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(flatMap(xs, x -> [x, x * 10]))
+      """.stripMargin) shouldBe "[1, 10, 2, 20, 3, 30]\n"
+    }
+
+    "flatMap via method-call sugar" in {
+      runOut("""
+        |def main() =
+        |  print([1, 2, 3].flatMap(x -> [x, -x]))
+      """.stripMargin) shouldBe "[1, -1, 2, -2, 3, -3]\n"
+    }
+
+    "flatMap with single-element inner arrays acts like map" in {
+      runOut("""
+        |def main() =
+        |  print([1, 2, 3].flatMap(x -> [x * x]))
+      """.stripMargin) shouldBe "[1, 4, 9]\n"
+    }
+
     "prelude HOF method-call sugar `xs.map(x -> ...)` runs" in {
       runOut("""
         |def main() =

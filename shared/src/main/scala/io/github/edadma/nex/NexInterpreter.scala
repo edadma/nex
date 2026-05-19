@@ -329,6 +329,17 @@ class NexInterpreter:
         case List(arr, fn: VFunc) => mapArray(arr, fn)
         case List(fn: VFunc, arr) => mapArray(arr, fn) // forgiving arg order
         case _                     => trap(s"map expects (array, fn)", None)
+    case "flatMap" =>
+      args match
+        case List(arr: VArray1, fn: VFunc) =>
+          val out = mutable.ArrayBuffer.empty[Value]
+          for x <- arr.buf do
+            callFunction(fn, List(x), None) match
+              case VArray1(b) => out ++= b
+              case other =>
+                trap(s"flatMap: fn returned non-array (got ${formatValue(other)})", None)
+          VArray1(out)
+        case _ => trap(s"flatMap expects (rank-1 array, fn)", None)
     case "reduce" =>
       args match
         case List(arr, init, fn: VFunc) => reduceArray(arr, init, fn)
