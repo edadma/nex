@@ -1517,6 +1517,75 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "slice out-of-bounds traps (matches interpreter)" should {
+    "rank-1 slice with hi past end traps" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> print(xs[0..10]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "rank-1 slice with negative lo traps" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> print(xs[-1..2]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "rank-1 slice with hi < lo traps" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> print(xs[2..1]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "rank-1 inclusive slice with hi == size traps (one past end)" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> print(xs[0..=3]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "rank-2 slice with row range out of bounds traps" in parityCheck(
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  assert_traps(() -> print(m[0..5, :]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "rank-2 slice with col-index out of bounds traps" in parityCheck(
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  assert_traps(() -> print(m[:, 5]), "out of bounds")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    )
+    "well-formed rank-1 and rank-2 slices keep working" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [10, 20, 30, 40, 50]
+        |  print(xs[1..4])
+        |  print(xs[0..=2])
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m[0, :])
+        |  print(m[:, 1])
+      """.stripMargin,
+      "[20, 30, 40]\n[10, 20, 30]\n[1, 2, 3]\n[2, 5]\n",
+    )
+  }
+
 
   "real shortest-round-trip print (Ryu-equivalent via iterative %.Ng)" should {
     "0.1 + 0.2 prints all 17 round-trip digits, not %g's 6" in parityCheck(

@@ -320,6 +320,10 @@ protected trait NexLLVMArrays extends NexLLVMState:
 
   /** Lower `arr[lo..hi]` / `arr[lo..=hi]` (rank-1) to a fresh array of
     * `hi-lo` (or `hi-lo+1`) elements copied from the source.
+    *
+    * Traps on out-of-bounds bounds (lo < 0, hi < lo, or hi past the
+    * array's length) to match the interpreter; without the check, an
+    * OOB slice would silently read past the buffer.
     */
   protected def emitSlice(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, resultT: Type): String =
     val elem = arrayElem(arr.tpe)
@@ -330,6 +334,33 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val av  = emitExpr(arr)
     val loV = emitExpr(lo)
     val hiV = emitExpr(hi)
+
+    // Bounds check: lo < 0, hi < lo, or hi exceeds size (for
+    // exclusive: hi > size; for inclusive: hi >= size). The trap
+    // routes through __nex_trap_with so an enclosing assert_traps
+    // catches.
+    val srcLen = newReg()
+    emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val negLo = newReg()
+    emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
+    val hiLtLo = newReg()
+    emitLine(s"  $hiLtLo = icmp slt i64 $hiV, $loV\n")
+    val hiBad = newReg()
+    if inclusive then
+      emitLine(s"  $hiBad = icmp sge i64 $hiV, $srcLen\n")
+    else
+      emitLine(s"  $hiBad = icmp sgt i64 $hiV, $srcLen\n")
+    val any01 = newReg()
+    emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+    val any = newReg()
+    emitLine(s"  $any = or i1 $any01, $hiBad\n")
+    val okL   = freshLabel("sl1.ok")
+    val failL = freshLabel("sl1.fail")
+    emitTerminator(s"  br i1 $any, label %$failL, label %$okL\n")
+    startBlock(failL)
+    emitLine(s"  call void @__nex_trap_with(ptr @.slice_oob_msg)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL)
 
     // Slice length: hi - lo (exclusive) or hi - lo + 1 (inclusive).
     val rawLen = newReg()
@@ -377,23 +408,58 @@ protected trait NexLLVMArrays extends NexLLVMState:
 
     // For each axis: (loStart, loEnd, preserved?, isSingleton?).
     // `preserved` means this axis contributes to the result rank.
-    def axis(spec: TAxisSpec, total: String): (String, String, Boolean, Option[String]) = spec match
+    // Each branch traps on OOB bounds against the matching extent
+    // (rows or cols), mirroring the interpreter's per-axis checks.
+    def axis(spec: TAxisSpec, total: String, label: String): (String, String, Boolean, Option[String]) = spec match
       case TAxisAll => ("0", total, true, None)
       case TAxisIndex(idx) =>
         val iv = emitExpr(idx)
+        val neg = newReg()
+        emitLine(s"  $neg = icmp slt i64 $iv, 0\n")
+        val ge  = newReg()
+        emitLine(s"  $ge  = icmp sge i64 $iv, $total\n")
+        val bad = newReg()
+        emitLine(s"  $bad = or i1 $neg, $ge\n")
+        val okL = freshLabel(s"$label.ix.ok")
+        val flL = freshLabel(s"$label.ix.fail")
+        emitTerminator(s"  br i1 $bad, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.axis_oob_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
         val hi = newReg()
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false, Some(iv))
       case TAxisRange(lo, hi, inclusive) =>
         val loV = emitExpr(lo)
         val hiV = emitExpr(hi)
+        val negLo = newReg()
+        emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
+        val hiLtLo = newReg()
+        emitLine(s"  $hiLtLo = icmp slt i64 $hiV, $loV\n")
+        val hiBad = newReg()
+        if inclusive then
+          emitLine(s"  $hiBad = icmp sge i64 $hiV, $total\n")
+        else
+          emitLine(s"  $hiBad = icmp sgt i64 $hiV, $total\n")
+        val any01 = newReg()
+        emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+        val any = newReg()
+        emitLine(s"  $any = or i1 $any01, $hiBad\n")
+        val okL = freshLabel(s"$label.rg.ok")
+        val flL = freshLabel(s"$label.rg.fail")
+        emitTerminator(s"  br i1 $any, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.slice_oob_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
         val end = if inclusive then
           val r = newReg(); emitLine(s"  $r = add i64 $hiV, 1\n"); r
         else hiV
         (loV, end, true, None)
 
-    val (rLo, rEnd, rPres, _) = axis(rowAx, rowsAll)
-    val (cLo, cEnd, cPres, _) = axis(colAx, colsAll)
+    val (rLo, rEnd, rPres, _) = axis(rowAx, rowsAll, "sl2r")
+    val (cLo, cEnd, cPres, _) = axis(colAx, colsAll, "sl2c")
     val rLen = newReg()
     emitLine(s"  $rLen = sub i64 $rEnd, $rLo\n")
     val cLen = newReg()
