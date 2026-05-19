@@ -376,7 +376,7 @@ protected trait NexElabInference extends NexElabState:
   // ==========================================================================
 
   protected def infExpr(e: TExpr): TExpr = e match
-    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit => e
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit | _: TIntrinsic => e
 
     case TInterpStringLit(parts, p, _) =>
       // `${...}` re-parse happens in Stage 1, so the parts list may

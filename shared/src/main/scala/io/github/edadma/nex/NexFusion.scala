@@ -141,7 +141,7 @@ class NexFusion(symbols: SymbolTable):
       }
       TInterpStringLit(ps, p, t)
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-       | _: TUnitLit | _: TVarRef => e
+       | _: TUnitLit | _: TVarRef | _: TIntrinsic => e
 
   /** Rule 1a: `lhs op rhs` (both arrays, rank-1 OR rank-2) → fused loop.
     * For rank-2 the loop is FLAT — single index 0..rows*cols-1 — with the
@@ -315,7 +315,7 @@ class NexFusion(symbols: SymbolTable):
   private def subst(e: TExpr, fromId: Int, to: TExpr): TExpr = e match
     case TVarRef(s, _, _) if s.id == fromId => to
     case _: TVarRef                         => e
-    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit => e
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit | _: TIntrinsic => e
     case TBinOp(op, l, r, p, t)        => TBinOp(op, subst(l, fromId, to), subst(r, fromId, to), p, t)
     case TUnaryOp(op, x, p, t)         => TUnaryOp(op, subst(x, fromId, to), p, t)
     case TJuxtapose(c, b, p, t)        => TJuxtapose(subst(c, fromId, to), subst(b, fromId, to), p, t)

@@ -531,3 +531,33 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("insertvalue { double, double }")
     }
   }
+
+  // Stage 0 — `@intrinsic` dispatch shows up in the IR as a direct body
+  // emission keyed off the opId. We assert the shape of the emitted IR
+  // here; cross-backend parity (interpreter ↔ AOT) is verified in
+  // NexParityTests under "intrinsic functions (Stage 0)".
+  "intrinsic functions (Stage 0)" should {
+    "test.identity emits a single-ret pass-through" in {
+      val ir = compile(
+        """@intrinsic("test.identity")
+          |def id(x: integer): integer
+          |
+          |def main() = print(id(7))
+          |""".stripMargin,
+      )
+      ir should include("define i64 @id(i64 %arg0)")
+      ir should include("ret i64 %arg0")
+    }
+
+    "libm.cbrt emits a call to @cbrt" in {
+      val ir = compile(
+        """@intrinsic("libm.cbrt")
+          |def cb(x: real): real
+          |
+          |def main() = print(cb(8.0))
+          |""".stripMargin,
+      )
+      ir should include("define double @cb(double")
+      ir should include("call double @cbrt(double %arg0)")
+    }
+  }

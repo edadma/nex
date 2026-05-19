@@ -38,12 +38,15 @@ case class ConstDeclAST(
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
 
-/** `def name(params) [: returnType] = body`. */
+/** `def name(params) [: returnType] = body`. The body is `None` when the
+  * declaration carries an `@intrinsic("opId")` attribute — the compiler
+  * supplies the implementation via per-backend dispatch tables.
+  */
 case class FunDeclAST(
     name:       String,
     params:     List[FunParam],
     returnType: Option[TypeAST],
-    body:       ExprAST,
+    body:       Option[ExprAST],
     isPrivate:  Boolean = false,
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
@@ -83,8 +86,11 @@ case class ImportDeclAST(
 
 case class ImportSelector(name: String, alias: Option[String] = None)
 
-/** Attribute, e.g. `@test`, `@strict`. */
-case class Attribute(name: String) extends Positional
+/** Attribute, e.g. `@test`, `@strict`, `@intrinsic("libm.sqrt")`. The
+  * `args` list is empty for argument-less attributes and otherwise holds
+  * the literal string arguments inside the parentheses.
+  */
+case class Attribute(name: String, args: List[String] = Nil) extends Positional
 
 // ============================================================================
 // Patterns (the left-hand side of a binding)

@@ -93,7 +93,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     */
   private def walkChildren(e: TExpr, f: TExpr => Unit): Unit = e match
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-       | _: TUnitLit | _: TVarRef | _: TAxisAllMark => ()
+       | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => ()
     case TInterpStringLit(parts, _, _) =>
       parts.foreach {
         case TInterpExpr(x) => f(x)

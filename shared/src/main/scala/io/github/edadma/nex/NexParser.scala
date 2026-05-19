@@ -83,8 +83,14 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       case attrs ~ d => attachAttrs(d, attrs)
     }
 
+  /** `@name` or `@name("arg1", "arg2", ...)`. Only string literal arguments
+    * are accepted — keeps the grammar small and serves the immediate need
+    * (`@intrinsic("libm.sqrt")`). Richer attribute payloads can come later.
+    */
   lazy val attribute: PackratParser[Attribute] =
-    "@" ~> ident ^^ Attribute.apply
+    "@" ~> ident ~ opt("(" ~> repsep(stringLit, ",") <~ ")") ^^ {
+      case n ~ argsOpt => Attribute(n, argsOpt.getOrElse(Nil))
+    }
 
   private def attachAttrs(d: DeclAST, attrs: List[Attribute]): DeclAST =
     if attrs.isEmpty then d else d match
@@ -133,11 +139,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   // --- def declarations --------------------------------------------------
 
+  /** `def name(params) [: returnType] [= body]`. The body is optional — a
+    * bodyless `def` is the surface form for intrinsic declarations
+    * (`@intrinsic("opId") def name(...) -> T`). The elaborator validates
+    * that bodyless decls carry the corresponding attribute and that
+    * decls with bodies do not.
+    */
   lazy val defDecl: PackratParser[DeclAST] =
     opt("private") ~ ("def" ~> ident) ~
       ("(" ~> repsep(funParam, ",") <~ ")") ~
       opt(":" ~> typeExpr) ~
-      ("=" ~> funBody) ~ opt(trailingEnd) ^^ {
+      opt("=" ~> funBody) ~ opt(trailingEnd) ^^ {
       case priv ~ name ~ params ~ ret ~ body ~ _ =>
         FunDeclAST(name, params, ret, body, isPrivate = priv.isDefined)
     }

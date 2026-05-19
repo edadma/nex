@@ -29,7 +29,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
     "parse a no-arg single-expression def" in {
       parseProg("def main() = print()").decls shouldBe List(
         FunDeclAST("main", Nil, None,
-          CallExpr(VarRefExpr("print"), Nil)),
+          Some(CallExpr(VarRefExpr("print"), Nil))),
       )
     }
     "parse a one-arg def with inferred (read) mode" in {
@@ -37,7 +37,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         FunDeclAST("square",
           List(FunParam("x", NamedType("real"), ParamMode.Read)),
           None,
-          BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))),
+          Some(BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x")))),
       )
     }
     "parse a def with declared mut parameter" in {
@@ -48,7 +48,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
             FunParam("x", NamedType("real"), ParamMode.Read),
           ),
           None,
-          VarRefExpr("x")),
+          Some(VarRefExpr("x"))),
       )
     }
     "parse explicit return type annotation" in {
@@ -56,7 +56,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         FunDeclAST("factorial",
           List(FunParam("n", NamedType("integer"), ParamMode.Read)),
           Some(NamedType("integer")),
-          VarRefExpr("n")),
+          Some(VarRefExpr("n"))),
       )
     }
     "parse a def with a block body" in {
@@ -68,8 +68,9 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
       p.decls.head shouldBe a [FunDeclAST]
       val fn = p.decls.head.asInstanceOf[FunDeclAST]
       fn.name shouldBe "normalize"
-      fn.body shouldBe a [BlockExpr]
-      val block = fn.body.asInstanceOf[BlockExpr]
+      fn.body shouldBe a [Some[?]]
+      fn.body.get shouldBe a [BlockExpr]
+      val block = fn.body.get.asInstanceOf[BlockExpr]
       block.items.size shouldBe 1
       block.items.head shouldBe a [BlockDecl]
       block.result shouldBe BinOpExpr("/", VarRefExpr("v"), VarRefExpr("mag"))
@@ -79,7 +80,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         FunDeclAST("helper",
           List(FunParam("x", NamedType("real"), ParamMode.Read)),
           None,
-          VarRefExpr("x"),
+          Some(VarRefExpr("x")),
           isPrivate = true),
       )
     }
@@ -171,7 +172,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |def test_addition() = 1""".stripMargin
       parseProg(src).decls shouldBe List(
         FunDeclAST("test_addition", Nil, None,
-          IntLitExpr(1),
+          Some(IntLitExpr(1)),
           attributes = List(Attribute("test"))),
       )
     }
@@ -180,7 +181,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         FunDeclAST("hot",
           List(FunParam("a", ArrayType(NamedType("real")), ParamMode.Read)),
           None,
-          VarRefExpr("a"),
+          Some(VarRefExpr("a")),
           attributes = List(Attribute("strict"))),
       )
     }
@@ -201,6 +202,42 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           attributes = List(Attribute("test")),
         ),
       )
+    }
+
+    // Stage 0 — `@intrinsic("op_id")` attribute carries a string arg the
+    // compiler keys into per-backend dispatch tables.
+    "parse @intrinsic with a single string argument" in {
+      val src = """@intrinsic("libm.sqrt")
+                  |def sqrt(x: real): real""".stripMargin
+      val decls = parseProg(src).decls
+      decls shouldBe List(
+        FunDeclAST(
+          "sqrt",
+          List(FunParam("x", NamedType("real"), ParamMode.Read)),
+          Some(NamedType("real")),
+          None,
+          attributes = List(Attribute("intrinsic", List("libm.sqrt"))),
+        ),
+      )
+    }
+
+    "parse @intrinsic with multiple string arguments" in {
+      // Currently no intrinsic uses more than one arg, but the grammar
+      // accepts a list for future symmetry with multi-key attributes.
+      val src = """@intrinsic("a", "b")
+                  |def foo(): integer""".stripMargin
+      val Right(prog) = parser.parseProgram(src): @unchecked
+      prog.decls.head.attributes shouldBe List(Attribute("intrinsic", List("a", "b")))
+    }
+
+    "parse a bodyless def carrying @intrinsic" in {
+      // The body is None; the elaborator (sub-step B) attaches the
+      // TIntrinsic node from the attribute's opId.
+      val src = """@intrinsic("test.identity")
+                  |def identity(x: integer): integer""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.body shouldBe None
+      fn.attributes shouldBe List(Attribute("intrinsic", List("test.identity")))
     }
   }
 
@@ -231,7 +268,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  if mag == 0.0 then v
           |  else v / mag""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      val block = fn.body.asInstanceOf[BlockExpr]
+      val block = fn.body.get.asInstanceOf[BlockExpr]
       block.result shouldBe IfExpr(
         BinOpExpr("==", VarRefExpr("mag"), RealLitExpr(0.0)),
         VarRefExpr("v"),
@@ -252,7 +289,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
       // A def body that's a single multi-line statement parses as
       // the statement directly (no BlockExpr wrapper); a single-stmt
       // indented body likewise unwraps to just that statement.
-      val ifNode = fn.body.asInstanceOf[IfExpr]
+      val ifNode = fn.body.get.asInstanceOf[IfExpr]
       ifNode.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
       ifNode.thenBranch shouldBe IntLitExpr(1)
       ifNode.elseBranch.get shouldBe UnaryOpExpr("-", IntLitExpr(1))
@@ -266,7 +303,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  else
           |    -1""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      val ifNode = fn.body.asInstanceOf[IfExpr]
+      val ifNode = fn.body.get.asInstanceOf[IfExpr]
       // Same shape as the no-`then` form.
       ifNode.thenBranch shouldBe IntLitExpr(1)
     }
@@ -301,7 +338,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  else
           |    0""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      val outer = fn.body.asInstanceOf[IfExpr]
+      val outer = fn.body.get.asInstanceOf[IfExpr]
       outer.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
       // The elif is rendered as an IfExpr in the else-branch.
       outer.elseBranch.get shouldBe a [IfExpr]
@@ -336,7 +373,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  for k in 0..n
           |    print(k)""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      val forNode = fn.body.asInstanceOf[ForExpr]
+      val forNode = fn.body.get.asInstanceOf[ForExpr]
       forNode.pat shouldBe VarPat("k")
       forNode.body shouldBe CallExpr(VarRefExpr("print"), List(VarRefExpr("k")))
     }
@@ -359,7 +396,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  while x > 0
           |    print(x)""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      val whileNode = fn.body.asInstanceOf[WhileExpr]
+      val whileNode = fn.body.get.asInstanceOf[WhileExpr]
       whileNode.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
       whileNode.body shouldBe CallExpr(VarRefExpr("print"), List(VarRefExpr("x")))
     }
@@ -385,14 +422,14 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         """def main() =
           |  x = 42""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe AssignExpr(VarRefExpr("x"), IntLitExpr(42))
+      fn.body.get shouldBe AssignExpr(VarRefExpr("x"), IntLitExpr(42))
     }
     "parse indexed assignment `a[i] = x`" in {
       val src =
         """def main() =
           |  a[i] = 0.0""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe AssignExpr(
+      fn.body.get shouldBe AssignExpr(
         IndexExpr(VarRefExpr("a"), List(VarRefExpr("i"))),
         RealLitExpr(0.0),
       )
@@ -402,7 +439,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         """def main() =
           |  p.x = 5.0""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe AssignExpr(
+      fn.body.get shouldBe AssignExpr(
         FieldExpr(VarRefExpr("p"), "x"),
         RealLitExpr(5.0),
       )
@@ -414,8 +451,8 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           |  x = x + 1
           |  x""".stripMargin
       val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe a [BlockExpr]
-      val block = fn.body.asInstanceOf[BlockExpr]
+      fn.body.get shouldBe a [BlockExpr]
+      val block = fn.body.get.asInstanceOf[BlockExpr]
       block.items.size shouldBe 2  // var decl + assignment
       block.items(0) shouldBe a [BlockDecl]
       block.items(1) shouldBe BlockExprItem(
@@ -488,7 +525,7 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
       val fn = prog.decls.head.asInstanceOf[FunDeclAST]
       fn.name shouldBe "main"
       fn.params shouldBe Nil
-      fn.body shouldBe CallExpr(VarRefExpr("print"),
+      fn.body.get shouldBe CallExpr(VarRefExpr("print"),
         List(StringLitExpr("Hello, Nex!")))
     }
 

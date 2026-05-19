@@ -104,7 +104,7 @@ protected trait NexElabLowering extends NexElabState:
       }
       TInterpStringLit(lowered, p, t)
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-       | _: TUnitLit | _: TVarRef => e
+       | _: TUnitLit | _: TVarRef | _: TIntrinsic => e
     // TFusedLoop / TFlatIndex are post-lowering; if a re-lower pass ever
     // runs over a fused tree, recurse into their sub-expressions.
     case TFusedLoop(lv, len, body, cols, p, t) =>

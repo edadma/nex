@@ -441,13 +441,13 @@ class NexParserTests extends AnyWordSpec with Matchers:
       val Right(prog) =
         new NexParser().parseProgram("def f(x: integer) = x * x"): @unchecked
       val fn = prog.decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))
+      fn.body.get shouldBe BinOpExpr("*", VarRefExpr("x"), VarRefExpr("x"))
     }
     "parse an inline assignment body — `def bump(x: mut T) = x = x + 1`" in {
       val Right(prog) =
         new NexParser().parseProgram("def bump(x: mut integer) = x = x + 1"): @unchecked
       val fn = prog.decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe AssignExpr(
+      fn.body.get shouldBe AssignExpr(
         VarRefExpr("x"),
         BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1)),
       )
@@ -456,7 +456,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
       val Right(prog) =
         new NexParser().parseProgram("def reset(b: mut Box) = b.v = 0"): @unchecked
       val fn = prog.decls.head.asInstanceOf[FunDeclAST]
-      fn.body shouldBe AssignExpr(
+      fn.body.get shouldBe AssignExpr(
         FieldExpr(VarRefExpr("b"), "v"),
         IntLitExpr(0),
       )
@@ -466,7 +466,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
         """def bump(x: mut integer) =
           |  x = x + 1""".stripMargin
       val Right(prog) = new NexParser().parseProgram(src): @unchecked
-      prog.decls.head.asInstanceOf[FunDeclAST].body shouldBe AssignExpr(
+      prog.decls.head.asInstanceOf[FunDeclAST].body.get shouldBe AssignExpr(
         VarRefExpr("x"),
         BinOpExpr("+", VarRefExpr("x"), IntLitExpr(1)),
       )
@@ -527,7 +527,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
           |  val x = 1; val y = 2
           |  x + y""".stripMargin
       val prog = parseProg(src)
-      val body = prog.decls.head.asInstanceOf[FunDeclAST].body
+      val body = prog.decls.head.asInstanceOf[FunDeclAST].body.get
       val block = body.asInstanceOf[BlockExpr]
       block.items.size shouldBe 2
       block.items(0) shouldBe BlockDecl(ValDeclAST(VarPat("x"), None, IntLitExpr(1)))
@@ -541,7 +541,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
           |  val a = 1; val b = 2; val c = 3
           |  a + b + c""".stripMargin
       val prog = parseProg(src)
-      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.get.asInstanceOf[BlockExpr]
       block.items.size shouldBe 3
     }
 
@@ -551,7 +551,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
           |  val x = 1;
           |  x""".stripMargin
       val prog = parseProg(src)
-      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.get.asInstanceOf[BlockExpr]
       block.items.size shouldBe 1
       block.result shouldBe VarRefExpr("x")
     }
@@ -562,7 +562,7 @@ class NexParserTests extends AnyWordSpec with Matchers:
           |  val x = 1;; val y = 2
           |  x + y""".stripMargin
       val prog = parseProg(src)
-      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.get.asInstanceOf[BlockExpr]
       block.items.size shouldBe 2
     }
   }

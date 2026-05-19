@@ -1829,3 +1829,35 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "[1, 2, 3, 4, 5, 6]\n",
     )
   }
+
+  "intrinsic functions (Stage 0)" should {
+    "test.identity returns its argument unchanged" in parityCheck(
+      """
+        |@intrinsic("test.identity")
+        |def id(x: integer): integer
+        |
+        |def main() = print(id(42))
+      """.stripMargin,
+      "42\n",
+    )
+    "libm.cbrt computes the cube root" in parityCheck(
+      """
+        |@intrinsic("libm.cbrt")
+        |def cb(x: real): real
+        |
+        |def main() = print(cb(27.0))
+      """.stripMargin,
+      "3.0\n",
+    )
+    "intrinsic coexists with ordinary user functions" in parityCheck(
+      """
+        |@intrinsic("test.identity")
+        |def passthrough(x: integer): integer
+        |
+        |def double(n: integer): integer = passthrough(n) + passthrough(n)
+        |
+        |def main() = print(double(5))
+      """.stripMargin,
+      "10\n",
+    )
+  }

@@ -174,30 +174,64 @@ class NexLLVMCodegen
       locals(p.id) = slot
       if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
-    val result = emitExpr(f.body)
+    f.body match
+      case TIntrinsic(opId, _, _) =>
+        emitIntrinsicBody(opId, f.params, f.returnType)
+      case _ =>
+        val result = emitExpr(f.body)
 
-    // Emit the final ret only if no terminator has fired yet. Inside the
-    // body, an early `return` (or both branches of an if that return)
-    // will already have closed the block (with their own dec-locals).
-    if currentBlock.isDefined then
-      // If the function body produced an owning array value but we are
-      // about to discard it (main returns i32, or fn returns void), dec
-      // the result first so it doesn't leak.
-      val bodyIsRefCounted = isRefCountedType(f.body.tpe)
-      val willDiscardResult = isMain || f.returnType == TyUnit || result == "void"
-      if bodyIsRefCounted && willDiscardResult && result != "0" && result != "void" then
-        emitArrDec(result, f.body.tpe)
+        // Emit the final ret only if no terminator has fired yet. Inside the
+        // body, an early `return` (or both branches of an if that return)
+        // will already have closed the block (with their own dec-locals).
+        if currentBlock.isDefined then
+          // If the function body produced an owning array value but we are
+          // about to discard it (main returns i32, or fn returns void), dec
+          // the result first so it doesn't leak.
+          val bodyIsRefCounted = isRefCountedType(f.body.tpe)
+          val willDiscardResult = isMain || f.returnType == TyUnit || result == "void"
+          if bodyIsRefCounted && willDiscardResult && result != "0" && result != "void" then
+            emitArrDec(result, f.body.tpe)
 
-      decAllLocalArrays()
+          decAllLocalArrays()
 
-      if isMain then
-        emitTerminator("  ret i32 0\n")
-      else if f.returnType == TyUnit || result == "void" then
-        emitTerminator("  ret void\n")
-      else
-        emitTerminator(s"  ret ${llvmType(f.returnType)} $result\n")
+          if isMain then
+            emitTerminator("  ret i32 0\n")
+          else if f.returnType == TyUnit || result == "void" then
+            emitTerminator("  ret void\n")
+          else
+            emitTerminator(s"  ret ${llvmType(f.returnType)} $result\n")
 
     out.append("}\n\n")
+
+  /** Emit the function body for an `@intrinsic("opId")` declaration. The
+    * params are already spilled to alloca slots in [[locals]] but we read
+    * them from the raw `%arg<i>` SSA registers — there's no value in the
+    * detour through memory for intrinsic shapes. Adds nothing to
+    * `arrayLocalSlots` (intrinsics own no captured arrays).
+    */
+  private def emitIntrinsicBody(
+      opId: String,
+      params: List[Symbol],
+      returnType: Type,
+  ): Unit =
+    NexIntrinsics.require(opId)
+    opId match
+      case "test.identity" =>
+        if params.size != 1 then
+          throw new RuntimeException(s"test.identity expects 1 param, got ${params.size}")
+        emitTerminator(s"  ret ${llvmType(returnType)} %arg0\n")
+
+      case "libm.cbrt" =>
+        if params.size != 1 then
+          throw new RuntimeException(s"libm.cbrt expects 1 param, got ${params.size}")
+        val reg = newReg()
+        emitLine(s"  $reg = call double @cbrt(double %arg0)\n")
+        emitTerminator(s"  ret double $reg\n")
+
+      case other =>
+        throw new RuntimeException(
+          s"intrinsic `$other` has no LLVM implementation — register one in NexLLVMCodegen.emitIntrinsicBody",
+        )
 
   // ---------------------------------------------------------------------------
   // Expression emission. Returns the LLVM operand text for the value
@@ -210,6 +244,13 @@ class NexLLVMCodegen
     case TRealLit(v, _, _) => formatReal(v)
     case TBoolLit(v, _, _) => if v then "1" else "0"
     case TUnitLit(_)       => "void"
+
+    case TIntrinsic(opId, _, _) =>
+      // TIntrinsic only appears as a function body and is consumed by
+      // emitIntrinsicBody directly; if we reach this case in value
+      // position the elaborator placed it somewhere illegal.
+      notYet(s"intrinsic `$opId` in value position")
+      "0"
 
     case TStringLit(s, _, _) =>
       // String literals lower to a private %nex_str descriptor with the

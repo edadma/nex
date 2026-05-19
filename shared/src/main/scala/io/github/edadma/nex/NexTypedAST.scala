@@ -245,6 +245,15 @@ case class TSlice2(
   */
 case class TMethodCall(receiver: TExpr, name: String, args: List[TExpr], pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
+/** Body marker for a function whose implementation is provided by the
+  * compiler rather than expressed in Nex source. The `opId` is a dotted
+  * name (e.g. `"libm.sqrt"`) keyed against per-backend dispatch tables:
+  * the interpreter maps it to a Scala closure, the LLVM backend to an
+  * emit-function, etc. Decls bearing an `@intrinsic("opId")` attribute
+  * are minted with this body in place of an ordinary `TExpr`.
+  */
+case class TIntrinsic(opId: String, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
+
 // -- Lambdas ---------------------------------------------------------------
 
 case class TLambda(params: List[Symbol], body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr

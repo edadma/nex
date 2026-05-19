@@ -589,6 +589,13 @@ class NexInterpreter:
     case TStringLit(v, _, _)  => VString(v)
     case TUnitLit(_)          => VUnit
 
+    case TIntrinsic(opId, p, _) =>
+      // A TIntrinsic node should only ever appear as the *body* of a
+      // VUserFunc and be dispatched by evalUserBody before evalExpr sees
+      // it. Reaching this case means an intrinsic was placed somewhere
+      // the type system shouldn't allow (a value position in user code).
+      trap(s"intrinsic `$opId` cannot be evaluated as a value", p)
+
     case TInterpStringLit(parts, _, _) =>
       val sb = new StringBuilder
       for p <- parts do p match
@@ -907,8 +914,51 @@ class NexInterpreter:
           trap(s"arity mismatch: function expects ${params.size}, got ${args.size}", p)
         val frame = env.child
         params.zip(args).foreach { case (s, v) => frame.define(s.id, v) }
+        evalUserBody(body, params, frame, p)
+
+  /** Evaluate the body of a `VUserFunc`. For ordinary functions this is
+    * just `evalExpr(body, frame)` with the `ReturnException` catch. For an
+    * `@intrinsic` function — body is a [[TIntrinsic]] — the param values
+    * are pulled from `frame` (already bound by the caller) and handed to
+    * the matching entry in [[intrinsicDispatch]].
+    */
+  private def evalUserBody(
+      body: TExpr,
+      params: List[Symbol],
+      frame: Env,
+      p: Option[scala.util.parsing.input.Position],
+  ): Value =
+    body match
+      case TIntrinsic(opId, _, _) =>
+        NexIntrinsics.require(opId)
+        val argVals = params.map { ps =>
+          frame.lookup(ps.id).map(_.v).getOrElse(
+            trap(s"intrinsic `$opId`: parameter `${ps.name}` unbound", p),
+          )
+        }
+        intrinsicDispatch.get(opId) match
+          case Some(impl) => impl(argVals, p)
+          case None       => trap(s"intrinsic `$opId` has no interpreter implementation", p)
+      case _ =>
         try evalExpr(body, frame)
         catch case r: ReturnException => r.value
+
+  /** Per-backend dispatch table. The keys must be a subset of
+    * [[NexIntrinsics.Ids]]; new intrinsics need an entry here AND in the
+    * codegen backends.
+    */
+  private val intrinsicDispatch: Map[String, (List[Value], Option[scala.util.parsing.input.Position]) => Value] =
+    Map(
+      "test.identity" -> { (args, p) =>
+        if args.size != 1 then trap(s"test.identity: expected 1 arg, got ${args.size}", p)
+        args.head
+      },
+      "libm.cbrt" -> { (args, p) =>
+        args match
+          case List(VReal(x)) => VReal(math.cbrt(x))
+          case _              => trap(s"libm.cbrt: expected real argument, got ${args.map(formatValue).mkString(", ")}", p)
+      },
+    )
 
   /** Mode-aware user-function call. For each `mut` parameter whose
     * call-site argument is a [[TVarRef]] (or projection thereof) the
@@ -954,8 +1004,7 @@ class NexInterpreter:
         case ParamMode.Read =>
           frame.define(param.id, evalExpr(argExpr, callerEnv))
     }
-    try evalExpr(f.body, frame)
-    catch case r: ReturnException => r.value
+    evalUserBody(f.body, f.params, frame, p)
 
   private def constructStruct(s: Symbol, args: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     val fs = structFields.getOrElse(s.id, s.tpe match

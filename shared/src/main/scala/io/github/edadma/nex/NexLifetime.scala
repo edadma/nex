@@ -204,7 +204,7 @@ class NexLifetime(
         }, p, t)
       // Pure leaves
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark => e
+         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => e
 
   /** If `e` is a bare [[TVarRef]] to a var-array binding that has any
     * other reference in the body (count > 1), wrap it in [[TClone]] so
@@ -277,7 +277,7 @@ class NexLifetime(
   private def walkChildren(e: TExpr, f: TExpr => Unit): Unit =
     e match
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark => ()
+         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => ()
       case TBinOp(_, l, r, _, _)            => f(l); f(r)
       case TUnaryOp(_, x, _, _)             => f(x)
       case TJuxtapose(c, b, _, _)           => f(c); f(b)

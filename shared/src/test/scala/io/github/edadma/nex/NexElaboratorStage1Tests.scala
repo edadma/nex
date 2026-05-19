@@ -479,3 +479,55 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("3 elements but the pattern binds 2")) shouldBe true
     }
   }
+
+  // ==========================================================================
+  // Stage 0 — `@intrinsic` declarations
+  // ==========================================================================
+
+  "intrinsic declarations" should {
+
+    "produce a TFunDecl whose body is TIntrinsic carrying the opId" in {
+      val tp = elab("""
+        |@intrinsic("test.identity")
+        |def identity(x: integer): integer
+      """.stripMargin)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.sym.name shouldBe "identity"
+      fn.params should have size 1
+      fn.params.head.name shouldBe "x"
+      fn.params.head.tpe shouldBe TyInteger
+      fn.body shouldBe a [TIntrinsic]
+      fn.body.asInstanceOf[TIntrinsic].opId shouldBe "test.identity"
+    }
+
+    "elaborate a real-typed intrinsic and preserve its return type" in {
+      val tp = elab("""
+        |@intrinsic("libm.cbrt")
+        |def cbrt(x: real): real
+      """.stripMargin)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.returnType shouldBe TyReal
+      fn.body.asInstanceOf[TIntrinsic].opId shouldBe "libm.cbrt"
+    }
+
+    "reject a bodyless def without an @intrinsic attribute" in {
+      val errs = elabExpect("def mystery(x: integer): integer")
+      errs.exists(_.contains("requires @intrinsic")) shouldBe true
+    }
+
+    "reject an @intrinsic decl that also has a body" in {
+      val errs = elabExpect("""
+        |@intrinsic("test.id")
+        |def id(x: integer): integer = x
+      """.stripMargin)
+      errs.exists(_.contains("must not have a body")) shouldBe true
+    }
+
+    "reject an @intrinsic with the wrong arity" in {
+      val errs = elabExpect("""
+        |@intrinsic()
+        |def foo(x: integer): integer
+      """.stripMargin)
+      errs.exists(_.contains("exactly one string argument")) shouldBe true
+    }
+  }

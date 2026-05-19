@@ -296,6 +296,7 @@ class NexElaborator
 
   private def elabFun(f: FunDeclAST, sym: Symbol): TFunDecl =
     var paramSyms: List[Symbol] = Nil
+    val intrinsicAttr = f.attributes.find(_.name == "intrinsic")
     val body = scoped {
       paramSyms = f.params.map { p =>
         val ty = typeOf(p.typ)
@@ -304,7 +305,20 @@ class NexElaborator
         if p.mode == ParamMode.Mut then mutableSymIds += s.id
         s
       }
-      elabExpr(f.body)
+      (f.body, intrinsicAttr) match
+        case (Some(b), None)    => elabExpr(b)
+        case (None, Some(attr)) =>
+          attr.args match
+            case List(opId) => TIntrinsic(opId, Some(f.pos))
+            case _          =>
+              err("@intrinsic requires exactly one string argument (the opId)", f)
+              TIntrinsic("<error>", Some(f.pos))
+        case (Some(b), Some(_)) =>
+          err("@intrinsic declarations must not have a body", f)
+          elabExpr(b)
+        case (None, None) =>
+          err("def declaration without body requires @intrinsic(\"opId\")", f)
+          TUnitLit(Some(f.pos))
     }
     val retTy = f.returnType.map(typeOf).getOrElse(TyUnknown)
     TFunDecl(sym, paramSyms, retTy, body, f.isPrivate, f.attributes.map(_.name), Some(f.pos))

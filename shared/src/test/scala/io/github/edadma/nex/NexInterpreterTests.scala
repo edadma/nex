@@ -1700,3 +1700,39 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "49\n"
     }
   }
+
+  // ==========================================================================
+  // Stage 0 — `@intrinsic` dispatch (interpreter)
+  // ==========================================================================
+
+  "intrinsic functions" should {
+
+    "dispatch test.identity through the interpreter's intrinsic table" in {
+      runOut("""
+        |@intrinsic("test.identity")
+        |def id(x: integer): integer
+        |
+        |def main() = print(id(42))
+      """.stripMargin) shouldBe "42\n"
+    }
+
+    "dispatch libm.cbrt and return the real cube root" in {
+      runOut("""
+        |@intrinsic("libm.cbrt")
+        |def cbrt2(x: real): real
+        |
+        |def main() = print(cbrt2(27.0))
+      """.stripMargin) shouldBe "3.0\n"
+    }
+
+    "intrinsic call coexists with ordinary user functions in the same module" in {
+      runOut("""
+        |@intrinsic("test.identity")
+        |def passthrough(x: integer): integer
+        |
+        |def double(n: integer): integer = passthrough(n) + passthrough(n)
+        |
+        |def main() = print(double(5))
+      """.stripMargin) shouldBe "10\n"
+    }
+  }
