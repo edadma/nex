@@ -328,6 +328,9 @@ class NexLLVMCodegen
     case TBinOp("and", l, r, _, _) => emitShortCircuit(l, r, isAnd = true)
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
 
+    case TBinOp("..", lo, hi, _, _)  => emitRangeValue(lo, hi, inclusive = false)
+    case TBinOp("..=", lo, hi, _, _) => emitRangeValue(lo, hi, inclusive = true)
+
     case TBinOp("+", l, r, _, TyString) =>
       // String concat. Both operands are owning %nex_str descriptor
       // pointers (TVarRef inc'd a share at load, or they're already-
@@ -853,6 +856,41 @@ class NexLLVMCodegen
 
     startBlock(exitL)
 
+  /** Lower a range expression at value position (`lo..hi` / `lo..=hi`)
+    * to a freshly-allocated rank-1 integer array containing the
+    * sequence. The interpreter materialises ranges this way; the for-
+    * loop path consumes them lazily via [[emitForRange]], so this
+    * helper only fires when the range escapes a loop header. Empty
+    * ranges (`lo > hi`, or `lo == hi` for exclusive) produce a zero-
+    * length array — matching the interpreter. */
+  private def emitRangeValue(lo: TExpr, hi: TExpr, inclusive: Boolean): String =
+    val loV = emitExpr(lo)
+    val hiV = emitExpr(hi)
+
+    // length = max(0, hi - lo + (inclusive ? 1 : 0))
+    val diff = newReg()
+    emitLine(s"  $diff = sub i64 $hiV, $loV\n")
+    val rawLen = if inclusive then
+      val r = newReg(); emitLine(s"  $r = add i64 $diff, 1\n"); r
+    else diff
+    val isNeg = newReg()
+    emitLine(s"  $isNeg = icmp slt i64 $rawLen, 0\n")
+    val length = newReg()
+    emitLine(s"  $length = select i1 $isNeg, i64 0, i64 $rawLen\n")
+
+    val desc = newReg()
+    emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $length, i64 8)\n")
+    val buf = bufPtr(desc, TyArray(TyInteger, 1))
+
+    emitCountingLoop(length, "range") { i =>
+      val v = newReg()
+      emitLine(s"  $v = add i64 $loV, $i\n")
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds i64, ptr $buf, i64 $i\n")
+      emitLine(s"  store i64 $v, ptr $slot\n")
+    }
+    desc
+
   private def emitReturn(v: Option[TExpr]): Unit =
     v match
       case None =>
@@ -965,8 +1003,90 @@ class NexLLVMCodegen
       case TSlice2(arr, rowAx, colAx, _, _) =>
         emitSlice2Assign(arr, rowAx, colAx, value)
 
+      case f: TField =>
+        emitFieldAssign(f, value)
+
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")
+
+  /** Anchor for an addressable lvalue receiver: a slot pointer plus the
+    * static LLVM struct type at that slot. `TVarRef` resolves to its
+    * alloca / global; `TIndex` resolves through the runtime array-slot
+    * helper and counts the array descriptor as owing a balancing dec.
+    */
+  private case class FieldAnchor(slotPtr: String, slotTy: String, decAfter: () => Unit)
+
+  /** Walk a `TField` chain to its addressable receiver, collecting
+    * (struct-type, field-index) pairs from outermost to innermost.
+    * Returns `None` when the chain bottoms out on something not yet
+    * supported (captures, complex receivers).
+    */
+  private def resolveFieldChain(f: TField): Option[(FieldAnchor, List[(Type, Int)])] =
+    @annotation.tailrec
+    def loop(e: TExpr, acc: List[(Type, Int)]): Option[(FieldAnchor, List[(Type, Int)])] =
+      e match
+        case TField(recv, name, _, _) =>
+          recv.tpe match
+            case TyStruct(_, fields) =>
+              val idx = fields.indexWhere(_._1 == name)
+              if idx < 0 then None
+              else loop(recv, (recv.tpe, idx) :: acc)
+            case _ => None
+        case TVarRef(s, _, _) =>
+          locals.get(s.id) match
+            case Some(slot) =>
+              Some((FieldAnchor(slot, llvmType(s.tpe), () => ()), acc))
+            case None if globalBindings.contains(s.id) =>
+              Some((FieldAnchor(s"@${s.name}", llvmType(s.tpe), () => ()), acc))
+            case None => None
+        case TIndex(arr, indices, _, _) =>
+          val rank = arrayRank(arr.tpe)
+          val elem = arrayElem(arr.tpe)
+          val esz  = elemSize(elem)
+          val av   = emitExpr(arr)
+          val slot = newReg()
+          (rank, indices) match
+            case (1, List(i)) =>
+              val iv = emitExpr(i)
+              emitLine(s"  $slot = call ptr @__nex_arr1_slot(ptr $av, i64 $iv, i64 $esz)\n")
+            case (2, List(i, j)) =>
+              val iv = emitExpr(i)
+              val jv = emitExpr(j)
+              emitLine(s"  $slot = call ptr @__nex_arr2_slot(ptr $av, i64 $iv, i64 $jv, i64 $esz)\n")
+            case _ => return None
+          Some((FieldAnchor(slot, llvmType(elem), () => emitArrDec(av, arr.tpe)), acc))
+        case _ => None
+    loop(f, Nil)
+
+  /** Emit a struct-field assignment. Walks the field chain to its
+    * addressable anchor, emits a single GEP to reach the innermost
+    * field's address, and writes through with ARC-aware release-old /
+    * store-new when the field type is refcounted. Falls back to
+    * `notYet` for receiver shapes that aren't anchored yet (lambda
+    * captures, computed receivers other than indexed arrays).
+    */
+  private def emitFieldAssign(target: TField, value: TExpr): Unit =
+    val fieldT = target.tpe
+    val fieldLLT = llvmType(fieldT)
+    resolveFieldChain(target) match
+      case None =>
+        notYet(s"assign to TField with non-addressable receiver")
+      case Some((anchor, path)) =>
+        // Build the GEP index list: a leading 0 (deref the slot ptr) plus
+        // one i32 per field hop. LLVM resolves anonymous struct types
+        // structurally, so the same GEP works for any nested layout.
+        val gepIdx = path.map { case (_, i) => s"i32 $i" }.mkString(", ")
+        val slot = newReg()
+        emitLine(s"  $slot = getelementptr inbounds ${anchor.slotTy}, ptr ${anchor.slotPtr}, i32 0, $gepIdx\n")
+
+        if isRefCountedType(fieldT) then
+          val old = newReg()
+          emitLine(s"  $old = load $fieldLLT, ptr $slot\n")
+          emitArrDec(old, fieldT)
+
+        val rv = emitExpr(value)
+        emitLine(s"  store $fieldLLT $rv, ptr $slot\n")
+        anchor.decAfter()
 
   private def emitLocalBinding(sym: Symbol, value: TExpr): Unit =
     val rv   = emitExpr(value)

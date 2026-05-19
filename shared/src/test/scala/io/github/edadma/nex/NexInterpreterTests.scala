@@ -240,6 +240,53 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "0\n1\n2\n"
     }
 
+    "range at value position produces an integer array" in {
+      runOut("""
+        |def main() =
+        |  val r = 0..5
+        |  print(r)
+      """.stripMargin) shouldBe "[0, 1, 2, 3, 4]\n"
+    }
+
+    "inclusive range at value position" in {
+      runOut("""
+        |def main() = print(1..=3)
+      """.stripMargin) shouldBe "[1, 2, 3]\n"
+    }
+
+    "empty range at value position" in {
+      runOut("""
+        |def main() =
+        |  print(5..5)
+        |  print(8..3)
+      """.stripMargin) shouldBe "[]\n[]\n"
+    }
+
+    "direct call refines a bound-then-called integer lambda" in {
+      runOut("""
+        |def main() =
+        |  val f = x -> x + 1
+        |  print(f(10))
+      """.stripMargin) shouldBe "11\n"
+    }
+
+    "direct call refines a bound-then-called real lambda" in {
+      runOut("""
+        |def main() =
+        |  val sqr = x -> x * x
+        |  print(sqr(2.5))
+      """.stripMargin) shouldBe "6.25\n"
+    }
+
+    "second direct call after refinement still works" in {
+      runOut("""
+        |def main() =
+        |  val f = x -> x * 2
+        |  print(f(3))
+        |  print(f(4))
+      """.stripMargin) shouldBe "6\n8\n"
+    }
+
     "for with tuple destructuring on enumerate(xs)" in {
       runOut("""
         |def main() =
@@ -822,6 +869,65 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  p.x = 99.0
         |  print(p.x)
       """.stripMargin) shouldBe "99.0\n"
+    }
+
+    "field write preserves other fields" in {
+      runOut("""
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin) shouldBe "99\n2\n"
+    }
+
+    "nested struct field write through chained TField" in {
+      runOut("""
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var o = Outer(Inner(1))
+        |  o.i.v = 99
+        |  print(o.i.v)
+      """.stripMargin) shouldBe "99\n"
+    }
+
+    "refcounted field write swaps the underlying string" in {
+      runOut("""
+        |struct Item
+        |  name: string
+        |end Item
+        |
+        |def main() =
+        |  var it = Item("hello" + " world")
+        |  it.name = "foo" + "bar"
+        |  print(it.name)
+      """.stripMargin) shouldBe "foobar\n"
+    }
+
+    "field write through an array-element receiver mutates the slot" in {
+      runOut("""
+        |struct P
+        |  x: integer
+        |end P
+        |
+        |def main() =
+        |  var ps = [P(1), P(2), P(3)]
+        |  ps[0].x = 99
+        |  print(ps[0].x)
+        |  print(ps[1].x)
+      """.stripMargin) shouldBe "99\n2\n"
     }
   }
 

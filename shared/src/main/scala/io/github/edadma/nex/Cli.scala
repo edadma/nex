@@ -183,7 +183,11 @@ object Cli:
           1
 
   private def doCompileLlvm(file: String, tp: TProgram): Int =
-    val ir      = new NexLLVMCodegen().compile(tp)
+    val ir =
+      try new NexLLVMCodegen().compile(tp)
+      catch case e: NexCodegenError =>
+        Console.err.println(s"nex: ${e.getMessage}")
+        return 1
     val llPath  = if file.endsWith(".nex") then file.stripSuffix(".nex") + ".ll" else file + ".ll"
     val binPath = if file.endsWith(".nex") then file.stripSuffix(".nex") else file + ".out"
     writeFile(llPath, ir)

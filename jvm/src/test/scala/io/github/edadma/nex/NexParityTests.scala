@@ -400,6 +400,296 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "struct field assignment (spec §4.15 lvalue form)" should {
+    "single-level field write on `var`" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+      """.stripMargin,
+      "99\n",
+    )
+    "single-level field write preserves other fields" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin,
+      "99\n2\n",
+    )
+    "nested field write through chained TField" in parityCheck(
+      """
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var o = Outer(Inner(1))
+        |  o.i.v = 99
+        |  print(o.i.v)
+      """.stripMargin,
+      "99\n",
+    )
+    "three-level nested field write" in parityCheck(
+      """
+        |struct A
+        |  v: integer
+        |end A
+        |
+        |struct B
+        |  a: A
+        |end B
+        |
+        |struct C
+        |  b: B
+        |end C
+        |
+        |def main() =
+        |  var c = C(B(A(1)))
+        |  c.b.a.v = 99
+        |  print(c.b.a.v)
+      """.stripMargin,
+      "99\n",
+    )
+    "refcounted field write releases old share and stores new" in parityCheck(
+      """
+        |struct Item
+        |  name: string
+        |  qty: integer
+        |end Item
+        |
+        |def main() =
+        |  var it = Item("hello" + " world", 1)
+        |  it.name = "foo" + "bar"
+        |  print(it.name)
+        |  print(it.qty)
+      """.stripMargin,
+      "foobar\n1\n",
+    )
+    "field write inside a loop" in parityCheck(
+      """
+        |struct Pt
+        |  x: integer
+        |end Pt
+        |
+        |def main() =
+        |  var p = Pt(0)
+        |  for i in 1..4 do
+        |    p.x = p.x + i
+        |  print(p.x)
+      """.stripMargin,
+      "6\n",
+    )
+    "field write on aggregate with real field" in parityCheck(
+      """
+        |struct Point
+        |  x: real
+        |  y: real
+        |end Point
+        |
+        |def main() =
+        |  var p = Point(1.0, 2.0)
+        |  p.x = 99.0
+        |  p.y = 4.5
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin,
+      "99.0\n4.5\n",
+    )
+    "field write on element of an array of structs (xs[i].field = v)" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |end P
+        |
+        |def main() =
+        |  var ps = [P(1), P(2), P(3)]
+        |  ps[0].x = 99
+        |  ps[2].x = 77
+        |  print(ps[0].x)
+        |  print(ps[1].x)
+        |  print(ps[2].x)
+      """.stripMargin,
+      "99\n2\n77\n",
+    )
+    "nested field write through array-element receiver" in parityCheck(
+      """
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var xs = [Outer(Inner(1)), Outer(Inner(2))]
+        |  xs[1].i.v = 99
+        |  print(xs[0].i.v)
+        |  print(xs[1].i.v)
+      """.stripMargin,
+      "1\n99\n",
+    )
+  }
+
+  "global top-level bindings of aggregate type" should {
+    "global struct val + field reads" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |val g = P(10, 20)
+        |
+        |def main() =
+        |  print(g.x)
+        |  print(g.y)
+      """.stripMargin,
+      "10\n20\n",
+    )
+    "global tuple val + destructuring" in parityCheck(
+      """
+        |val pair = (3, 4)
+        |
+        |def main() =
+        |  val (a, b) = pair
+        |  print(a)
+        |  print(b)
+      """.stripMargin,
+      "3\n4\n",
+    )
+    "global closure-typed val with declared TyFunc" in parityCheck(
+      """
+        |val sqr: (integer -> integer) = x -> x * x
+        |
+        |def main() = print(sqr(5))
+      """.stripMargin,
+      "25\n",
+    )
+    "global var struct field write through main" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |var g = P(10, 20)
+        |
+        |def main() =
+        |  g.x = 99
+        |  print(g.x)
+        |  print(g.y)
+      """.stripMargin,
+      "99\n20\n",
+    )
+  }
+
+  "range as a value-producing expression (spec §4.12)" should {
+    "exclusive range bound to a `val` and printed" in parityCheck(
+      "def main() = print(0..5)",
+      "[0, 1, 2, 3, 4]\n",
+    )
+    "inclusive range bound to a `val` and printed" in parityCheck(
+      "def main() = print(0..=5)",
+      "[0, 1, 2, 3, 4, 5]\n",
+    )
+    "empty exclusive range (lo == hi)" in parityCheck(
+      "def main() = print(3..3)",
+      "[]\n",
+    )
+    "negative-direction range produces an empty array" in parityCheck(
+      "def main() = print(7..3)",
+      "[]\n",
+    )
+    "range stored in a val survives reuse" in parityCheck(
+      """
+        |def main() =
+        |  val r = 1..4
+        |  print(r)
+        |  print(r)
+      """.stripMargin,
+      "[1, 2, 3]\n[1, 2, 3]\n",
+    )
+    "range with negative bounds" in parityCheck(
+      "def main() = print(-2..=2)",
+      "[-2, -1, 0, 1, 2]\n",
+    )
+    "range with variable bounds" in parityCheck(
+      """
+        |def main() =
+        |  val lo = 2
+        |  val hi = 6
+        |  print(lo..hi)
+      """.stripMargin,
+      "[2, 3, 4, 5]\n",
+    )
+    "for-loop over a range still consumes lazily (no array allocated)" in parityCheck(
+      """
+        |def main() =
+        |  var s = 0
+        |  for i in 0..5 do
+        |    s = s + i
+        |  print(s)
+      """.stripMargin,
+      "10\n",
+    )
+  }
+
+  "bind-then-call lambda inference (direct invocation)" should {
+    "deferred-resolve refines a captured-int lambda at the direct call" in parityCheck(
+      """
+        |def main() =
+        |  val k = 5
+        |  val f = x -> x + k
+        |  print(f(10))
+      """.stripMargin,
+      "15\n",
+    )
+    "second call re-uses the refined type" in parityCheck(
+      """
+        |def main() =
+        |  val f = x -> x * 2
+        |  print(f(3))
+        |  print(f(4))
+      """.stripMargin,
+      "6\n8\n",
+    )
+    "real-arg call refines to a real-typed lambda" in parityCheck(
+      """
+        |def main() =
+        |  val sqr = x -> x * x
+        |  print(sqr(2.5))
+      """.stripMargin,
+      "6.25\n",
+    )
+    "lambda body that uses the param multiple ways still refines" in parityCheck(
+      """
+        |def main() =
+        |  val f = x -> (x * x) + (x * 2)
+        |  print(f(3))
+      """.stripMargin,
+      "15\n",
+    )
+  }
+
   "rank-1 HOFs" should {
     "map (inline lambda)"   in parityCheck(
       "def main() = print(map([1, 2, 3, 4], x -> x * x))",
