@@ -1,22 +1,54 @@
 package io.github.edadma.nex
 
-/** MLIR backend. Compiles a tiny but growing surface of Nex programs to
-  * MLIR text, which the parity harness lowers via `mlir-opt` and
+import scala.collection.mutable
+
+/** MLIR backend. Compiles a growing surface of Nex programs to MLIR
+  * text, which the parity harness lowers via `mlir-opt` and
   * `mlir-translate` and links with `mlir_runtime.c` (supplying
   * `nex_print_i64` / `nex_print_f64`) through `clang`.
   *
-  * Current surface — milestone 2:
+  * Surface as of milestone 3:
   *
-  *   def main() = print(sum([<int literals>]))     // M1: i64 path
-  *   def main() = print(sum([<real literals>]))    // M2: f64 path
+  *   - `def main() = print(sum([<num literals>]))`
+  *   - `def main() = print(sum(a + b))` where `a + b` are rank-1
+  *     numeric array literals, possibly bound via `val` inside a block.
   *
-  * The element type of the array literal (taken from its elaborated
-  * `tpe`) drives which arithmetic ops and print helper are emitted.
+  * The codegen is now structured as an expression visitor —
+  * [[emitExpr]] takes a typed expression and returns the SSA register
+  * plus its MLIR type. A symbol environment (Symbol id → MlirVal)
+  * carries val-bindings through nested blocks. Element-wise array
+  * addition lowers to `linalg.map` over `tensor.empty()` outputs;
+  * `sum` over a tensor lowers to `linalg.reduce` followed by
+  * `tensor.extract`. Both still flow through the same one-shot
+  * bufferize → linalg-to-loops pipeline from the milestone-1 PoC.
+  *
   * Anything outside the recognised shape throws `notYet`.
   */
 class NexMLIRCodegen:
 
-  private val out = new StringBuilder
+  /** MLIR type of an emitted value. Either an LLVM-like scalar or a
+    * static-shape tensor. We don't model rank-2 yet — every tensor in
+    * milestone 3 is rank-1 with a known length.
+    */
+  private sealed trait MlirType:
+    def text: String
+
+  private case class MScalar(elem: Type) extends MlirType:
+    def text: String = scalarText(elem)
+
+  /** A `tensor<...x<elem>>`. `shape == Nil` denotes a 0-d
+    * `tensor<elem>` (the shape of `linalg.reduce`'s output).
+    */
+  private case class MTensor(elem: Type, shape: List[Int]) extends MlirType:
+    def text: String =
+      val dims = if shape.isEmpty then "" else shape.mkString("", "x", "x")
+      s"tensor<$dims${scalarText(elem)}>"
+
+  private case class MlirVal(reg: String, ty: MlirType)
+
+  private val out     = new StringBuilder
+  private var nextReg = 0
+  private val env     = mutable.Map.empty[Int, MlirVal]
 
   def compile(tp: TProgram): String =
     val mainDecl = tp.decls.collectFirst {
@@ -26,118 +58,200 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_i64(i64)\n")
     out.append("func.func private @nex_print_f64(f64)\n\n")
     out.append("func.func @main() -> i32 {\n")
-    out.append("  %c0 = arith.constant 0 : i32\n")
+    nextReg = 0
+    env.clear()
+    val c0 = fresh("c0")
+    out.append(s"  $c0 = arith.constant 0 : i32\n")
     emitMainBody(mainDecl.body)
-    out.append("  func.return %c0 : i32\n")
+    out.append(s"  func.return $c0 : i32\n")
     out.append("}\n")
     out.toString
 
-  /** The body of `main`. Only `print(sum([...]))` is recognised; the
-    * argument's element type chooses between the i64 and f64 paths.
-    * A `def f() = expr` body sometimes elaborates as a `TBlock` whose
-    * result is the call, so we unwrap a no-binding block.
+  /** Recognise `print(<scalar>)` as the only allowed top-level effect.
+    * Anything else inside the body must be a no-binding `TBlock` whose
+    * result is the print call.
     */
-  private def emitMainBody(body: TExpr): Unit = unwrap(body) match
-    case TCall(TVarRef(p, _, _), List(inner), _, _) if p.name == "print" =>
-      val (reg, elem) = emitScalar(inner)
-      val helper = elem match
-        case TyInteger => "nex_print_i64"
-        case TyReal    => "nex_print_f64"
-        case other     => notYet(s"print of element type $other")
-      out.append(s"  func.call @$helper($reg) : (${mlirElem(elem)}) -> ()\n")
-    case _ =>
-      notYet(s"main body shape: ${body.getClass.getSimpleName}")
+  private def emitMainBody(body: TExpr): Unit = unwrapEmptyBlock(body) match
+    case TCall(TVarRef(p, _, _), List(arg), _, _) if p.name == "print" =>
+      emitPrintCall(arg)
+    case TBlock(items, TCall(TVarRef(p, _, _), List(arg), _, _), _, _) if p.name == "print" =>
+      items.foreach(emitBlockItem)
+      emitPrintCall(arg)
+    case other =>
+      notYet(s"main body shape: ${other.getClass.getSimpleName}")
 
-  private def unwrap(e: TExpr): TExpr = e match
-    case TBlock(Nil, r, _, _) => unwrap(r)
+  private def unwrapEmptyBlock(e: TExpr): TExpr = e match
+    case TBlock(Nil, r, _, _) => unwrapEmptyBlock(r)
     case other                => other
 
-  /** Emit MLIR producing a scalar SSA value. Returns (register, elem
-    * type). For milestones 1+2 the only recognised expression is
-    * `sum(<rank-1 numeric array literal>)`.
+  /** Emit `func.call @nex_print_{i64,f64}` for a scalar expression.
+    * The argument is evaluated through the visitor; its MLIR scalar
+    * type chooses the helper.
     */
-  private def emitScalar(e: TExpr): (String, Type) = e match
+  private def emitPrintCall(arg: TExpr): Unit =
+    val v = emitExpr(arg)
+    v.ty match
+      case MScalar(TyInteger) =>
+        out.append(s"  func.call @nex_print_i64(${v.reg}) : (i64) -> ()\n")
+      case MScalar(TyReal) =>
+        out.append(s"  func.call @nex_print_f64(${v.reg}) : (f64) -> ()\n")
+      case other =>
+        notYet(s"print of $other")
+
+  /** The expression visitor. Every node that lowers must produce a
+    * single SSA value with a known MLIR type; nodes that don't fit
+    * (assignments, side effects, function calls other than the
+    * recognised prelude ones) reject via `notYet`.
+    */
+  private def emitExpr(e: TExpr): MlirVal = e match
+    case TIntLit(v, _, _) =>
+      val r = fresh("ci")
+      out.append(s"  $r = arith.constant $v : i64\n")
+      MlirVal(r, MScalar(TyInteger))
+
+    case TRealLit(v, _, _) =>
+      val r = fresh("cr")
+      out.append(s"  $r = arith.constant ${formatReal(v)} : f64\n")
+      MlirVal(r, MScalar(TyReal))
+
+    case TUnaryOp("-", inner, _, _) =>
+      foldLiteralNeg(inner) match
+        case Some(lit) => emitExpr(lit)
+        case None      => notYet(s"unary minus on non-literal: ${inner.getClass.getSimpleName}")
+
+    case TArrayLit(elems, _, TyArray(elemT, 1)) if elems.nonEmpty =>
+      val vals = elems.map(emitExpr)
+      vals.foreach { v =>
+        v.ty match
+          case MScalar(t) if t == elemT => ()
+          case other                    => notYet(s"array element type mismatch: $other vs $elemT")
+      }
+      val ty = MTensor(elemT, List(elems.size))
+      val r  = fresh("arr")
+      out.append(s"  $r = tensor.from_elements ${vals.map(_.reg).mkString(", ")} : ${ty.text}\n")
+      MlirVal(r, ty)
+
+    case TVarRef(sym, _, _) =>
+      env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))
+
+    case TBlock(items, result, _, _) =>
+      items.foreach(emitBlockItem)
+      emitExpr(result)
+
+    case TElementWise(op, lhs, rhs, _, _) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      (lv.ty, rv.ty) match
+        case (lt: MTensor, rt: MTensor) if lt == rt =>
+          emitElementWiseBinop(op, lv, rv, lt)
+        case (lt, rt) =>
+          notYet(s"element-wise $op on $lt and $rt")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && s.name == "sum" =>
-      emitSumOfArrayLit(arr)
-    case _ =>
-      notYet(s"scalar expression: ${e.getClass.getSimpleName}")
+      val av = emitExpr(arr)
+      av.ty match
+        case t: MTensor => emitSumReduce(av.reg, t)
+        case other      => notYet(s"sum over $other")
 
-  /** Emit `tensor.from_elements` + `linalg.reduce { arith.add* }` for a
-    * rank-1 numeric array literal. The array's elaborated element type
-    * picks between the i64 (`addi`, zero init) and f64 (`addf`, 0.0
-    * init) lowerings; both end with `tensor.extract` to a scalar
-    * register, which is returned alongside the element type.
+    case other =>
+      notYet(s"expression: ${other.getClass.getSimpleName}")
+
+  private def emitBlockItem(it: TBlockItem): Unit = it match
+    case TBlockBinding(sym, BindingKind.Val, value) =>
+      env(sym.id) = emitExpr(value)
+    case TBlockBinding(sym, kind, _) =>
+      notYet(s"$kind binding for ${sym.name}")
+    case TBlockExpr(_) =>
+      notYet("statement-position expressions in block")
+
+  /** Element-wise binop via `linalg.map` over a fresh `tensor.empty()`
+    * output. Both operands must already have the same tensor type.
+    *
+    * LLVM 22 quirk: the `linalg.map` block arity is `inputs + outputs`,
+    * not `inputs` as the dialect docs suggest. The out argument is
+    * unused — we discard its value and yield only the computed
+    * element — but the verifier requires it.
     */
-  private def emitSumOfArrayLit(arr: TExpr): (String, Type) = arr match
-    case lit @ TArrayLit(elems, _, TyArray(elemT, 1)) if elems.nonEmpty =>
-      val mlirT = mlirElem(elemT)
-      val regs  = elems.zipWithIndex.map { (e, i) =>
-        val r = s"%c${i + 1}"
-        out.append(s"  $r = arith.constant ${constLit(e, elemT)} : $mlirT\n")
-        r
-      }
-      val n    = elems.size
-      val arrR = "%arr"
-      out.append(s"  $arrR = tensor.from_elements ${regs.mkString(", ")} : tensor<${n}x$mlirT>\n")
-      out.append(s"  %init_e = arith.constant ${zeroLit(elemT)} : $mlirT\n")
-      out.append(s"  %init = tensor.from_elements %init_e : tensor<$mlirT>\n")
-      out.append(
-        s"  %sum_t = linalg.reduce ins($arrR : tensor<${n}x$mlirT>) outs(%init : tensor<$mlirT>) dimensions = [0]\n",
-      )
-      out.append(s"    (%in: $mlirT, %acc: $mlirT) {\n")
-      out.append(s"      %s = ${addOp(elemT)} %in, %acc : $mlirT\n")
-      out.append(s"      linalg.yield %s : $mlirT\n")
-      out.append("    }\n")
-      out.append(s"  %sum = tensor.extract %sum_t[] : tensor<$mlirT>\n")
-      ("%sum", elemT)
-    case _ =>
-      notYet(s"sum argument: ${arr.getClass.getSimpleName}")
+  private def emitElementWiseBinop(op: String, lv: MlirVal, rv: MlirVal, ty: MTensor): MlirVal =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val opName = scalarBinop(op, elemT)
+    val initR  = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val outR = fresh("ew")
+    out.append(
+      s"  $outR = linalg.map ins(${lv.reg}, ${rv.reg} : ${ty.text}, ${ty.text}) outs($initR : ${ty.text})\n",
+    )
+    out.append(s"    (%a: $scalar, %b: $scalar, %_o: $scalar) {\n")
+    out.append(s"      %s = $opName %a, %b : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
 
-  /** MLIR scalar type for a Nex element type. */
-  private def mlirElem(t: Type): String = t match
+  /** Sum-reduce a rank-1 tensor to a 0-d tensor, then extract the
+    * scalar. Init value is the element-type zero; reducer is the
+    * element-type add.
+    */
+  private def emitSumReduce(srcReg: String, ty: MTensor): MlirVal =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val outTy  = MTensor(elemT, Nil)
+    val initER = fresh("init_e")
+    out.append(s"  $initER = arith.constant ${zeroLit(elemT)} : $scalar\n")
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.from_elements $initER : ${outTy.text}\n")
+    val sumTR = fresh("sum_t")
+    out.append(
+      s"  $sumTR = linalg.reduce ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) dimensions = [0]\n",
+    )
+    out.append(s"    (%in: $scalar, %acc: $scalar) {\n")
+    out.append(s"      %s = ${scalarBinop("+", elemT)} %in, %acc : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
+    out.append("    }\n")
+    val sumR = fresh("sum")
+    out.append(s"  $sumR = tensor.extract $sumTR[] : ${outTy.text}\n")
+    MlirVal(sumR, MScalar(elemT))
+
+  /** Fold a unary-minus over a numeric literal. Returns `None` for
+    * non-literal operands so the caller can decide whether to reject.
+    * Constant folding past unary minus on arbitrary expressions is
+    * out of scope until we have proper `arith.subi` / `arith.negf`
+    * emission.
+    */
+  private def foldLiteralNeg(e: TExpr): Option[TExpr] = e match
+    case TIntLit(v, p, t)  => Some(TIntLit(-v, p, t))
+    case TRealLit(v, p, t) => Some(TRealLit(-v, p, t))
+    case _                 => None
+
+  private def scalarText(t: Type): String = t match
     case TyInteger => "i64"
     case TyReal    => "f64"
-    case other     => notYet(s"element type $other")
-
-  /** Constant-op literal text for a scalar literal. Integers print as
-    * their decimal form; reals must include a decimal point so MLIR
-    * parses them as `FloatAttr` rather than `IntegerAttr` (`6.0e0`
-    * also works). MLIR rejects `arith.constant 6 : f64`.
-    */
-  private def constLit(e: TExpr, elemT: Type): String = (foldLiteral(e), elemT) match
-    case (TIntLit(v, _, _), TyInteger)   => v.toString
-    case (TIntLit(v, _, _), TyReal)      => f"$v%d.0"
-    case (TRealLit(v, _, _), TyReal)     => formatReal(v)
-    case _ =>
-      notYet(s"constant literal: ${e.getClass.getSimpleName} as $elemT")
-
-  /** Fold a literal-only expression to a single literal node — covers
-    * unary `-` on a numeric literal, which the parser leaves as
-    * `TUnaryOp("-", TIntLit/TRealLit)`. Constant folding past unary
-    * minus elsewhere (e.g. `-x`) is out of scope.
-    */
-  private def foldLiteral(e: TExpr): TExpr = e match
-    case TUnaryOp("-", TIntLit(v, p, t), _, _)  => TIntLit(-v, p, t)
-    case TUnaryOp("-", TRealLit(v, p, t), _, _) => TRealLit(-v, p, t)
-    case other                                   => other
+    case other     => notYet(s"scalar text for $other")
 
   private def zeroLit(t: Type): String = t match
     case TyInteger => "0"
     case TyReal    => "0.0"
     case other     => notYet(s"zero literal for $other")
 
-  private def addOp(t: Type): String = t match
-    case TyInteger => "arith.addi"
-    case TyReal    => "arith.addf"
-    case other     => notYet(s"add op for $other")
+  /** Map a Nex binop + element type to the `arith.*` op that performs
+    * it on a scalar. Used uniformly inside `linalg.reduce` and
+    * `linalg.map` body regions, so both reductions and element-wise
+    * ops share the dispatch table.
+    */
+  private def scalarBinop(op: String, t: Type): String = (op, t) match
+    case ("+", TyInteger) => "arith.addi"
+    case ("-", TyInteger) => "arith.subi"
+    case ("*", TyInteger) => "arith.muli"
+    case ("+", TyReal)    => "arith.addf"
+    case ("-", TyReal)    => "arith.subf"
+    case ("*", TyReal)    => "arith.mulf"
+    case _                => notYet(s"scalar binop $op on $t")
 
   /** Render a `Double` so MLIR's FloatAttr parser accepts it. Whole
     * numbers get a trailing `.0`; everything else uses Scala's
-    * shortest-round-trip `toString`, which already includes a `.` or
-    * `e` for non-integral doubles. Special-case NaN / Inf — MLIR
-    * accepts `0x7FF...` hex literals; we don't expect those from a
-    * literal source program for milestone 2.
+    * shortest-round-trip `toString`. NaN / Inf intentionally rejected
+    * — not reachable from a literal source program at this milestone.
     */
   private def formatReal(v: Double): String =
     if v.isNaN || v.isInfinite then notYet(s"non-finite real literal: $v")
@@ -145,6 +259,11 @@ class NexMLIRCodegen:
       val s = v.toString
       if s.contains('.') || s.contains('e') || s.contains('E') then s
       else s + ".0"
+
+  private def fresh(prefix: String): String =
+    val r = s"%${prefix}${nextReg}"
+    nextReg += 1
+    r
 
   private def notYet(msg: String): Nothing =
     throw new UnsupportedOperationException(s"NexMLIRCodegen: $msg")

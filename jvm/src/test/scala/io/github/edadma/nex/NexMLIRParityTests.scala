@@ -29,3 +29,40 @@ class NexMLIRParityTests extends AnyWordSpec with NexMLIRParityBase:
       "def main() = print(sum([10.0, -3.0, 2.0]))",
       "9.0\n",
     )
+
+  "milestone 3" should:
+    "sum of element-wise add of two integer array literals" in parityCheck(
+      "def main() = print(sum([1, 2, 3] + [10, 20, 30]))",
+      "66\n",
+    )
+    "sum of element-wise add of two real array literals" in parityCheck(
+      "def main() = print(sum([1.0, 2.0, 3.0] + [10.0, 20.0, 30.0]))",
+      "66.0\n",
+    )
+    "val-bound integer arrays in element-wise add" in parityCheck(
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  val b = [10, 20, 30, 40, 50]
+        |  print(sum(a + b))
+      """.stripMargin,
+      "165\n",
+    )
+    "val-bound real arrays in element-wise subtract" in parityCheck(
+      """
+        |def main() =
+        |  val a = [10.0, 20.0, 30.0]
+        |  val b = [1.0, 2.0, 3.0]
+        |  print(sum(a - b))
+      """.stripMargin,
+      "54.0\n",
+    )
+    "val-bound real arrays in element-wise multiply" in parityCheck(
+      """
+        |def main() =
+        |  val a = [1.0, 2.0, 3.0]
+        |  val b = [4.0, 5.0, 6.0]
+        |  print(sum(a * b))
+      """.stripMargin,
+      "32.0\n",
+    )
