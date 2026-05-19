@@ -112,3 +112,51 @@ class NexModuleLoader(projectRoot: String):
 
     if errors.nonEmpty then Left(errors.toList)
     else Right(ordered.toList)
+
+object NexModuleLoader:
+
+  /** Load the source-form prelude living at `preludeRoot` as a single
+    * `LoadedModule` whose path is `["prelude"]`. The directory is treated
+    * as flat: every `.nex` file directly in `preludeRoot` is parsed and
+    * merged. Sub-directories under `preludeRoot` are *not* picked up here
+    * — they're separate modules (`prelude.array` etc.) that, when they
+    * exist, users will import explicitly per the roadmap's shallow
+    * auto-import policy.
+    *
+    * The prelude module is not allowed to declare its own `import`s
+    * pointing back into user code (which would create a cycle); any
+    * `import prelude.foo.*` cross-references inside prelude files
+    * resolve through `elaborateProject`'s normal import machinery and
+    * are caller-driven.
+    */
+  def loadPreludeAsModule(preludeRoot: String): Either[List[String], LoadedModule] =
+    if !pathIsDirectory(preludeRoot) then
+      Left(List(s"prelude directory `$preludeRoot` not found"))
+    else
+      val files = listNexFiles(preludeRoot)
+      if files.isEmpty then
+        Right(LoadedModule(List("prelude"), Nil, isTestOnly = false, imports = Nil))
+      else
+        val errors  = scala.collection.mutable.ListBuffer.empty[String]
+        val parsed  = scala.collection.mutable.ListBuffer.empty[FileEntry]
+        val imports = scala.collection.mutable.LinkedHashSet.empty[List[String]]
+        for f <- files do
+          val src = readFile(f)
+          new NexParser().parseProgram(src) match
+            case Left(err) =>
+              errors += s"$f: parse error: $err"
+            case Right(ast) =>
+              val keptDecls = ast.decls.flatMap {
+                case m: ModuleDeclAST =>
+                  if m.path != List("prelude") then
+                    errors += s"$f: prelude file declares `module ${m.path.mkString(".")}` (expected `module prelude`)"
+                  None
+                case i: ImportDeclAST =>
+                  imports += i.path
+                  Some(i)
+                case other =>
+                  Some(other)
+              }
+              parsed += FileEntry(f, ast.copy(decls = keptDecls))
+        if errors.nonEmpty then Left(errors.toList)
+        else Right(LoadedModule(List("prelude"), parsed.toList, isTestOnly = false, imports.toList))

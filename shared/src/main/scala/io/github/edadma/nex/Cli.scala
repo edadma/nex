@@ -12,9 +12,10 @@ object Cli:
     * subcommand options live alongside.
     */
   case class Config(
-      command: String = "",
-      file:    String = "",
-      backend: String = "llvm",
+      command:     String         = "",
+      file:        String         = "",
+      backend:     String         = "llvm",
+      preludePath: Option[String] = None,
   )
 
   private val builder = OParser.builder[Config]
@@ -25,6 +26,11 @@ object Cli:
       programName("nex"),
       head("nex", buildVersion),
       help("help").text("Show this help."),
+
+      opt[String]("prelude-path")
+        .valueName("<dir>")
+        .action((p, c) => c.copy(preludePath = Some(p)))
+        .text("Override the source-prelude directory (default: discover via NEX_HOME / sysprop / walk-up)."),
 
       cmd("tokens")
         .action((_, c) => c.copy(command = "tokens"))
@@ -110,10 +116,10 @@ object Cli:
         try cfg.command match
           case "tokens"    => doTokens(cfg.file); 0
           case "parse"     => doParse(cfg.file)
-          case "elaborate" => doElaborate(cfg.file)
-          case "run"       => doRun(cfg.file)
-          case "test"      => doTest(cfg.file)
-          case "compile"   => doCompile(cfg.file, cfg.backend)
+          case "elaborate" => doElaborate(cfg.file, cfg.preludePath)
+          case "run"       => doRun(cfg.file, cfg.preludePath)
+          case "test"      => doTest(cfg.file, cfg.preludePath)
+          case "compile"   => doCompile(cfg.file, cfg.backend, cfg.preludePath)
           case other       =>
             Console.err.println(s"nex: unknown command '$other'")
             1
@@ -143,13 +149,13 @@ object Cli:
         Console.err.println(s"nex: parse error:\n$err")
         1
 
-  private def doElaborate(file: String): Int =
-    loadAndElaborate(file) match
+  private def doElaborate(file: String, preludePath: Option[String]): Int =
+    loadAndElaborate(file, preludePath = preludePath) match
       case Right(tp) => pprint.pprintln(tp); 0
       case Left(rc)  => rc
 
-  private def doRun(file: String): Int =
-    loadAndElaborate(file) match
+  private def doRun(file: String, preludePath: Option[String]): Int =
+    loadAndElaborate(file, preludePath = preludePath) match
       case Left(rc)  => rc
       case Right(tp) =>
         new NexInterpreter().runProgram(tp)
@@ -166,8 +172,8 @@ object Cli:
     * file. MLIR mode additionally writes `<entry>.mlir` and
     * `<entry>.lowered.mlir` for inspection.
     */
-  private def doCompile(file: String, backend: String): Int =
-    loadAndElaborate(file) match
+  private def doCompile(file: String, backend: String, preludePath: Option[String]): Int =
+    loadAndElaborate(file, preludePath = preludePath) match
       case Left(rc)  => rc
       case Right(tp) => backend match
         case "llvm" => doCompileLlvm(file, tp)
@@ -270,8 +276,8 @@ object Cli:
     * The runner catches `NexTrap` and prints its message + position;
     * any unrecognised throwable also fails the test (defensive).
     */
-  private def doTest(file: String): Int =
-    loadAndElaborate(file, includeTestOnly = true) match
+  private def doTest(file: String, preludePath: Option[String]): Int =
+    loadAndElaborate(file, includeTestOnly = true, preludePath = preludePath) match
       case Left(rc) => rc
       case Right(tp) =>
         val tests = tp.decls.collect {
@@ -322,21 +328,40 @@ object Cli:
     *   should not appear in non-test builds. When true (`nex test`),
     *   every module is kept so the runner can discover `@test`
     *   functions in regular and test-only modules alike.
+    *
+    * @param preludePath  Optional explicit override for the source-prelude
+    *   directory; threaded into [[NexSysroot.findPreludeRoot]]. When the
+    *   final lookup returns `Some(dir)`, the prelude is prepended as a
+    *   `LoadedModule(path = ["prelude"], …)` and every non-prelude module
+    *   gets a synthetic `import prelude.*` injected at elaboration. When
+    *   the lookup returns `None` (no override, env, sysprop, or walk-up
+    *   match), the compiler runs with only the built-in [[NexElabState.registerPrelude]]
+    *   — the silent-fallback policy that lets Stages 1-2 ship incrementally.
     */
   private def loadAndElaborate(
-      entryFile: String,
-      includeTestOnly: Boolean = false,
+      entryFile:       String,
+      includeTestOnly: Boolean         = false,
+      preludePath:     Option[String]  = None,
   ): Either[Int, TProgram] =
-    val projectRoot = pathDirname(entryFile)
+    val projectRoot   = pathDirname(entryFile)
+    val preludeModule = NexSysroot.findPreludeRoot(preludePath) match
+      case Some(dir) => NexModuleLoader.loadPreludeAsModule(dir) match
+        case Right(m) => Some(m)
+        case Left(errs) =>
+          Console.err.println("nex: prelude loading errors:")
+          errs.foreach(e => Console.err.println(s"  $e"))
+          return Left(1)
+      case None      => None
     new NexModuleLoader(projectRoot).loadFrom(entryFile) match
       case Left(errs) =>
         Console.err.println("nex: module loading errors:")
         errs.foreach(e => Console.err.println(s"  $e"))
         Left(1)
       case Right(allModules) =>
-        val modules =
+        val userModules =
           if includeTestOnly then allModules
           else allModules.filterNot(_.isTestOnly)
+        val modules = preludeModule.toList ++ userModules
         new NexElaborator().elaborateProject(modules) match
           case Right(tp) => Right(tp)
           case Left(errs) =>

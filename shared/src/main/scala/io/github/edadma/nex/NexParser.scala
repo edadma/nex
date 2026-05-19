@@ -195,11 +195,19 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val dottedName: PackratParser[List[String]] =
     rep1sep(ident, ".")
 
-  /** `import foo.bar` or `import foo.bar.{x, y as z}`. */
+  /** `import foo.bar`, `import foo.bar.{x, y as z}`, or `import foo.bar.*`.
+    * The wildcard form (Scala 3 style) brings every public export of the
+    * source module into scope; the elaborator does the expansion.
+    *
+    * The wildcard suffix lexes as a single `.*` token (rather than `.`
+    * followed by `*`) so that the `*` at end-of-line doesn't trigger the
+    * line-continuation rule and swallow the newline before the next decl.
+    */
   lazy val importDecl: PackratParser[DeclAST] =
-    "import" ~> rep1sep(ident, ".") ~ opt("." ~> selectorBlock) ^^ {
-      case path ~ selsOpt =>
-        ImportDeclAST(path, selsOpt.getOrElse(Nil))
+    "import" ~> rep1sep(ident, ".") ~ opt(".*" ^^^ Left(()) | "." ~> selectorBlock ^^ (s => Right(s))) ^^ {
+      case path ~ Some(Left(_))    => ImportDeclAST(path, Nil, isWildcard = true)
+      case path ~ Some(Right(sel)) => ImportDeclAST(path, sel)
+      case path ~ None             => ImportDeclAST(path, Nil)
     }
 
   lazy val selectorBlock: PackratParser[List[ImportSelector]] =

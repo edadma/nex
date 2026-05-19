@@ -167,6 +167,39 @@ class NexModuleLoaderTests extends AnyWordSpec with Matchers:
       result.left.toOption.get.exists(_.toString.contains("no public member `MAGIC`")) shouldBe true
     }
 
+    "wildcard import binds every public export of the source module" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import helpers.*\ndef main() = print(square(twice(3)))\n",
+        "helpers/ops.nex" -> "module helpers\ndef square(x: integer) = x * x\ndef twice(x: integer) = x + x\n",
+      ))
+      // twice(3) = 6; square(6) = 36
+      runProject(entry).trim shouldBe "36"
+    }
+
+    "wildcard import skips private members" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"     -> "import lib.*\ndef main() = print(visible)\n",
+        "lib/c.nex"    -> "module lib\nval visible = 11\nprivate val hidden = 99\n",
+      ))
+      runProject(entry).trim shouldBe "11"
+    }
+
+    "wildcard import name clash with a local binding is an error" in {
+      // The wildcard pre-injects `x` from `lib` into the module scope; the
+      // module's own `val x = 1` then fails Pass-A's "redeclaration in the
+      // same scope" check. Either side of the collision being diagnosed is
+      // acceptable — we just need the error to surface.
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"     -> "import lib.*\nval x = 1\ndef main() = print(x)\n",
+        "lib/c.nex"    -> "module lib\nval x = 99\n",
+      ))
+      val root    = pathDirname(entry)
+      val modules = new NexModuleLoader(root).loadFrom(entry).getOrElse(fail("loader"))
+      val result  = new NexElaborator().elaborateProject(modules)
+      val errStr  = result.left.toOption.get.mkString("; ")
+      (errStr.contains("redeclaration") || errStr.contains("clashes")) shouldBe true
+    }
+
     "mark a module with `@test module` as test-only (spec §9.6)" in {
       // The loader records `isTestOnly` per spec §9.6. The CLI uses
       // this flag to filter test fixtures out of `nex run` builds.

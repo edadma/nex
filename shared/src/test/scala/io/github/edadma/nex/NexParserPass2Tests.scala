@@ -159,6 +159,16 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         )),
       )
     }
+    "parse a wildcard import" in {
+      parseProg("import math.*").decls shouldBe List(
+        ImportDeclAST(List("math"), Nil, isWildcard = true),
+      )
+    }
+    "parse a dotted-path wildcard import" in {
+      parseProg("import linalg.dense.*").decls shouldBe List(
+        ImportDeclAST(List("linalg", "dense"), Nil, isWildcard = true),
+      )
+    }
   }
 
   // ========================================================================

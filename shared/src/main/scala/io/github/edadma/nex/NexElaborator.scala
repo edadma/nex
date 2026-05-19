@@ -104,7 +104,19 @@ class NexElaborator
       val mergedDecls = module.files.flatMap(_.ast.decls)
       val moduleExports = mutable.LinkedHashMap.empty[String, Symbol]
 
-      for d <- mergedDecls do d match
+      // Auto-import the source prelude into every non-prelude module. The
+      // synthetic `import prelude.*` is processed by the same path as a
+      // user-written wildcard import, so `nex parse` still shows what the
+      // user wrote but the elaborator sees the prelude bindings. Skipped
+      // for modules whose path starts with `prelude` — those are the
+      // source of the symbols and a self-import would either no-op or
+      // (with cross-file refs) loop.
+      val isPreludeMod = module.path.headOption.contains("prelude")
+      val implicitImports: List[ImportDeclAST] =
+        if isPreludeMod || !exports.contains(List("prelude")) then Nil
+        else List(ImportDeclAST(List("prelude"), Nil, isWildcard = true))
+
+      for d <- (implicitImports ++ mergedDecls) do d match
         case i: ImportDeclAST =>
           exports.get(i.path) match
             case Some(modExports) =>
@@ -112,14 +124,23 @@ class NexElaborator
               // so references resolve cross-module by identity. Missing
               // selectors are an error (the source module is loaded; the
               // name they reference simply isn't exported).
-              for sel <- i.selectors do
-                modExports.get(sel.name) match
-                  case None =>
-                    err(s"import `${i.path.mkString(".")}` has no public member `${sel.name}`", i)
-                  case Some(sym) =>
-                    val effective = sel.alias.getOrElse(sel.name)
-                    if !current.define(effective, sym) then
-                      err(s"import `$effective` clashes with an existing binding in this module", i)
+              if i.isWildcard then
+                // Wildcard: bind every public export under its declared name.
+                // Name clashes (`import a.*` then `import b.*` with overlap)
+                // surface as the usual "clashes with an existing binding"
+                // error, same as a selective import would.
+                for (name, sym) <- modExports do
+                  if !current.define(name, sym) then
+                    err(s"import `$name` from `${i.path.mkString(".")}.*` clashes with an existing binding in this module", i)
+              else
+                for sel <- i.selectors do
+                  modExports.get(sel.name) match
+                    case None =>
+                      err(s"import `${i.path.mkString(".")}` has no public member `${sel.name}`", i)
+                    case Some(sym) =>
+                      val effective = sel.alias.getOrElse(sel.name)
+                      if !current.define(effective, sym) then
+                        err(s"import `$effective` clashes with an existing binding in this module", i)
             case None =>
               // Unresolved import path: in single-file mode (where the
               // loader didn't discover any module by that path) we fall
@@ -127,10 +148,12 @@ class NexElaborator
               // elaborates and tests that exercise import shape continue
               // to work. Names typed against unresolved imports will surface
               // as TyUnknown and either work (if dynamic) or fail at the
-              // first concrete-type assertion downstream.
-              for sel <- i.selectors do
-                val effective = sel.alias.getOrElse(sel.name)
-                defineNoError(effective, SymKind.Import, TyUnknown)
+              // first concrete-type assertion downstream. Wildcard imports
+              // have no named selectors to placehold, so they no-op.
+              if !i.isWildcard then
+                for sel <- i.selectors do
+                  val effective = sel.alias.getOrElse(sel.name)
+                  defineNoError(effective, SymKind.Import, TyUnknown)
         case _ => ()
 
       // Pass A: pre-declare every top-level def / struct / top-binding.

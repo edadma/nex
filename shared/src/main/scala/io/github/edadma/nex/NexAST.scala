@@ -77,11 +77,15 @@ case class ModuleDeclAST(
     attributes: List[Attribute] = Nil,
 ) extends DeclAST
 
-/** `import foo.bar.{x, y as z}`. */
+/** `import foo.bar.{x, y as z}` or `import foo.bar.*`. The wildcard
+  * form sets `isWildcard = true` and leaves `selectors` empty; the
+  * elaborator binds every public export of the source module.
+  */
 case class ImportDeclAST(
     path:       List[String],
     selectors:  List[ImportSelector],
     attributes: List[Attribute] = Nil,
+    isWildcard: Boolean = false,
 ) extends DeclAST
 
 case class ImportSelector(name: String, alias: Option[String] = None)
