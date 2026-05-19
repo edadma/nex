@@ -64,6 +64,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare double @round(double)
         |declare double @trunc(double)
         |declare i64 @llabs(i64)
+        |declare double @copysign(double, double)
         |
         |@.assert_fail_msg = private unnamed_addr constant [21 x i8] c"trap: assert failed\0A\00"
         |@.assert_eq_msg   = private unnamed_addr constant [24 x i8] c"trap: assert_eq failed\0A\00"

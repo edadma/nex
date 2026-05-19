@@ -55,7 +55,8 @@ Construction of complex values uses the prelude constant `i` (§10.1) together w
 ```nex
 3 + 4i             // (3.0 + 4.0i)
 2.5i               // (0.0 + 2.5i)
-exp(2pi * i)       // (-1.0 + 0.0i)
+exp(pi * i)        // ≈ (-1.0 + 0.0i) — Euler's identity
+exp(2pi * i)       // ≈ (1.0 + 0.0i)  — full rotation
 ```
 
 ## 10.4 Array operations

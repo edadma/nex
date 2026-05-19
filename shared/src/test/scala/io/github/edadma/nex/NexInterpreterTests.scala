@@ -765,6 +765,74 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       runOut("""def main() = print(abs(-7))""") shouldBe "7\n"
     }
 
+    // ----------------------------------------------------------------
+    // Complex-argument scalar math (spec §10.2 line 32: sin / cos /
+    // exp / log / sqrt apply to real AND complex). Regression for the
+    // bug where `exp(2pi * i)` trapped with "expected numeric" — the
+    // dispatch was routing all args through `asReal` which rejected
+    // any non-zero imaginary part.
+    // ----------------------------------------------------------------
+
+    "exp(complex) — exp(2pi * i) ≈ 1 (Euler's identity, full cycle)" in {
+      val out = runOut("""def main() = print(exp(2pi * i))""")
+      // Real part rounds to 1.0 exactly; imaginary is FP noise ≈ −2.4e-16.
+      out should startWith("1.0")
+      out should include("i")
+    }
+
+    "exp(complex) — exp(pi * i) ≈ -1 (Euler's identity proper)" in {
+      val out = runOut("""def main() = print(exp(pi * i))""")
+      out should startWith("-1.0")
+      out should include("i")
+    }
+
+    "exp(complex) — exp(0 + 0i) = 1 + 0i exactly" in {
+      runOut("""def main() = print(exp(0.0 + 0i))""") shouldBe "1.0+0.0i\n"
+    }
+
+    "log(complex) — log(e + 0i) = 1 + 0i" in {
+      val out = runOut("""def main() = print(log(e + 0i))""")
+      out should startWith("1.0")
+    }
+
+    "log(complex) — log(-1 + 0i) = 0 + π·i" in {
+      val out = runOut("""def main() = print(log(-1.0 + 0i))""")
+      out should startWith("0.0+3.14159")
+    }
+
+    "sin(complex) — sin(0 + i) = i·sinh(1) ≈ 1.175i" in {
+      val out = runOut("""def main() = print(sin(0.0 + 1.0 * i))""")
+      out should startWith("0.0+1.175")
+    }
+
+    "cos(complex) — cos(0 + i) = cosh(1) ≈ 1.543 + 0i" in {
+      val out = runOut("""def main() = print(cos(0.0 + 1.0 * i))""")
+      out should startWith("1.543")
+    }
+
+    "sin² + cos² = 1 for complex args (identity check)" in {
+      // Picks a complex point off the real axis; rounds to 1 + 0i
+      // modulo FP noise.
+      val out = runOut("""
+        |def main() =
+        |  val z = 0.5 + 0.7 * i
+        |  val s = sin(z)
+        |  val c = cos(z)
+        |  print(s * s + c * c)
+      """.stripMargin)
+      out should startWith("1.0")  // imag is ~1e-17
+    }
+
+    "sqrt(complex) — sqrt(-1 + 0i) = 0 + i" in {
+      runOut("""def main() = print(sqrt(-1.0 + 0i))""") shouldBe "0.0+1.0i\n"
+    }
+
+    "tan(complex) of a small-imag value matches tan(real) closely" in {
+      // tan(0.5 + 0i) should agree with tan(0.5) on the real component.
+      val out = runOut("""def main() = print(tan(0.5 + 0i))""")
+      out should startWith("0.546")
+    }
+
     "range" in {
       runOut("""def main() = print(range(0, 5))""") shouldBe "[0, 1, 2, 3, 4]\n"
     }

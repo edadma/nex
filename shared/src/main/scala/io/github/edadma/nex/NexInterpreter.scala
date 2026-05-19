@@ -199,13 +199,58 @@ class NexInterpreter:
     case "cbrt"   => unary1(args, "cbrt")(v => VReal(math.cbrt(asReal(v))))
     case "abs"    => unary1(args, "abs")(absV)
     case "sign"   => unary1(args, "sign")(signV)
-    case "exp"    => unary1(args, "exp")(v => VReal(math.exp(asReal(v))))
-    case "log"    => unary1(args, "log")(v => VReal(math.log(asReal(v))))
-    case "log2"   => unary1(args, "log2")(v => VReal(math.log(asReal(v)) / math.log(2)))
-    case "log10"  => unary1(args, "log10")(v => VReal(math.log10(asReal(v))))
-    case "sin"    => unary1(args, "sin")(v => VReal(math.sin(asReal(v))))
-    case "cos"    => unary1(args, "cos")(v => VReal(math.cos(asReal(v))))
-    case "tan"    => unary1(args, "tan")(v => VReal(math.tan(asReal(v))))
+    // Spec §10.2 line 32: sin, cos, exp, log, sqrt apply to real and
+    // complex. The complex branches use the standard analytic
+    // extensions; reals fall through to the libm path unchanged.
+    case "exp"    =>
+      unary1(args, "exp") {
+        case VComplex(re, im) =>
+          val s = math.exp(re)
+          VComplex(s * math.cos(im), s * math.sin(im))
+        case v => VReal(math.exp(asReal(v)))
+      }
+    case "log"    =>
+      unary1(args, "log") {
+        case VComplex(re, im) =>
+          VComplex(0.5 * math.log(re * re + im * im), math.atan2(im, re))
+        case v => VReal(math.log(asReal(v)))
+      }
+    case "log2"   =>
+      unary1(args, "log2") {
+        case VComplex(re, im) =>
+          val ln2 = math.log(2)
+          VComplex(0.5 * math.log(re * re + im * im) / ln2, math.atan2(im, re) / ln2)
+        case v => VReal(math.log(asReal(v)) / math.log(2))
+      }
+    case "log10"  =>
+      unary1(args, "log10") {
+        case VComplex(re, im) =>
+          val ln10 = math.log(10)
+          VComplex(0.5 * math.log(re * re + im * im) / ln10, math.atan2(im, re) / ln10)
+        case v => VReal(math.log10(asReal(v)))
+      }
+    case "sin"    =>
+      unary1(args, "sin") {
+        case VComplex(re, im) =>
+          VComplex(math.sin(re) * math.cosh(im), math.cos(re) * math.sinh(im))
+        case v => VReal(math.sin(asReal(v)))
+      }
+    case "cos"    =>
+      unary1(args, "cos") {
+        case VComplex(re, im) =>
+          VComplex(math.cos(re) * math.cosh(im), -math.sin(re) * math.sinh(im))
+        case v => VReal(math.cos(asReal(v)))
+      }
+    case "tan"    =>
+      unary1(args, "tan") {
+        case VComplex(re, im) =>
+          // tan(z) = sin(z)/cos(z), expanded for stability across small |im|.
+          val sr = math.sin(re); val cr = math.cos(re)
+          val sh = math.sinh(im); val ch = math.cosh(im)
+          val denom = cr * cr * ch * ch + sr * sr * sh * sh
+          VComplex((sr * cr) / denom, (sh * ch) / denom)
+        case v => VReal(math.tan(asReal(v)))
+      }
     case "asin"   => unary1(args, "asin")(v => VReal(math.asin(asReal(v))))
     case "acos"   => unary1(args, "acos")(v => VReal(math.acos(asReal(v))))
     case "atan"   => unary1(args, "atan")(v => VReal(math.atan(asReal(v))))

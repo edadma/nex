@@ -1624,6 +1624,18 @@ class NexElaborator:
           case Some(TyComplex) => TyComplex
           case Some(t)         => t
           case None            => TyUnknown
+      // Spec §10.2 line 32: sin, cos, exp, log, sqrt apply to real
+      // AND complex. The complex case returns complex; everything
+      // else returns real (with sqrt(negative real) handled by the
+      // interpreter at runtime).
+      case "sin" | "cos" | "tan" | "exp" | "log" | "log2" | "log10" if args.size == 1 =>
+        args.head.tpe match
+          case TyComplex => TyComplex
+          case _         => TyReal
+      case "sqrt" | "cbrt" if args.size == 1 =>
+        args.head.tpe match
+          case TyComplex => TyComplex
+          case _         => TyReal
       // §10.5 construction. `fill(n, v)` shape depends on n's type:
       //   - `n: integer`            → `[T]`  where T = v.tpe
       //   - `n: (integer, integer)` → `[[T]]`

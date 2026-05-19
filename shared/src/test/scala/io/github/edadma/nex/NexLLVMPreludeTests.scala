@@ -427,3 +427,61 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """call ptr @__nex_arr1_slot\(ptr %t\d+, i64 2, i64 8\)"""
     }
   }
+
+  "complex-arg transcendental functions (spec §10.2)" should {
+    // Spec §10.2 line 32: sin, cos, exp, log, sqrt apply to real AND
+    // complex. The complex paths emit per-component IR using libm
+    // helpers (exp/cos/sin/sinh/cosh/atan2/sqrt). Each test pins one
+    // of the formulas via instructions only that branch would emit.
+
+    "exp(complex) uses cos+sin of the imag part and exp of the real" in {
+      val ir = compile("def main() = print(exp(1.0 + 2.0 * i))")
+      ir should include("call double @exp(double")
+      ir should include("call double @cos(double")
+      ir should include("call double @sin(double")
+    }
+
+    "log(complex) uses atan2 + half-of-log of magnitude²" in {
+      val ir = compile("def main() = print(log(3.0 + 4.0 * i))")
+      ir should include("call double @log(double")
+      ir should include("call double @atan2(double")
+      // The 0.5 multiplier on the log² magnitude.
+      ir should include("fmul double") // (loose, but the 0.5 lives in the IR)
+    }
+
+    "sin(complex) uses sin/cos of real AND sinh/cosh of imag" in {
+      val ir = compile("def main() = print(sin(0.5 + 0.5 * i))")
+      ir should include("call double @sin(double")
+      ir should include("call double @cos(double")
+      ir should include("call double @sinh(double")
+      ir should include("call double @cosh(double")
+    }
+
+    "cos(complex) negates the imag-part product (cos·cosh − sin·sinh)" in {
+      val ir = compile("def main() = print(cos(0.5 + 0.5 * i))")
+      ir should include("call double @sin(double")
+      ir should include("call double @cos(double")
+      ir should include("call double @sinh(double")
+      ir should include("call double @cosh(double")
+      // The `−sin · sinh` term emits an fneg.
+      ir should include regex """fneg double"""
+    }
+
+    "sqrt(complex) uses copysign for the imag sign transfer" in {
+      val ir = compile("def main() = print(sqrt(-1.0 + 0.0 * i))")
+      ir should include("declare double @copysign(double, double)")
+      ir should include("call double @copysign(double")
+      ir should include("call double @sqrt(double")
+    }
+
+    "regression: exp(2pi * i) compiles without trapping" in {
+      // Was emitting `call double @exp(double <complex>)` and
+      // failing to link. Now the elaborator routes to TyComplex
+      // result type and the codegen emits the per-component
+      // formula.
+      val ir = compile("def main() = print(exp(2pi * i))")
+      // The result of exp(...) is now a `{ double, double }` aggregate
+      // that flows into the complex-print path.
+      ir should include("insertvalue { double, double }")
+    }
+  }

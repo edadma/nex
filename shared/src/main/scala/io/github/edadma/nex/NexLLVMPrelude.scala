@@ -21,18 +21,33 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("rows",   List(a)) => emitArrayLengthish(a, "rows")
       case ("cols",   List(a)) => emitArrayLengthish(a, "cols")
 
-      // §10.2 scalar math — all unary fns lower to libm doubles. The
+      // §10.2 scalar math — most unary fns lower to libm doubles. The
       // elaborator marks the result as TyReal; integer operands need
       // a sitofp lift before the call.
-      case ("sqrt",  List(x)) => emitLibmUnary("sqrt",  x)
+      //
+      // Spec §10.2 line 32: sin, cos, exp, log, sqrt (and as a
+      // natural extension tan / log2 / log10 / cbrt) accept complex
+      // arguments and return complex via the standard analytic
+      // extensions. Each function routes on x.tpe.
+      case ("sqrt",  List(x)) =>
+        if x.tpe == TyComplex then emitComplexSqrt(x) else emitLibmUnary("sqrt", x)
       case ("cbrt",  List(x)) => emitLibmUnary("cbrt",  x)
-      case ("exp",   List(x)) => emitLibmUnary("exp",   x)
-      case ("log",   List(x)) => emitLibmUnary("log",   x)
-      case ("log2",  List(x)) => emitLibmUnary("log2",  x)
-      case ("log10", List(x)) => emitLibmUnary("log10", x)
-      case ("sin",   List(x)) => emitLibmUnary("sin",   x)
-      case ("cos",   List(x)) => emitLibmUnary("cos",   x)
-      case ("tan",   List(x)) => emitLibmUnary("tan",   x)
+      case ("exp",   List(x)) =>
+        if x.tpe == TyComplex then emitComplexExp(x) else emitLibmUnary("exp", x)
+      case ("log",   List(x)) =>
+        if x.tpe == TyComplex then emitComplexLog(x, scale = 1.0) else emitLibmUnary("log", x)
+      case ("log2",  List(x)) =>
+        if x.tpe == TyComplex then emitComplexLog(x, scale = math.log(2))
+        else emitLibmUnary("log2", x)
+      case ("log10", List(x)) =>
+        if x.tpe == TyComplex then emitComplexLog(x, scale = math.log(10))
+        else emitLibmUnary("log10", x)
+      case ("sin",   List(x)) =>
+        if x.tpe == TyComplex then emitComplexSin(x) else emitLibmUnary("sin", x)
+      case ("cos",   List(x)) =>
+        if x.tpe == TyComplex then emitComplexCos(x) else emitLibmUnary("cos", x)
+      case ("tan",   List(x)) =>
+        if x.tpe == TyComplex then emitComplexTan(x) else emitLibmUnary("tan", x)
       case ("asin",  List(x)) => emitLibmUnary("asin",  x)
       case ("acos",  List(x)) => emitLibmUnary("acos",  x)
       case ("atan",  List(x)) => emitLibmUnary("atan",  x)
@@ -275,6 +290,127 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val reg = newReg()
     emitLine(s"  $reg = call double @$fn(double $xv)\n")
     reg
+
+  // ---------------------------------------------------------------------------
+  // Complex-arg variants of the spec-§10.2 transcendental functions.
+  // Each takes a TyComplex expression, extracts the (re, im) pair, runs
+  // the standard analytic-extension formula via libm, and packs the
+  // result back into a `{ double, double }` aggregate.
+  // ---------------------------------------------------------------------------
+
+  /** Pack two doubles into a complex aggregate value. */
+  private def packComplexCD(re: String, im: String): String =
+    val c0 = newReg()
+    emitLine(s"  $c0 = insertvalue { double, double } undef, double $re, 0\n")
+    val c1 = newReg()
+    emitLine(s"  $c1 = insertvalue { double, double } $c0, double $im, 1\n")
+    c1
+
+  /** Extract (re, im) from a complex SSA value. */
+  private def unpackComplex(z: String): (String, String) =
+    val re = newReg()
+    emitLine(s"  $re = extractvalue { double, double } $z, 0\n")
+    val im = newReg()
+    emitLine(s"  $im = extractvalue { double, double } $z, 1\n")
+    (re, im)
+
+  /** exp(a + bi) = e^a · (cos b + i·sin b). */
+  private def emitComplexExp(x: TExpr): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val s  = newReg(); emitLine(s"  $s  = call double @exp(double $re)\n")
+    val c  = newReg(); emitLine(s"  $c  = call double @cos(double $im)\n")
+    val si = newReg(); emitLine(s"  $si = call double @sin(double $im)\n")
+    val r  = newReg(); emitLine(s"  $r  = fmul double $s, $c\n")
+    val i  = newReg(); emitLine(s"  $i  = fmul double $s, $si\n")
+    packComplexCD(r, i)
+
+  /** log(a + bi) = ½·ln(a² + b²) + i·atan2(b, a), scaled by `scale`
+    * for log2 / log10 (pass scale = ln(2) / ln(10)).
+    */
+  private def emitComplexLog(x: TExpr, scale: Double): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val rr  = newReg(); emitLine(s"  $rr = fmul double $re, $re\n")
+    val ii  = newReg(); emitLine(s"  $ii = fmul double $im, $im\n")
+    val sum = newReg(); emitLine(s"  $sum = fadd double $rr, $ii\n")
+    val ln  = newReg(); emitLine(s"  $ln = call double @log(double $sum)\n")
+    val half = newReg(); emitLine(s"  $half = fmul double $ln, 5.0e-01\n")
+    val ang  = newReg(); emitLine(s"  $ang = call double @atan2(double $im, double $re)\n")
+    if scale == 1.0 then packComplexCD(half, ang)
+    else
+      // Divide both components by scale to get log2 / log10 from natural log.
+      val sc = formatReal(scale)
+      val rr2 = newReg(); emitLine(s"  $rr2 = fdiv double $half, $sc\n")
+      val ii2 = newReg(); emitLine(s"  $ii2 = fdiv double $ang,  $sc\n")
+      packComplexCD(rr2, ii2)
+
+  /** sin(a + bi) = sin a · cosh b + i·cos a · sinh b. */
+  private def emitComplexSin(x: TExpr): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val sr = newReg(); emitLine(s"  $sr = call double @sin(double $re)\n")
+    val cr = newReg(); emitLine(s"  $cr = call double @cos(double $re)\n")
+    val sh = newReg(); emitLine(s"  $sh = call double @sinh(double $im)\n")
+    val ch = newReg(); emitLine(s"  $ch = call double @cosh(double $im)\n")
+    val r  = newReg(); emitLine(s"  $r = fmul double $sr, $ch\n")
+    val i  = newReg(); emitLine(s"  $i = fmul double $cr, $sh\n")
+    packComplexCD(r, i)
+
+  /** cos(a + bi) = cos a · cosh b − i·sin a · sinh b. */
+  private def emitComplexCos(x: TExpr): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val sr = newReg(); emitLine(s"  $sr = call double @sin(double $re)\n")
+    val cr = newReg(); emitLine(s"  $cr = call double @cos(double $re)\n")
+    val sh = newReg(); emitLine(s"  $sh = call double @sinh(double $im)\n")
+    val ch = newReg(); emitLine(s"  $ch = call double @cosh(double $im)\n")
+    val r  = newReg(); emitLine(s"  $r = fmul double $cr, $ch\n")
+    val negSr = newReg(); emitLine(s"  $negSr = fneg double $sr\n")
+    val i  = newReg(); emitLine(s"  $i = fmul double $negSr, $sh\n")
+    packComplexCD(r, i)
+
+  /** tan(z) = sin z / cos z, expanded for numerical stability across
+    * the imaginary axis. Formula: real = sin r · cos r / D,
+    * imag = sinh i · cosh i / D, where D = cos²r·cosh²i + sin²r·sinh²i.
+    */
+  private def emitComplexTan(x: TExpr): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val sr = newReg(); emitLine(s"  $sr = call double @sin(double $re)\n")
+    val cr = newReg(); emitLine(s"  $cr = call double @cos(double $re)\n")
+    val sh = newReg(); emitLine(s"  $sh = call double @sinh(double $im)\n")
+    val ch = newReg(); emitLine(s"  $ch = call double @cosh(double $im)\n")
+    val crsq = newReg(); emitLine(s"  $crsq = fmul double $cr, $cr\n")
+    val srsq = newReg(); emitLine(s"  $srsq = fmul double $sr, $sr\n")
+    val chsq = newReg(); emitLine(s"  $chsq = fmul double $ch, $ch\n")
+    val shsq = newReg(); emitLine(s"  $shsq = fmul double $sh, $sh\n")
+    val a = newReg(); emitLine(s"  $a = fmul double $crsq, $chsq\n")
+    val b = newReg(); emitLine(s"  $b = fmul double $srsq, $shsq\n")
+    val d = newReg(); emitLine(s"  $d = fadd double $a, $b\n")
+    val srcr = newReg(); emitLine(s"  $srcr = fmul double $sr, $cr\n")
+    val shch = newReg(); emitLine(s"  $shch = fmul double $sh, $ch\n")
+    val r = newReg(); emitLine(s"  $r = fdiv double $srcr, $d\n")
+    val i = newReg(); emitLine(s"  $i = fdiv double $shch, $d\n")
+    packComplexCD(r, i)
+
+  /** sqrt(a + bi) — principal branch, computed in the half-plane form
+    *   real = √((|z| + re) / 2)
+    *   imag = sign(im) · √((|z| − re) / 2)
+    * matching the interpreter's [[NexInterpreter.sqrtV]].
+    */
+  private def emitComplexSqrt(x: TExpr): String =
+    val (re, im) = unpackComplex(emitExpr(x))
+    val rr  = newReg(); emitLine(s"  $rr = fmul double $re, $re\n")
+    val ii  = newReg(); emitLine(s"  $ii = fmul double $im, $im\n")
+    val sum = newReg(); emitLine(s"  $sum = fadd double $rr, $ii\n")
+    val mag = newReg(); emitLine(s"  $mag = call double @sqrt(double $sum)\n")
+    val sumR = newReg(); emitLine(s"  $sumR = fadd double $mag, $re\n")
+    val diffR = newReg(); emitLine(s"  $diffR = fsub double $mag, $re\n")
+    val halfA = newReg(); emitLine(s"  $halfA = fmul double $sumR,  5.0e-01\n")
+    val halfB = newReg(); emitLine(s"  $halfB = fmul double $diffR, 5.0e-01\n")
+    val realR = newReg(); emitLine(s"  $realR = call double @sqrt(double $halfA)\n")
+    val absI  = newReg(); emitLine(s"  $absI  = call double @sqrt(double $halfB)\n")
+    // Apply sign(im): copysign(absI, im) yields ±absI matching im's sign.
+    // libm exposes copysign; use it for cheap branch-free sign transfer.
+    val signed = newReg()
+    emitLine(s"  $signed = call double @copysign(double $absI, double $im)\n")
+    packComplexCD(realR, signed)
 
   /** Emit `min(a, b)` / `max(a, b)` using fcmp+select for reals and
     * icmp+select for integers. Mixed-type results promote both operands
