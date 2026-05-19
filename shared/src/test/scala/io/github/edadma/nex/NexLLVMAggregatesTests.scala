@@ -246,4 +246,35 @@ class NexLLVMAggregatesTests extends AnyWordSpec with NexCodegenTestBase:
       ir should not include "@__nex_drop_tup_"
       ir should not include "@__nex_inc_tup_"
     }
+
+    "array of struct-with-string uses an aggregate-aware deep-dec helper" in {
+      val ir = compile("""
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val xs = [Wrap("k" + "v", 1), Wrap("a" + "b", 2)]
+        |  print(xs[0].msg)
+      """.stripMargin)
+      // The per-element deep-dec helper now exists for struct elements.
+      ir should include regex """define void @__nex_arr1_dec_struct_Wrap_str_i64\(ptr %a\)"""
+      // Its loop body loads the struct by value (not via ptr) and
+      // dispatches to the per-aggregate drop helper.
+      val helper = ir.substring(ir.indexOf("@__nex_arr1_dec_struct_Wrap_str_i64"))
+      helper should include("load { ptr, i64 }, ptr %slot")
+      helper should include("call void @__nex_drop_struct_Wrap_str_i64({ ptr, i64 } %v)")
+    }
+
+    "array of tuple-with-string drops each element when the array is freed" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [("x" + "y", 1), ("a" + "b", 2)]
+        |  val a, b = xs[0]
+        |  print(a)
+      """.stripMargin)
+      ir should include regex """define void @__nex_arr1_dec_tup_str_i64\(ptr %a\)"""
+      val helper = ir.substring(ir.indexOf("@__nex_arr1_dec_tup_str_i64"))
+      helper should include("load { ptr, i64 }, ptr %slot")
+      helper should include("call void @__nex_drop_tup_str_i64({ ptr, i64 } %v)")
+    }
   }

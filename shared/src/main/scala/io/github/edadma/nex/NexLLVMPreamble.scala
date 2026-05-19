@@ -711,22 +711,43 @@ protected trait NexLLVMPreamble extends NexLLVMState:
     out.append(sb.toString)
 
   /** Element-dec call text for a single element of a deep-dec body. The
-    * value register `valReg` holds the slot's loaded ptr; this returns
-    * the LLVM IR instruction(s) that dec it according to its static
-    * type. Calling [[arrDecFor]] here may register additional deep
-    * helpers for nested arrays.
+    * value register `valReg` holds the slot's loaded value (a ptr for
+    * string / array element types, an aggregate by value for tuple /
+    * struct element types). Calling [[arrDecFor]] / [[requestAggHelper]]
+    * here may register additional deep helpers for nested arrays or
+    * aggregates.
     */
   private def elemDecCallIR(elem: Type, valReg: String): String = elem match
-    case TyString      => s"  call void @__nex_str_dec(ptr $valReg)\n"
-    case TyArray(_, _) => s"  call void ${arrDecFor(elem)}(ptr $valReg)\n"
-    case other         => s"  ; unsupported deep-dec elem $other\n"
+    case TyString                            =>
+      s"  call void @__nex_str_dec(ptr $valReg)\n"
+    case TyArray(_, _)                       =>
+      s"  call void ${arrDecFor(elem)}(ptr $valReg)\n"
+    case t if aggregateContainsRefCounted(t) =>
+      requestAggHelper(t)
+      s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $valReg)\n"
+    case other                               =>
+      s"  ; unsupported deep-dec elem $other\n"
+
+  /** Storage type and LLVM type used inside a deep-dec helper's loop
+    * body. For pointer-keyed elements (string / array) we load through
+    * `ptr` (matching what the buffer holds and what the existing inner
+    * helpers expect); for aggregates we load by the element's
+    * natural llvm type (a struct value).
+    */
+  private def deepDecSlotTy(elem: Type): String = elem match
+    case TyString | TyArray(_, _) => "ptr"
+    case _                        => llvmType(elem)
 
   /** Emit `define void @__nex_arr1_dec_<mangle>(ptr %a)` — the deep-dec
     * variant that walks each refcounted element before freeing the
     * descriptor and buffer. Body otherwise mirrors `__nex_arr1_dec`.
+    * The slot's load type depends on the element: pointer-keyed
+    * elements (string / array) keep `ptr`, aggregates load the struct
+    * by value and route through the per-aggregate drop helper.
     */
   protected def emitDeepDec1Helper(elem: Type): Unit =
-    val name = s"__nex_arr1_dec_${typeMangle(elem)}"
+    val name    = s"__nex_arr1_dec_${typeMangle(elem)}"
+    val slotTy  = deepDecSlotTy(elem)
     val elemDec = elemDecCallIR(elem, "%v")
     out.append(
       s"""define void @$name(ptr %a) {
@@ -751,8 +772,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %cmp = icmp slt i64 %i, %len
          |  br i1 %cmp, label %loop_body, label %free_it
          |loop_body:
-         |  %slot = getelementptr inbounds ptr, ptr %buf, i64 %i
-         |  %v = load ptr, ptr %slot
+         |  %slot = getelementptr inbounds $slotTy, ptr %buf, i64 %i
+         |  %v = load $slotTy, ptr %slot
          |${elemDec}  %i1 = add i64 %i, 1
          |  br label %loop_hdr
          |free_it:
@@ -767,10 +788,12 @@ protected trait NexLLVMPreamble extends NexLLVMState:
     )
 
   /** Rank-2 sibling of [[emitDeepDec1Helper]]. Length is `rows * cols`;
-    * the buffer is row-major (matches `emitArrayLit`).
+    * the buffer is row-major (matches `emitArrayLit`). Slot load type
+    * tracks the element kind — see [[emitDeepDec1Helper]].
     */
   protected def emitDeepDec2Helper(elem: Type): Unit =
-    val name = s"__nex_arr2_dec_${typeMangle(elem)}"
+    val name    = s"__nex_arr2_dec_${typeMangle(elem)}"
+    val slotTy  = deepDecSlotTy(elem)
     val elemDec = elemDecCallIR(elem, "%v")
     out.append(
       s"""define void @$name(ptr %a) {
@@ -798,8 +821,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %cmp = icmp slt i64 %i, %len
          |  br i1 %cmp, label %loop_body, label %free_it
          |loop_body:
-         |  %slot = getelementptr inbounds ptr, ptr %buf, i64 %i
-         |  %v = load ptr, ptr %slot
+         |  %slot = getelementptr inbounds $slotTy, ptr %buf, i64 %i
+         |  %v = load $slotTy, ptr %slot
          |${elemDec}  %i1 = add i64 %i, 1
          |  br label %loop_hdr
          |free_it:

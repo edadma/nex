@@ -456,16 +456,17 @@ protected trait NexLLVMState:
   /** Element types for which we generate per-element-type deep-dec
     * helpers. Strings and nested arrays carry refcounts and are stored
     * as plain ptr slots, so a single load + matching dec call works
-    * uniformly. Closure values are `{ ptr, ptr }` (16 bytes) — they
-    * don't fit the 8-byte slot stride v0 assumes and are not yet
-    * supported as array elements. Tuples / structs holding refcounted
-    * fields are a separate follow-up (their dec walk needs field
-    * traversal, not just a single element dec).
+    * uniformly. Aggregates carrying refcounted leaves use the
+    * aggregate's storage type for the slot load and route through the
+    * per-aggregate drop helper. Closure values are `{ ptr, ptr }` (16
+    * bytes) — they don't fit the v0 by-pointer element pattern and are
+    * not yet supported as array elements.
     */
   protected def deepDecEligible(elem: Type): Boolean = elem match
-    case TyString      => true
-    case TyArray(_, _) => true
-    case _             => false
+    case TyString                                          => true
+    case TyArray(_, _)                                     => true
+    case t if aggregateContainsRefCounted(t)               => true
+    case _                                                 => false
 
   /** Stable mangling of a Nex type for use in generated symbol names.
     * Strings and primitive scalars get short tags; nested arrays

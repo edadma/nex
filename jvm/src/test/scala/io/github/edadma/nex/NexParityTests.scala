@@ -1053,6 +1053,47 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "xy\nxy\n",
     )
+
+    "array of struct-with-string releases every element on free" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val xs = [Wrap("k" + "v", 1), Wrap("a" + "b", 2)]
+        |  print(xs[0].msg)
+        |  print(xs[1].msg)
+      """.stripMargin,
+      "kv\nab\n",
+    )
+
+    "stress: array of struct-with-string built and released in a loop" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val xs = [Wrap("tag" + "X", i), Wrap("end" + "Y", i + 1)]
+        |    print(xs[0].msg)
+        |    print(xs[1].msg)
+        |    i = i + 1
+      """.stripMargin,
+      "tagX\nendY\ntagX\nendY\ntagX\nendY\ntagX\nendY\ntagX\nendY\n",
+    )
+
+    "rank-2 array of tuple-with-string releases every cell" in parityCheck(
+      """
+        |def main() =
+        |  val xs = [[("a" + "1", 1), ("b" + "2", 2)], [("c" + "3", 3), ("d" + "4", 4)]]
+        |  val a0, n0 = xs[0, 0]
+        |  val a1, n1 = xs[1, 1]
+        |  print(a0)
+        |  print(a1)
+      """.stripMargin,
+      "a1\nd4\n",
+    )
   }
 
   "deep ARC for closure env captures" should {
