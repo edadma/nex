@@ -201,6 +201,54 @@ class NexLLVMAggregatesTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """load ptr, ptr %t\d+"""
       ir should include ("__nex_str_dec")
     }
+
+    "field write on array element routes through __nex_arr1_slot then GEPs the field" in {
+      val ir = compile("""
+        |struct P
+        |  x: integer
+        |def main() =
+        |  var ps = [P(1), P(2)]
+        |  ps[0].x = 99
+        |  print(ps[0].x)
+      """.stripMargin)
+      // The slot ptr comes from __nex_arr1_slot, then GEP picks field 0.
+      ir should include regex """call ptr @__nex_arr1_slot\(ptr %t\d+, i64 \S+, i64 8\)"""
+      ir should include regex """getelementptr inbounds \{ i64 \}, ptr %t\d+, i32 0, i32 0"""
+      ir should not include "; TODO: assign to TField"
+    }
+  }
+
+  "global top-level bindings (aggregate types)" should {
+
+    "global struct val declares with zeroinitializer (not literal `0`)" in {
+      val ir = compile("""
+        |struct P
+        |  x: integer
+        |  y: integer
+        |val g = P(10, 20)
+        |def main() = print(g.x)
+      """.stripMargin)
+      ir should include ("@g = global { i64, i64 } zeroinitializer")
+      ir should not include "@g = global { i64, i64 } 0"
+    }
+
+    "global tuple val uses zeroinitializer" in {
+      val ir = compile("""
+        |val pair = (3, 4)
+        |def main() =
+        |  val (a, b) = pair
+        |  print(a)
+      """.stripMargin)
+      ir should include ("@pair = global { i64, i64 } zeroinitializer")
+    }
+
+    "global closure-typed val uses zeroinitializer" in {
+      val ir = compile("""
+        |val sqr: (integer -> integer) = x -> x * x
+        |def main() = print(sqr(5))
+      """.stripMargin)
+      ir should include ("@sqr = global { ptr, ptr } zeroinitializer")
+    }
   }
 
   "deep ARC for aggregates" should {

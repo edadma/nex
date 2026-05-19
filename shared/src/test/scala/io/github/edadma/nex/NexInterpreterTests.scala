@@ -915,6 +915,20 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(it.name)
       """.stripMargin) shouldBe "foobar\n"
     }
+
+    "field write through an array-element receiver mutates the slot" in {
+      runOut("""
+        |struct P
+        |  x: integer
+        |end P
+        |
+        |def main() =
+        |  var ps = [P(1), P(2), P(3)]
+        |  ps[0].x = 99
+        |  print(ps[0].x)
+        |  print(ps[1].x)
+      """.stripMargin) shouldBe "99\n2\n"
+    }
   }
 
   // ==========================================================================

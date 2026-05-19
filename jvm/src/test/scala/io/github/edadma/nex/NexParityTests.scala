@@ -513,6 +513,93 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "99.0\n4.5\n",
     )
+    "field write on element of an array of structs (xs[i].field = v)" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |end P
+        |
+        |def main() =
+        |  var ps = [P(1), P(2), P(3)]
+        |  ps[0].x = 99
+        |  ps[2].x = 77
+        |  print(ps[0].x)
+        |  print(ps[1].x)
+        |  print(ps[2].x)
+      """.stripMargin,
+      "99\n2\n77\n",
+    )
+    "nested field write through array-element receiver" in parityCheck(
+      """
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var xs = [Outer(Inner(1)), Outer(Inner(2))]
+        |  xs[1].i.v = 99
+        |  print(xs[0].i.v)
+        |  print(xs[1].i.v)
+      """.stripMargin,
+      "1\n99\n",
+    )
+  }
+
+  "global top-level bindings of aggregate type" should {
+    "global struct val + field reads" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |val g = P(10, 20)
+        |
+        |def main() =
+        |  print(g.x)
+        |  print(g.y)
+      """.stripMargin,
+      "10\n20\n",
+    )
+    "global tuple val + destructuring" in parityCheck(
+      """
+        |val pair = (3, 4)
+        |
+        |def main() =
+        |  val (a, b) = pair
+        |  print(a)
+        |  print(b)
+      """.stripMargin,
+      "3\n4\n",
+    )
+    "global closure-typed val with declared TyFunc" in parityCheck(
+      """
+        |val sqr: (integer -> integer) = x -> x * x
+        |
+        |def main() = print(sqr(5))
+      """.stripMargin,
+      "25\n",
+    )
+    "global var struct field write through main" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |var g = P(10, 20)
+        |
+        |def main() =
+        |  g.x = 99
+        |  print(g.x)
+        |  print(g.y)
+      """.stripMargin,
+      "99\n20\n",
+    )
   }
 
   "range as a value-producing expression (spec §4.12)" should {

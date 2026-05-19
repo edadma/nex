@@ -318,11 +318,18 @@ protected trait NexLLVMState:
     bytes += 1
     (sb.toString, bytes)
 
-  /** Picks the appropriate `zeroinitializer` token for an LLVM type. */
+  /** Picks the appropriate zero-value literal for an LLVM type at module
+    * global scope. Aggregates (`{ ... }` struct literals) require
+    * `zeroinitializer` rather than `0`. Scalars get their natural zero
+    * token: `0` for integers, `0.0` for doubles, `false` for i1,
+    * `null` for pointers.
+    */
   protected def zeroInitFor(ty: String): String = ty match
     case "double" => "0.0"
     case "i1"     => "false"
     case "ptr"    => "null"
+    case "void"   => "0"
+    case s if s.startsWith("{") => "zeroinitializer"
     case _        => "0"
 
   // ---------------------------------------------------------------------------
