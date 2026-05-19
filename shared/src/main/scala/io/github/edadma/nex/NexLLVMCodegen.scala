@@ -464,6 +464,9 @@ class NexLLVMCodegen
     case TAssign(target, value, _, _) =>
       emitAssign(target, value); "void"
 
+    case TMatMul(l, r, _, t) =>
+      emitMatMulShared(l, r, t)
+
     case other =>
       notYet(s"expression ${other.getClass.getSimpleName}"); "0"
 

@@ -1043,6 +1043,39 @@ protected trait NexElabInference extends NexElabState:
         TyArray(TyInteger, 1)
       case "linspace" if args.size == 3 =>
         TyArray(TyReal, 1)
+      // §10.4 rank-2 ops (Wave 5). shape returns a tuple whose arity
+      // matches the source rank; transpose / matmul / diag / reshape /
+      // flatten compute their result type from the argument shape.
+      case "shape" if args.size == 1 =>
+        args.head.tpe match
+          case TyArray(_, 1) => TyTuple(List(TyInteger))
+          case TyArray(_, 2) => TyTuple(List(TyInteger, TyInteger))
+          case _             => TyUnknown
+      case "transpose" if args.size == 1 =>
+        args.head.tpe match
+          case TyArray(e, 2) => TyArray(e, 2)
+          case _             => TyUnknown
+      case "matmul" if args.size == 2 =>
+        // matmul follows the same shape rules as TMatMul (`@`). Defer
+        // to matMulType for the lattice; it handles all 2x2 / 2x1 /
+        // 1x2 / 1x1 combinations correctly.
+        matMulType(args(0).tpe, args(1).tpe, None)
+      case "diag" if args.size == 1 =>
+        args.head.tpe match
+          // diag(rank-1) → rank-2 n×n with the input on the diagonal.
+          // (Interpreter doesn't yet implement diag(rank-2) → rank-1.)
+          case TyArray(e, 1) => TyArray(e, 2)
+          case _             => TyUnknown
+      case "reshape" if args.size == 3 =>
+        // Spec §10.4: `reshape(a: [T], rows: integer, cols: integer)` —
+        // 3 args, NOT a tuple-shape. Result element type preserved.
+        args.head.tpe match
+          case TyArray(e, _) => TyArray(e, 2)
+          case _             => TyUnknown
+      case "flatten" if args.size == 1 =>
+        args.head.tpe match
+          case TyArray(e, _) => TyArray(e, 1)
+          case _             => TyUnknown
       case _ => preludeReturnType(name)
 
   // ==========================================================================

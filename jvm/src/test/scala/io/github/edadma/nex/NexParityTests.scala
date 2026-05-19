@@ -617,6 +617,122 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "rank-2 matrix ops (Wave 5)" should {
+    "shape of a rank-1 array prints as a 1-tuple" in parityCheck(
+      """
+        |def main() =
+        |  print(shape([1, 2, 3, 4, 5]))
+      """.stripMargin,
+      "(5)\n",
+    )
+    "shape of a rank-2 array prints rows, cols" in parityCheck(
+      """
+        |def main() =
+        |  print(shape(zeros((2, 3))))
+      """.stripMargin,
+      "(2, 3)\n",
+    )
+    "transpose of a 2x3 matrix" in parityCheck(
+      // reshape is column-major: [1..6] into (2,3) is [[1,3,5],[2,4,6]],
+      // so transpose is [[1,2],[3,4],[5,6]].
+      """
+        |def main() =
+        |  val m = reshape(range(1, 7), 2, 3)
+        |  print(transpose(m))
+      """.stripMargin,
+      "[[1, 2], [3, 4], [5, 6]]\n",
+    )
+    "transpose of a square matrix is involutive" in parityCheck(
+      """
+        |def main() =
+        |  val m = identity(4)
+        |  print(transpose(transpose(m)))
+      """.stripMargin,
+      "[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]\n",
+    )
+    "matmul of two 2x2 integer matrices" in parityCheck(
+      // a = [[1,3],[2,4]], b = [[5,7],[6,8]] (column-major reshape).
+      // a @ b = [[1*5+3*6, 1*7+3*8], [2*5+4*6, 2*7+4*8]] = [[23,31],[34,46]].
+      """
+        |def main() =
+        |  val a = reshape([1, 2, 3, 4], 2, 2)
+        |  val b = reshape([5, 6, 7, 8], 2, 2)
+        |  print(matmul(a, b))
+      """.stripMargin,
+      "[[23, 31], [34, 46]]\n",
+    )
+    "@ operator on 2x2 matrices" in parityCheck(
+      // a = [[1,3],[2,4]] (column-major reshape); identity leaves it alone.
+      """
+        |def main() =
+        |  val a = reshape([1, 2, 3, 4], 2, 2)
+        |  val b = identity(2)
+        |  print(a @ b)
+      """.stripMargin,
+      "[[1, 3], [2, 4]]\n",
+    )
+    "matmul rank-2 times rank-1 (matrix x vector)" in parityCheck(
+      // m = [[1,3,5],[2,4,6]] (column-major reshape).
+      // m @ [1,2,3] = [1+6+15, 2+8+18] = [22, 28].
+      """
+        |def main() =
+        |  val m = reshape([1, 2, 3, 4, 5, 6], 2, 3)
+        |  val v = [1, 2, 3]
+        |  print(matmul(m, v))
+      """.stripMargin,
+      "[22, 28]\n",
+    )
+    "matmul rank-1 times rank-2 (vector x matrix)" in parityCheck(
+      // m = [[1,3,5],[2,4,6]] (column-major reshape).
+      // [1,2] @ m = [1+4, 3+8, 5+12] = [5, 11, 17].
+      """
+        |def main() =
+        |  val v = [1, 2]
+        |  val m = reshape([1, 2, 3, 4, 5, 6], 2, 3)
+        |  print(matmul(v, m))
+      """.stripMargin,
+      "[5, 11, 17]\n",
+    )
+    "matmul rank-1 times rank-1 is the dot product" in parityCheck(
+      """
+        |def main() =
+        |  print(matmul([1, 2, 3], [4, 5, 6]))
+      """.stripMargin,
+      "32\n",
+    )
+    "diag of a rank-1 array" in parityCheck(
+      """
+        |def main() =
+        |  print(diag([1, 2, 3]))
+      """.stripMargin,
+      "[[1, 0, 0], [0, 2, 0], [0, 0, 3]]\n",
+    )
+    "reshape from rank-1 to rank-2 (column-major)" in parityCheck(
+      """
+        |def main() =
+        |  print(reshape([1, 2, 3, 4, 5, 6], 2, 3))
+      """.stripMargin,
+      "[[1, 3, 5], [2, 4, 6]]\n",
+    )
+    "flatten rank-2 is column-major" in parityCheck(
+      """
+        |def main() =
+        |  val m = reshape([1, 2, 3, 4, 5, 6], 2, 3)
+        |  print(flatten(m))
+      """.stripMargin,
+      "[1, 2, 3, 4, 5, 6]\n",
+    )
+    "flatten round-trips with reshape" in parityCheck(
+      """
+        |def main() =
+        |  val m = reshape([1, 2, 3, 4, 5, 6], 2, 3)
+        |  val r = reshape(flatten(m), 2, 3)
+        |  print(r)
+      """.stripMargin,
+      "[[1, 3, 5], [2, 4, 6]]\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

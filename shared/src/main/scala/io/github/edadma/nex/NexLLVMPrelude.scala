@@ -284,6 +284,14 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("ones",     List(n))               => emitConstFill(n, "1", TyInteger, resultT)
       case ("identity", List(n))               => emitIdentityCall(n, resultT)
 
+      // §10.4 rank-2 ops (Wave 5).
+      case ("shape",     List(a))              => emitShapeCall(a, resultT)
+      case ("transpose", List(a))              => emitTransposeCall(a, resultT)
+      case ("matmul",    List(a, b))           => emitMatMulCall(a, b, resultT)
+      case ("diag",      List(a))              => emitDiagCall(a, resultT)
+      case ("reshape",   List(a, r, c))        => emitReshapeCall(a, r, c, resultT)
+      case ("flatten",   List(a))              => emitFlattenCall(a, resultT)
+
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
 
@@ -1233,3 +1241,341 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       emitLine(s"  store double $v, ptr $slot\n")
     }
     arr
+
+  // ---------------------------------------------------------------------------
+  // §10.4 rank-2 ops (Wave 5).
+  //
+  // All of these read an existing array, allocate a result, and dec the
+  // input's owning share before returning. The interpreter is the
+  // reference — see the matching cases in NexInterpreter.callPrelude /
+  // NexInterpreter.matMul for the exact element-wise semantics.
+  // ---------------------------------------------------------------------------
+
+  /** `shape(arr)` — returns a tuple of the array's dimensions:
+    *   rank-1 →  `(n,)`        (one-element tuple — printed as `(n)`)
+    *   rank-2 →  `(rows, cols)`
+    */
+  private def emitShapeCall(arr: TExpr, resultT: Type): String =
+    val arrV = emitExpr(arr)
+    val tupTy = llvmType(resultT)
+    val result = arrayRank(arr.tpe) match
+      case 1 =>
+        val len = newReg()
+        emitLine(s"  $len = call i64 @__nex_arr1_len(ptr $arrV)\n")
+        val t   = newReg()
+        emitLine(s"  $t = insertvalue $tupTy undef, i64 $len, 0\n")
+        t
+      case 2 =>
+        val rows = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+        val cols = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+        val t0   = newReg()
+        emitLine(s"  $t0 = insertvalue $tupTy undef, i64 $rows, 0\n")
+        val t1   = newReg()
+        emitLine(s"  $t1 = insertvalue $tupTy $t0, i64 $cols, 1\n")
+        t1
+      case r => notYet(s"shape on rank $r"); "undef"
+    emitArrDec(arrV, arr.tpe)
+    result
+
+  /** `transpose(m)` — rank-2 only. Allocates an `cols × rows` result and
+    * walks the source row-major copying `src[i,j]` to `dst[j,i]`.
+    * Source storage is row-major (`src[i*cols + j]`) per __nex_arr2_slot.
+    */
+  private def emitTransposeCall(arr: TExpr, resultT: Type): String =
+    if arrayRank(arr.tpe) != 2 then
+      notYet(s"transpose on rank ${arrayRank(arr.tpe)} (rank-2 only)")
+      return "null"
+    val elem = arrayElem(arr.tpe)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val llT  = llvmType(elem)
+    val arrV = emitExpr(arr)
+    val rows = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+    val cols = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+    // result is cols × rows, same element size
+    val res  = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr2_alloc(i64 $cols, i64 $rows, i64 $esz)\n")
+    val srcBuf = bufPtr(arrV, arr.tpe)
+    val dstBuf = bufPtr(res, resultT)
+    // for i in 0..rows: for j in 0..cols: dst[j*rows + i] = src[i*cols + j]
+    emitCountingLoop(rows, "tp.r") { i =>
+      emitCountingLoop(cols, "tp.c") { j =>
+        val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $i, $cols\n")
+        val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $j\n")
+        val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+        val v      = loadElem(stT, srcSlt, llT)
+        val dstOff = newReg(); emitLine(s"  $dstOff = mul i64 $j, $rows\n")
+        val dstK   = newReg(); emitLine(s"  $dstK = add i64 $dstOff, $i\n")
+        val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $dstK\n")
+        storeElem(stT, v, dstSlt)
+      }
+    }
+    emitArrDec(arrV, arr.tpe)
+    res
+
+  /** `matmul(a, b)` — naive triple-loop matrix multiply. Mirrors the
+    * interpreter's [[matMul]]: handles all four (rank, rank) combos.
+    *   2×2 → result is rank-2 (m×p)
+    *   2×1 → result is rank-1 (m)
+    *   1×2 → result is rank-1 (p)
+    *   1×1 → result is a scalar (dot product)
+    */
+  private def emitMatMulCall(aE: TExpr, bE: TExpr, resultT: Type): String =
+    emitMatMulShared(aE, bE, resultT)
+
+  /** Used by both `matmul(a, b)` and the `@` operator ([[TMatMul]] node).
+    * Kept as a single implementation so the two paths can never drift.
+    */
+  protected def emitMatMulShared(aE: TExpr, bE: TExpr, resultT: Type): String =
+    val ar = arrayRank(aE.tpe)
+    val br = arrayRank(bE.tpe)
+    val elem = arrayElem(resultT) match
+      case TyUnknown =>
+        // 1×1 case: result is a scalar; pick element type from the
+        // inputs (interpreter promotes via addV/mulV — we use the
+        // source element since matmul typing requires equal element
+        // types anyway).
+        arrayElem(aE.tpe)
+      case e => e
+    val stT = storageType(elem)
+    val llT = llvmType(elem)
+    val aV  = emitExpr(aE)
+    val bV  = emitExpr(bE)
+    val aBuf = bufPtr(aV, aE.tpe)
+    val bBuf = bufPtr(bV, bE.tpe)
+
+    val result = (ar, br) match
+      case (2, 2) =>
+        // a: m×n   b: n×p   →   c: m×p
+        val m = newReg(); emitLine(s"  $m = call i64 @__nex_arr2_rows(ptr $aV)\n")
+        val n = newReg(); emitLine(s"  $n = call i64 @__nex_arr2_cols(ptr $aV)\n")
+        val p = newReg(); emitLine(s"  $p = call i64 @__nex_arr2_cols(ptr $bV)\n")
+        val res = newReg()
+        emitLine(s"  $res = call ptr @__nex_arr2_alloc(i64 $m, i64 $p, i64 ${elemSize(elem)})\n")
+        val cBuf = bufPtr(res, resultT)
+        emitCountingLoop(m, "mm.i") { i =>
+          emitCountingLoop(p, "mm.j") { j =>
+            val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
+            storeElem(stT, zeroOf(elem), accSlot)
+            emitCountingLoop(n, "mm.k") { k =>
+              val aOff = newReg(); emitLine(s"  $aOff = mul i64 $i, $n\n")
+              val aK   = newReg(); emitLine(s"  $aK = add i64 $aOff, $k\n")
+              val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $aK\n")
+              val av   = loadElem(stT, aSlt, llT)
+              val bOff = newReg(); emitLine(s"  $bOff = mul i64 $k, $p\n")
+              val bK   = newReg(); emitLine(s"  $bK = add i64 $bOff, $j\n")
+              val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $bK\n")
+              val bv   = loadElem(stT, bSlt, llT)
+              val prod = emitScalarBinOpSimple("*", av, bv, elem)
+              val cur  = loadElem(stT, accSlot, llT)
+              val nxt  = emitScalarBinOpSimple("+", cur, prod, elem)
+              storeElem(stT, nxt, accSlot)
+            }
+            val acc = loadElem(stT, accSlot, llT)
+            val cOff = newReg(); emitLine(s"  $cOff = mul i64 $i, $p\n")
+            val cK   = newReg(); emitLine(s"  $cK = add i64 $cOff, $j\n")
+            val cSlt = newReg(); emitLine(s"  $cSlt = getelementptr inbounds $stT, ptr $cBuf, i64 $cK\n")
+            storeElem(stT, acc, cSlt)
+          }
+        }
+        res
+      case (2, 1) =>
+        // a: m×n   b: n   →   c: m
+        val m = newReg(); emitLine(s"  $m = call i64 @__nex_arr2_rows(ptr $aV)\n")
+        val n = newReg(); emitLine(s"  $n = call i64 @__nex_arr2_cols(ptr $aV)\n")
+        val res = newReg()
+        emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $m, i64 ${elemSize(elem)})\n")
+        val cBuf = bufPtr(res, resultT)
+        emitCountingLoop(m, "mv.i") { i =>
+          val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
+          storeElem(stT, zeroOf(elem), accSlot)
+          emitCountingLoop(n, "mv.k") { k =>
+            val aOff = newReg(); emitLine(s"  $aOff = mul i64 $i, $n\n")
+            val aK   = newReg(); emitLine(s"  $aK = add i64 $aOff, $k\n")
+            val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $aK\n")
+            val av   = loadElem(stT, aSlt, llT)
+            val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $k\n")
+            val bv   = loadElem(stT, bSlt, llT)
+            val prod = emitScalarBinOpSimple("*", av, bv, elem)
+            val cur  = loadElem(stT, accSlot, llT)
+            val nxt  = emitScalarBinOpSimple("+", cur, prod, elem)
+            storeElem(stT, nxt, accSlot)
+          }
+          val acc = loadElem(stT, accSlot, llT)
+          val cSlt = newReg(); emitLine(s"  $cSlt = getelementptr inbounds $stT, ptr $cBuf, i64 $i\n")
+          storeElem(stT, acc, cSlt)
+        }
+        res
+      case (1, 2) =>
+        // a: n     b: n×p   →   c: p
+        val n = newReg(); emitLine(s"  $n = call i64 @__nex_arr1_len(ptr $aV)\n")
+        val p = newReg(); emitLine(s"  $p = call i64 @__nex_arr2_cols(ptr $bV)\n")
+        val res = newReg()
+        emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $p, i64 ${elemSize(elem)})\n")
+        val cBuf = bufPtr(res, resultT)
+        emitCountingLoop(p, "vm.j") { j =>
+          val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
+          storeElem(stT, zeroOf(elem), accSlot)
+          emitCountingLoop(n, "vm.k") { k =>
+            val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $k\n")
+            val av   = loadElem(stT, aSlt, llT)
+            val bOff = newReg(); emitLine(s"  $bOff = mul i64 $k, $p\n")
+            val bK   = newReg(); emitLine(s"  $bK = add i64 $bOff, $j\n")
+            val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $bK\n")
+            val bv   = loadElem(stT, bSlt, llT)
+            val prod = emitScalarBinOpSimple("*", av, bv, elem)
+            val cur  = loadElem(stT, accSlot, llT)
+            val nxt  = emitScalarBinOpSimple("+", cur, prod, elem)
+            storeElem(stT, nxt, accSlot)
+          }
+          val acc = loadElem(stT, accSlot, llT)
+          val cSlt = newReg(); emitLine(s"  $cSlt = getelementptr inbounds $stT, ptr $cBuf, i64 $j\n")
+          storeElem(stT, acc, cSlt)
+        }
+        res
+      case (1, 1) =>
+        // Degenerate "dot product" form. Result is a scalar.
+        val n = newReg(); emitLine(s"  $n = call i64 @__nex_arr1_len(ptr $aV)\n")
+        val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
+        storeElem(stT, zeroOf(elem), accSlot)
+        emitCountingLoop(n, "dot.k") { k =>
+          val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $k\n")
+          val av   = loadElem(stT, aSlt, llT)
+          val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $k\n")
+          val bv   = loadElem(stT, bSlt, llT)
+          val prod = emitScalarBinOpSimple("*", av, bv, elem)
+          val cur  = loadElem(stT, accSlot, llT)
+          val nxt  = emitScalarBinOpSimple("+", cur, prod, elem)
+          storeElem(stT, nxt, accSlot)
+        }
+        loadElem(stT, accSlot, llT)
+      case (ra, rb) =>
+        notYet(s"matmul ranks $ra × $rb"); "null"
+
+    emitArrDec(aV, aE.tpe)
+    emitArrDec(bV, bE.tpe)
+    result
+
+  /** `diag(v)` — builds an n×n rank-2 matrix with `v` on the diagonal,
+    * zero elsewhere. Interpreter doesn't yet implement the rank-2 →
+    * rank-1 (extract-diagonal) direction; we follow suit.
+    */
+  private def emitDiagCall(arr: TExpr, resultT: Type): String =
+    if arrayRank(arr.tpe) != 1 then
+      notYet(s"diag on rank ${arrayRank(arr.tpe)} (rank-1 only)")
+      return "null"
+    val elem = arrayElem(arr.tpe)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val llT  = llvmType(elem)
+    val arrV = emitExpr(arr)
+    val n    = newReg(); emitLine(s"  $n = call i64 @__nex_arr1_len(ptr $arrV)\n")
+    val res  = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr2_alloc(i64 $n, i64 $n, i64 $esz)\n")
+    val dstBuf = bufPtr(res, resultT)
+    // Zero-fill the n*n flat buffer first.
+    val total  = newReg(); emitLine(s"  $total = mul i64 $n, $n\n")
+    emitCountingLoop(total, "diag.zero") { k =>
+      val slot = newReg(); emitLine(s"  $slot = getelementptr inbounds $stT, ptr $dstBuf, i64 $k\n")
+      storeElem(stT, zeroOf(elem), slot)
+    }
+    val srcBuf = bufPtr(arrV, arr.tpe)
+    // Stamp diagonal: dst[i*n + i] = src[i]
+    emitCountingLoop(n, "diag.fill") { i =>
+      val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $i\n")
+      val v      = loadElem(stT, srcSlt, llT)
+      val off    = newReg(); emitLine(s"  $off = mul i64 $i, $n\n")
+      val k      = newReg(); emitLine(s"  $k = add i64 $off, $i\n")
+      val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $k\n")
+      storeElem(stT, v, dstSlt)
+    }
+    emitArrDec(arrV, arr.tpe)
+    res
+
+  /** `reshape(arr, rows, cols)` — interpret `arr` as a column-major flat
+    * buffer of an `m × n` matrix and re-bake it into the internal
+    * row-major storage. Mirror of the interpreter loop: walk the source
+    * as `flat[c*rows + r]` for each (r, c) of the result. Source may be
+    * rank-1 or rank-2; the interpreter `flatten1` accepts both.
+    */
+  private def emitReshapeCall(arr: TExpr, rowsE: TExpr, colsE: TExpr, resultT: Type): String =
+    val elem = arrayElem(resultT)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val llT  = llvmType(elem)
+    val arrV = emitExpr(arr)
+    val rows = emitExpr(rowsE)
+    val cols = emitExpr(colsE)
+    val res  = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr2_alloc(i64 $rows, i64 $cols, i64 $esz)\n")
+    val srcBuf = bufPtr(arrV, arr.tpe)
+    val dstBuf = bufPtr(res, resultT)
+    // for r in 0..rows: for c in 0..cols: dst[r*cols + c] = src[c*rows + r]
+    emitCountingLoop(rows, "rs.r") { r =>
+      emitCountingLoop(cols, "rs.c") { c =>
+        val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $c, $rows\n")
+        val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $r\n")
+        val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+        val v      = loadElem(stT, srcSlt, llT)
+        val dstOff = newReg(); emitLine(s"  $dstOff = mul i64 $r, $cols\n")
+        val dstK   = newReg(); emitLine(s"  $dstK = add i64 $dstOff, $c\n")
+        val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $dstK\n")
+        storeElem(stT, v, dstSlt)
+      }
+    }
+    emitArrDec(arrV, arr.tpe)
+    res
+
+  /** `flatten(m)` — column-major flatten. Mirror of the interpreter:
+    *   rank-1: clone (still a fresh rank-1)
+    *   rank-2: walk columns first, rows inside — `out[idx++] = src[row*cols + col]`
+    */
+  private def emitFlattenCall(arr: TExpr, resultT: Type): String =
+    val elem = arrayElem(arr.tpe)
+    val esz  = elemSize(elem)
+    val stT  = storageType(elem)
+    val llT  = llvmType(elem)
+    val arrV = emitExpr(arr)
+
+    val result = arrayRank(arr.tpe) match
+      case 1 =>
+        val n   = newReg(); emitLine(s"  $n = call i64 @__nex_arr1_len(ptr $arrV)\n")
+        val res = newReg()
+        emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $n, i64 $esz)\n")
+        val srcBuf = bufPtr(arrV, arr.tpe)
+        val dstBuf = bufPtr(res, resultT)
+        emitCountingLoop(n, "fl.k") { k =>
+          val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $k\n")
+          val v      = loadElem(stT, srcSlt, llT)
+          val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $k\n")
+          storeElem(stT, v, dstSlt)
+        }
+        res
+      case 2 =>
+        val rows = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+        val cols = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+        val total = newReg(); emitLine(s"  $total = mul i64 $rows, $cols\n")
+        val res  = newReg()
+        emitLine(s"  $res = call ptr @__nex_arr1_alloc(i64 $total, i64 $esz)\n")
+        val srcBuf = bufPtr(arrV, arr.tpe)
+        val dstBuf = bufPtr(res, resultT)
+        val idxSlot = newReg(); emitLine(s"  $idxSlot = alloca i64\n")
+        emitLine(s"  store i64 0, ptr $idxSlot\n")
+        emitCountingLoop(cols, "fl.col") { col =>
+          emitCountingLoop(rows, "fl.row") { row =>
+            val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $row, $cols\n")
+            val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $col\n")
+            val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+            val v      = loadElem(stT, srcSlt, llT)
+            val idx    = newReg(); emitLine(s"  $idx = load i64, ptr $idxSlot\n")
+            val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $idx\n")
+            storeElem(stT, v, dstSlt)
+            val nxt    = newReg(); emitLine(s"  $nxt = add i64 $idx, 1\n")
+            emitLine(s"  store i64 $nxt, ptr $idxSlot\n")
+          }
+        }
+        res
+      case r => notYet(s"flatten on rank $r"); "null"
+
+    emitArrDec(arrV, arr.tpe)
+    result
