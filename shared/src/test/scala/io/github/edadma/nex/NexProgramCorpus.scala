@@ -138,7 +138,24 @@ object NexProgramCorpus:
       "power (integer)",
       """def main() = print(2 ^ 10)""",
       "1024\n",
-      pending = Some("AOT lowers `^` on integers to the wrong instruction — prints 12"),
+    ),
+    Case(
+      "scalar arithmetic",
+      "power (integer) — odd exponent path",
+      """def main() = print(3 ^ 5)""",
+      "243\n",
+    ),
+    Case(
+      "scalar arithmetic",
+      "power (integer) — zero exponent is one",
+      """def main() = print(7 ^ 0)""",
+      "1\n",
+    ),
+    Case(
+      "scalar arithmetic",
+      "power (real ^ real) routes through libm",
+      """def main() = print(2.0 ^ 3.0)""",
+      "8.0\n",
     ),
     Case(
       "scalar arithmetic",
@@ -168,7 +185,6 @@ object NexProgramCorpus:
       "unary minus binds tighter than power",
       """def main() = print(-2^2)""",
       "4\n",
-      pending = Some("AOT `^` integer-power codegen — also surfaces here as 0"),
     ),
 
     // ========================================================================

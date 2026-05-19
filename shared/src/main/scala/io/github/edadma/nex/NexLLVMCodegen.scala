@@ -290,6 +290,31 @@ class NexLLVMCodegen
     case TBinOp("..", lo, hi, _, _)  => emitRangeValue(lo, hi, inclusive = false)
     case TBinOp("..=", lo, hi, _, _) => emitRangeValue(lo, hi, inclusive = true)
 
+    case TBinOp("^", l, r, _, TyInteger) =>
+      // Integer power: exponentiation by squaring via the runtime
+      // helper. Matches the interpreter's `intPow` for exp >= 0.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val reg = newReg()
+      emitLine(s"  $reg = call i64 @__nex_ipow(i64 $lv, i64 $rv)\n")
+      reg
+
+    case TBinOp("^", l, r, _, TyReal) =>
+      // Real power: route through libm `pow`. Integer operands get
+      // sitofp-lifted to double first, matching how the interpreter
+      // promotes via `asReal`.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val ld = if l.tpe == TyInteger then
+        val r2 = newReg(); emitLine(s"  $r2 = sitofp i64 $lv to double\n"); r2
+      else lv
+      val rd = if r.tpe == TyInteger then
+        val r2 = newReg(); emitLine(s"  $r2 = sitofp i64 $rv to double\n"); r2
+      else rv
+      val reg = newReg()
+      emitLine(s"  $reg = call double @pow(double $ld, double $rd)\n")
+      reg
+
     case TBinOp("+", l, r, _, TyString) =>
       // String concat. Both operands are owning %nex_str descriptor
       // pointers (TVarRef inc'd a share at load, or they're already-
