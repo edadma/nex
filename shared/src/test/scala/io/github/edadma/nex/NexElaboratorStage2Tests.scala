@@ -1239,6 +1239,40 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("cannot assign")) shouldBe true
     }
 
+    "lambda body whose operator typing depends on param type defers errors" in {
+      // `s + "!"` would fail first-pass inference because `+` on TyUnknown
+      // doesn't match the string-concat branch and falls through to
+      // numeric (which errors). The fix snapshots the error list before
+      // body inference of a partially-inferred lambda and rolls back if
+      // params stayed TyUnknown. Refinement at the call site re-runs the
+      // body with concrete param types — the string-concat branch then
+      // fires and the body's tpe is TyString.
+      val tp = elab("""
+        |def main() =
+        |  val shout = s -> s + "!"
+        |  shout("hi")
+      """.stripMargin)
+      val main = tp.decls.collectFirst { case f: TFunDecl if f.sym.name == "main" => f }.get
+      val body = main.body.asInstanceOf[TBlock]
+      val bind = body.items.collectFirst { case b: TBlockBinding => b }.get
+      val lam  = bind.value.asInstanceOf[TLambda]
+      lam.params.head.tpe shouldBe TyString
+      lam.body.tpe shouldBe TyString
+    }
+
+    "genuine errors inside a param-type-dependent body still surface after refinement" in {
+      // Calling f(42) refines x to TyInteger; the body's field access on
+      // an integer is a real error that the re-inference should produce.
+      val errs = elabExpect("""
+        |def main() =
+        |  val f = x -> x.nonexistent_field
+        |  f(42)
+      """.stripMargin)
+      errs.exists(e =>
+        e.contains("field") || e.contains("TyInteger")
+      ) shouldBe true
+    }
+
     "arity mismatch between lambda and expected falls back gracefully" in {
       // Lambda has 2 params but callee expects 1. The push-down path
       // skips (its `eparams.size == params.size` guard); inference

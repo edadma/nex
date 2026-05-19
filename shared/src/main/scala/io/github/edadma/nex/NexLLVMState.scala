@@ -361,7 +361,6 @@ protected trait NexLLVMState:
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
     case TyFunc(_, _)   => "{ ptr, ptr }"
     case TyUnknown      => "i64" // best-effort placeholder for missing inference
-    case other          => notYet(s"type `$other`"); "i64"
 
   /** Storage type for an array element. `i1` (bool) is stored as `i8` so the
     * buffer's stride is one byte per element rather than packed bits.

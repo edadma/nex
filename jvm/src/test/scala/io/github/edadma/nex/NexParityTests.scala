@@ -688,6 +688,24 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "15\n",
     )
+    "string-arg call refines a bound-then-called lambda that uses `+` for concat" in parityCheck(
+      """
+        |def main() =
+        |  val shout = s -> s + "!"
+        |  print(shout("hi"))
+      """.stripMargin,
+      "hi!\n",
+    )
+    "two string-bound lambdas with concat" in parityCheck(
+      """
+        |def main() =
+        |  val wrap = s -> "[" + s
+        |  val ban  = s -> s + "]"
+        |  print(wrap("x"))
+        |  print(ban("y"))
+      """.stripMargin,
+      "[x\ny]\n",
+    )
   }
 
   "rank-1 HOFs" should {
