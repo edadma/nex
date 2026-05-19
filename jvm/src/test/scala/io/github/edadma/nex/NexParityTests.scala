@@ -1631,4 +1631,24 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "(0.30000000000000004, 0.3333333333333333)\n",
     )
+    "very large reals: Java's `1.0E20` instead of C's `1e+20`" in parityCheck(
+      "def main() = print(1e20)",
+      "1.0E20\n",
+    )
+    "very small reals: Java's `1.0E-5` instead of C's `1e-05`" in parityCheck(
+      "def main() = print(1e-5)",
+      "1.0E-5\n",
+    )
+    "whole-magnitude scientific gets `.0` injected in mantissa" in parityCheck(
+      "def main() = print(2e30)",
+      "2.0E30\n",
+    )
+    "non-whole-mantissa scientific has no `.0` injection" in parityCheck(
+      "def main() = print(1.5e20)",
+      "1.5E20\n",
+    )
+    "negative-exponent leading zeros stripped" in parityCheck(
+      "def main() = print(1e-7)",
+      "1.0E-7\n",
+    )
   }

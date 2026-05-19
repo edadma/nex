@@ -21,6 +21,9 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare void @abort()
         |declare i64 @strlen(ptr)
         |declare ptr @strstr(ptr, ptr)
+        |declare ptr @strchr(ptr, i32)
+        |declare ptr @memchr(ptr, i32, i64)
+        |declare ptr @strcpy(ptr, ptr)
         |declare double @strtod(ptr, ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
@@ -262,15 +265,15 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; NaN != NaN under fcmp so the loop falls through to the p=17
         |; output, which is "nan" — the right answer).
         |;
-        |; Format note: the underlying C `%g` uses lowercase `e` with
-        |; zero-padded exponent (e.g. `1e+20`), whereas Java emits `1.0E20`.
-        |; Within v0's parity tests, very-large / very-small reals do not
-        |; appear; tightening the formatting to Java's exact shape would
-        |; need post-processing of the snprintf buffer and is left for a
-        |; follow-up.
+        |; The output buffer is then post-processed via __nex_format_real_java
+        |; to match Java's exact format: lowercase `e` → `E`, drop `+` in
+        |; the exponent, strip leading zeros from the exponent, and inject
+        |; `.0` into the mantissa if it had no decimal point. So C's
+        |; `1e+20` becomes `1.0E20`, matching Double.toString.
         |define void @__nex_print_real_shortest(double %v) {
         |entry:
         |  %buf  = alloca [40 x i8], align 1
+        |  %obuf = alloca [48 x i8], align 1
         |  %fbuf = alloca [8 x i8], align 1
         |  br label %loop.cond
         |
@@ -288,7 +291,116 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  br i1 %eq, label %print, label %loop.cond
         |
         |print:
-        |  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr %buf)
+        |  call void @__nex_format_real_java(ptr %buf, ptr %obuf)
+        |  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr %obuf)
+        |  ret void
+        |}
+        |
+        |; Post-process a `%g`-style buffer to match Java's Double.toString
+        |; format. Differences handled:
+        |;   - lowercase `e` → uppercase `E`
+        |;   - `+` after `E` is omitted (Java: `1.0E20`, C: `1e+20`)
+        |;   - leading `0`s in the exponent are stripped, keeping at least
+        |;     one digit (Java: `1.0E-5`, C: `1e-05`)
+        |;   - if the mantissa has no `.`, `.0` is injected before the `E`
+        |;     so whole-number scientific values print as `1.0E20`
+        |;
+        |; Buffers without an `e` are passed through unchanged (e.g. small
+        |; magnitudes like `0.3333333333333333`). The output buffer must
+        |; be at least 8 bytes larger than the input to accommodate
+        |; `.0` insertion in the worst case.
+        |define void @__nex_format_real_java(ptr %in, ptr %out) {
+        |entry:
+        |  ; Find lowercase 'e' in %in; if absent, just copy and return.
+        |  %ep = call ptr @strchr(ptr %in, i32 101)   ; 'e' = 0x65 = 101
+        |  %has_e = icmp ne ptr %ep, null
+        |  br i1 %has_e, label %rewrite, label %nope
+        |
+        |nope:
+        |  ; No exponent — copy as-is including the NUL terminator.
+        |  call ptr @strcpy(ptr %out, ptr %in)
+        |  ret void
+        |
+        |rewrite:
+        |  ; Compute mantissa length (bytes before the 'e').
+        |  %ep_i  = ptrtoint ptr %ep to i64
+        |  %in_i  = ptrtoint ptr %in to i64
+        |  %mlen  = sub i64 %ep_i, %in_i
+        |  ; Copy mantissa.
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %out, ptr %in, i64 %mlen, i1 false)
+        |  ; Track output cursor.
+        |  %out_after_mant = getelementptr i8, ptr %out, i64 %mlen
+        |  ; Does the mantissa contain a '.'?
+        |  %dot_ptr = call ptr @memchr(ptr %in, i32 46, i64 %mlen)   ; '.' = 46
+        |  %has_dot = icmp ne ptr %dot_ptr, null
+        |  br i1 %has_dot, label %after_dot_inject, label %inject_dot
+        |
+        |inject_dot:
+        |  store i8 46, ptr %out_after_mant, align 1                 ; '.'
+        |  %p1 = getelementptr i8, ptr %out_after_mant, i64 1
+        |  store i8 48, ptr %p1, align 1                             ; '0'
+        |  %p2 = getelementptr i8, ptr %out_after_mant, i64 2
+        |  br label %emit_E
+        |
+        |after_dot_inject:
+        |  br label %emit_E
+        |
+        |emit_E:
+        |  %op_after_E_in = phi ptr [ %p2, %inject_dot ], [ %out_after_mant, %after_dot_inject ]
+        |  store i8 69, ptr %op_after_E_in, align 1                  ; 'E' = 69
+        |  %op_after_E   = getelementptr i8, ptr %op_after_E_in, i64 1
+        |  ; Step past 'e' in input.
+        |  %after_e = getelementptr i8, ptr %ep, i64 1
+        |  ; Handle sign.
+        |  %sign_byte = load i8, ptr %after_e, align 1
+        |  %is_plus  = icmp eq i8 %sign_byte, 43                     ; '+'
+        |  %is_minus = icmp eq i8 %sign_byte, 45                     ; '-'
+        |  br i1 %is_plus, label %sk_plus, label %maybe_minus
+        |
+        |sk_plus:
+        |  %after_plus = getelementptr i8, ptr %after_e, i64 1
+        |  br label %strip_zeros
+        |
+        |maybe_minus:
+        |  br i1 %is_minus, label %emit_minus, label %strip_zeros_no_sign
+        |
+        |emit_minus:
+        |  store i8 45, ptr %op_after_E, align 1
+        |  %op_after_min = getelementptr i8, ptr %op_after_E, i64 1
+        |  %after_minus  = getelementptr i8, ptr %after_e, i64 1
+        |  br label %strip_zeros
+        |
+        |strip_zeros_no_sign:
+        |  br label %strip_zeros
+        |
+        |strip_zeros:
+        |  ; Common phi for the post-sign cursor + the post-sign output cursor.
+        |  %in_cur  = phi ptr [ %after_plus, %sk_plus ], [ %after_minus, %emit_minus ], [ %after_e, %strip_zeros_no_sign ]
+        |  %out_cur = phi ptr [ %op_after_E, %sk_plus ], [ %op_after_min, %emit_minus ], [ %op_after_E, %strip_zeros_no_sign ]
+        |  br label %skip_loop
+        |
+        |skip_loop:
+        |  %scan = phi ptr [ %in_cur, %strip_zeros ], [ %nxt, %skip_more ]
+        |  %b0   = load i8, ptr %scan, align 1
+        |  %is_0 = icmp eq i8 %b0, 48                                ; '0'
+        |  br i1 %is_0, label %check_next_digit, label %copy_rest
+        |
+        |check_next_digit:
+        |  ; Strip only if the NEXT byte is also a digit; we always need
+        |  ; to keep one digit in the exponent.
+        |  %n_ptr = getelementptr i8, ptr %scan, i64 1
+        |  %n_b   = load i8, ptr %n_ptr, align 1
+        |  %ge0   = icmp uge i8 %n_b, 48
+        |  %le9   = icmp ule i8 %n_b, 57
+        |  %is_dig = and i1 %ge0, %le9
+        |  br i1 %is_dig, label %skip_more, label %copy_rest
+        |
+        |skip_more:
+        |  %nxt = getelementptr i8, ptr %scan, i64 1
+        |  br label %skip_loop
+        |
+        |copy_rest:
+        |  call ptr @strcpy(ptr %out_cur, ptr %scan)
         |  ret void
         |}
         |
