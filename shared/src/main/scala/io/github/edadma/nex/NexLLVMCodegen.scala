@@ -924,8 +924,66 @@ class NexLLVMCodegen
       case TSlice2(arr, rowAx, colAx, _, _) =>
         emitSlice2Assign(arr, rowAx, colAx, value)
 
+      case f: TField =>
+        emitFieldAssign(f, value)
+
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")
+
+  /** Walk a (possibly nested) `TField` chain to its root l-value (a
+    * `TVarRef` to a local or global slot), collecting (struct-type,
+    * field-index) pairs from outermost to innermost. The pair list lets
+    * the caller emit a single GEP that reaches the innermost field's
+    * address. Returns `None` if the root isn't a directly addressable
+    * binding (captures, computed receivers — left for follow-up).
+    */
+  private def resolveFieldPath(f: TField): Option[(String, Type, List[(Type, Int)])] =
+    @annotation.tailrec
+    def loop(e: TExpr, acc: List[(Type, Int)]): Option[(String, Type, List[(Type, Int)])] =
+      e match
+        case TField(recv, name, _, _) =>
+          recv.tpe match
+            case TyStruct(_, fields) =>
+              val idx = fields.indexWhere(_._1 == name)
+              if idx < 0 then None
+              else loop(recv, (recv.tpe, idx) :: acc)
+            case _ => None
+        case TVarRef(s, _, _) =>
+          locals.get(s.id) match
+            case Some(slot) => Some((slot, s.tpe, acc))
+            case None if globalBindings.contains(s.id) => Some((s"@${s.name}", s.tpe, acc))
+            case None => None
+        case _ => None
+    loop(f, Nil)
+
+  /** Emit a struct-field assignment. Walks the field chain to its root
+    * slot, emits a single GEP to reach the innermost field's address,
+    * and writes through with ARC-aware release-old / store-new when the
+    * field type is refcounted. Falls back to `notYet` for receiver
+    * shapes that aren't a directly addressable binding (e.g. captures,
+    * field-of-array-element). */
+  private def emitFieldAssign(target: TField, value: TExpr): Unit =
+    val fieldT = target.tpe
+    val fieldLLT = llvmType(fieldT)
+    resolveFieldPath(target) match
+      case None =>
+        notYet(s"assign to TField with non-addressable receiver")
+      case Some((rootSlot, rootT, path)) =>
+        val rootLLT = llvmType(rootT)
+        // Build the GEP index list: a leading 0 (deref the slot ptr) plus
+        // one i32 per field hop. LLVM resolves anonymous struct types
+        // structurally, so the same GEP works for any nested layout.
+        val gepIdx = path.map { case (_, i) => s"i32 $i" }.mkString(", ")
+        val slot = newReg()
+        emitLine(s"  $slot = getelementptr inbounds $rootLLT, ptr $rootSlot, i32 0, $gepIdx\n")
+
+        if isRefCountedType(fieldT) then
+          val old = newReg()
+          emitLine(s"  $old = load $fieldLLT, ptr $slot\n")
+          emitArrDec(old, fieldT)
+
+        val rv = emitExpr(value)
+        emitLine(s"  store $fieldLLT $rv, ptr $slot\n")
 
   private def emitLocalBinding(sym: Symbol, value: TExpr): Unit =
     val rv   = emitExpr(value)

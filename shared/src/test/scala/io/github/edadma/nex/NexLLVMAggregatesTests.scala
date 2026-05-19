@@ -153,6 +153,54 @@ class NexLLVMAggregatesTests extends AnyWordSpec with NexCodegenTestBase:
       // Point is 16 bytes (two doubles), so the alloc passes 16 for elem_size.
       ir should include("@__nex_arr1_alloc(i64 2, i64 16)")
     }
+
+    "single-level field write uses GEP + store at field index" in {
+      val ir = compile("""
+        |struct P
+        |  x: integer
+        |  y: integer
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+      """.stripMargin)
+      // Single GEP into the alloca with i32 0, i32 0 (field x).
+      ir should include regex """getelementptr inbounds \{ i64, i64 \}, ptr %t\d+, i32 0, i32 0"""
+      ir should include regex """store i64 99, ptr %t\d+"""
+      ir should not include "; TODO: assign to TField"
+    }
+
+    "nested field write emits a single compound GEP" in {
+      val ir = compile("""
+        |struct Inner
+        |  v: integer
+        |struct Outer
+        |  i: Inner
+        |def main() =
+        |  var o = Outer(Inner(1))
+        |  o.i.v = 99
+        |  print(o.i.v)
+      """.stripMargin)
+      // GEP walks both struct layers in a single instruction.
+      ir should include regex """getelementptr inbounds \{ \{ i64 \} \}, ptr %t\d+, i32 0, i32 0, i32 0"""
+      ir should not include "; TODO: assign to TField"
+    }
+
+    "refcounted field write loads the old value and dec's it before storing" in {
+      val ir = compile("""
+        |struct Item
+        |  name: string
+        |def main() =
+        |  var it = Item("hello" + " world")
+        |  it.name = "foo" + "bar"
+        |  print(it.name)
+      """.stripMargin)
+      // Field type is `ptr` (string). The slot is loaded, the old
+      // descriptor is dec'd, then the new owning value is stored.
+      ir should include regex """getelementptr inbounds \{ ptr \}, ptr %t\d+, i32 0, i32 0"""
+      ir should include regex """load ptr, ptr %t\d+"""
+      ir should include ("__nex_str_dec")
+    }
   }
 
   "deep ARC for aggregates" should {

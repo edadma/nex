@@ -823,6 +823,51 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(p.x)
       """.stripMargin) shouldBe "99.0\n"
     }
+
+    "field write preserves other fields" in {
+      runOut("""
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin) shouldBe "99\n2\n"
+    }
+
+    "nested struct field write through chained TField" in {
+      runOut("""
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var o = Outer(Inner(1))
+        |  o.i.v = 99
+        |  print(o.i.v)
+      """.stripMargin) shouldBe "99\n"
+    }
+
+    "refcounted field write swaps the underlying string" in {
+      runOut("""
+        |struct Item
+        |  name: string
+        |end Item
+        |
+        |def main() =
+        |  var it = Item("hello" + " world")
+        |  it.name = "foo" + "bar"
+        |  print(it.name)
+      """.stripMargin) shouldBe "foobar\n"
+    }
   }
 
   // ==========================================================================

@@ -400,6 +400,121 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "struct field assignment (spec §4.15 lvalue form)" should {
+    "single-level field write on `var`" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+      """.stripMargin,
+      "99\n",
+    )
+    "single-level field write preserves other fields" in parityCheck(
+      """
+        |struct P
+        |  x: integer
+        |  y: integer
+        |end P
+        |
+        |def main() =
+        |  var p = P(1, 2)
+        |  p.x = 99
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin,
+      "99\n2\n",
+    )
+    "nested field write through chained TField" in parityCheck(
+      """
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var o = Outer(Inner(1))
+        |  o.i.v = 99
+        |  print(o.i.v)
+      """.stripMargin,
+      "99\n",
+    )
+    "three-level nested field write" in parityCheck(
+      """
+        |struct A
+        |  v: integer
+        |end A
+        |
+        |struct B
+        |  a: A
+        |end B
+        |
+        |struct C
+        |  b: B
+        |end C
+        |
+        |def main() =
+        |  var c = C(B(A(1)))
+        |  c.b.a.v = 99
+        |  print(c.b.a.v)
+      """.stripMargin,
+      "99\n",
+    )
+    "refcounted field write releases old share and stores new" in parityCheck(
+      """
+        |struct Item
+        |  name: string
+        |  qty: integer
+        |end Item
+        |
+        |def main() =
+        |  var it = Item("hello" + " world", 1)
+        |  it.name = "foo" + "bar"
+        |  print(it.name)
+        |  print(it.qty)
+      """.stripMargin,
+      "foobar\n1\n",
+    )
+    "field write inside a loop" in parityCheck(
+      """
+        |struct Pt
+        |  x: integer
+        |end Pt
+        |
+        |def main() =
+        |  var p = Pt(0)
+        |  for i in 1..4 do
+        |    p.x = p.x + i
+        |  print(p.x)
+      """.stripMargin,
+      "6\n",
+    )
+    "field write on aggregate with real field" in parityCheck(
+      """
+        |struct Point
+        |  x: real
+        |  y: real
+        |end Point
+        |
+        |def main() =
+        |  var p = Point(1.0, 2.0)
+        |  p.x = 99.0
+        |  p.y = 4.5
+        |  print(p.x)
+        |  print(p.y)
+      """.stripMargin,
+      "99.0\n4.5\n",
+    )
+  }
+
   "rank-1 HOFs" should {
     "map (inline lambda)"   in parityCheck(
       "def main() = print(map([1, 2, 3, 4], x -> x * x))",
