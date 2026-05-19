@@ -56,6 +56,15 @@ class NexElaborator
     * absent.
     */
   def elaborate(prog: ProgramAST): Either[List[ElabError], TProgram] =
+    elaborate(prog, runMonomorph = true)
+
+  /** Variant of [[elaborate]] that lets a caller skip the monomorphization
+    * stage. The Stage 3-α elaborator tests use this so they can inspect a
+    * generic `def`'s declared `TyKindVar`s before they get substituted out.
+    * Production callers always go through the default-argument
+    * `elaborate(prog)` overload.
+    */
+  def elaborate(prog: ProgramAST, runMonomorph: Boolean): Either[List[ElabError], TProgram] =
     val modDecl  = prog.decls.collectFirst { case m: ModuleDeclAST => m }
     val path     = modDecl.map(_.path).getOrElse(Nil)
     val testOnly = modDecl.exists(_.isTestOnly)
@@ -76,7 +85,7 @@ class NexElaborator
               case Right(p) => List(p, userMod)
               case Left(_)  => List(userMod)
           case None => List(userMod)
-    elaborateProject(modules)
+    elaborateProject(modules, runMonomorph)
 
   /** Elaborate a project — multiple modules in topological order, each one
     * containing one-or-more files. The first module is processed in a
@@ -98,6 +107,9 @@ class NexElaborator
     * decls (after Stage 2 / Stage 3) under the project root module path.
     */
   def elaborateProject(modules: List[LoadedModule]): Either[List[ElabError], TProgram] =
+    elaborateProject(modules, runMonomorph = true)
+
+  def elaborateProject(modules: List[LoadedModule], runMonomorph: Boolean): Either[List[ElabError], TProgram] =
     registerPrelude()
 
     // Root scope holds the prelude; modules nest inside it.
@@ -273,7 +285,18 @@ class NexElaborator
 
     if errors.nonEmpty then return Left(errors.toList)
 
-    Right(rewritten)
+    // -- Stage 5: monomorphization (Stage 3-β.2) -------------------------
+    // Specializes every reachable generic call site into a concrete
+    // clone of its template, then drops the templates from the
+    // program. Backends never see `TyKindVar`. Skipped by Stage 3-α
+    // tests that want to inspect generic templates directly.
+    val finalProg =
+      if runMonomorph then new NexMonomorphize(symbols).rewrite(rewritten)
+      else rewritten
+
+    if errors.nonEmpty then return Left(errors.toList)
+
+    Right(finalProg)
 
   // ==========================================================================
   // Top-binding symbol minting (handles tuple patterns)

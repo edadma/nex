@@ -794,6 +794,108 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     "tanh(0) = 0"                                in parityCheck("def main() = print(tanh(0.0))",  "0.0\n")
   }
 
+  // ==========================================================================
+  // Generic functions (Stage 3-β) — call-site type-argument deduction
+  // plus monomorphization. Every reachable generic call site becomes a
+  // specialized clone of its template before either backend sees it.
+  // ==========================================================================
+
+  "generic defs (Stage 3-β)" should {
+    "identity at integer" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id(42))
+      """.stripMargin,
+      "42\n",
+    )
+    "identity at real" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id(3.14))
+      """.stripMargin,
+      "3.14\n",
+    )
+    "identity at bool" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id(true))
+      """.stripMargin,
+      "true\n",
+    )
+    "two calls with different type args mint distinct clones" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def main() =
+        |  print(id(1))
+        |  print(id(2.0))
+      """.stripMargin,
+      "1\n2.0\n",
+    )
+    "two calls with the same type arg reuse one clone" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def main() =
+        |  print(id(1))
+        |  print(id(2))
+      """.stripMargin,
+      "1\n2\n",
+    )
+    "Numeric constraint, integer call" in parityCheck(
+      """
+        |def twice[T: Numeric](x: T): T = x + x
+        |def main() = print(twice(21))
+      """.stripMargin,
+      "42\n",
+    )
+    "Numeric constraint, real call" in parityCheck(
+      """
+        |def twice[T: Numeric](x: T): T = x + x
+        |def main() = print(twice(0.5))
+      """.stripMargin,
+      "1.0\n",
+    )
+    "same kind var bound to two args with promotion" in parityCheck(
+      """
+        |def addT[T: Numeric](x: T, y: T): T = x + y
+        |def main() = print(addT(1, 2.5))
+      """.stripMargin,
+      "3.5\n",
+    )
+    "generic over array element type — sum first two" in parityCheck(
+      """
+        |def head2[T: Numeric](xs: [T]): T = xs[0] + xs[1]
+        |def main() = print(head2([10, 20, 30]))
+      """.stripMargin,
+      "30\n",
+    )
+    "generic helper called from another generic" in parityCheck(
+      """
+        |def id[T](x: T): T = x
+        |def call_id[T](x: T): T = id(x)
+        |def main() =
+        |  print(call_id(7))
+        |  print(call_id(7.5))
+      """.stripMargin,
+      "7\n7.5\n",
+    )
+    "generic with explicit return-type alias `real64`" in parityCheck(
+      """
+        |def negT[T: Float](x: T): T = -x
+        |def main() = print(negT(2.5))
+      """.stripMargin,
+      "-2.5\n",
+    )
+    "local var inside generic body specializes correctly" in parityCheck(
+      """
+        |def doubled[T: Numeric](x: T): T =
+        |  val y: T = x + x
+        |  y
+        |def main() = print(doubled(3))
+      """.stripMargin,
+      "6\n",
+    )
+  }
+
   "rank-1 prelude reductions" should {
     "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
     "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")

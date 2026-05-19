@@ -9,11 +9,19 @@ import org.scalatest.wordspec.AnyWordSpec
   */
 class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
 
-  private def elab(src: String): TProgram =
+  private def elab(src: String): TProgram = elab(src, runMonomorph = true)
+
+  /** Elaborate a program. By default the full pipeline including
+    * monomorphization runs, so generic templates are stripped and
+    * replaced with specialized clones. Pass `runMonomorph = false` to
+    * keep the generic templates around — useful for Stage 3-α tests
+    * that inspect a generic def's declared `TyKindVar`s.
+    */
+  private def elab(src: String, runMonomorph: Boolean): TProgram =
     val ast = new NexParser().parseProgram(src) match
       case Right(p)  => p
       case Left(err) => fail(s"parse error: $err")
-    new NexElaborator().elaborate(ast) match
+    new NexElaborator().elaborate(ast, runMonomorph) match
       case Right(tp)   => tp
       case Left(errs)  => fail(s"elaboration errors: ${errs.map(_.toString).mkString("; ")}")
 
@@ -549,20 +557,20 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
   "kind-parameterized defs (Stage 3-α)" should {
 
     "parameter type resolves to TyKindVar carrying the source name + constraint" in {
-      val tp = elab("def f[T: Float](x: T): T = x")
+      val tp = elab("def f[T: Float](x: T): T = x", runMonomorph = false)
       val fn = tp.decls.head.asInstanceOf[TFunDecl]
       fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Float)
       fn.returnType shouldBe TyKindVar("T", KindConstraint.Float)
     }
 
     "unbounded type parameter `[T]` defaults to KindConstraint.Any" in {
-      val tp = elab("def id[T](x: T): T = x")
+      val tp = elab("def id[T](x: T): T = x", runMonomorph = false)
       val fn = tp.decls.head.asInstanceOf[TFunDecl]
       fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Any)
     }
 
     "multiple type parameters each carry their own constraint" in {
-      val tp = elab("def f[T: Real, U: Numeric](x: T, y: U): T = x")
+      val tp = elab("def f[T: Real, U: Numeric](x: T, y: U): T = x", runMonomorph = false)
       val fn = tp.decls.head.asInstanceOf[TFunDecl]
       fn.params(0).tpe shouldBe TyKindVar("T", KindConstraint.Real)
       fn.params(1).tpe shouldBe TyKindVar("U", KindConstraint.Numeric)
@@ -572,7 +580,7 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       val tp = elab("""
         |def f[T: Float](x: T): T = x
         |def g[T: Numeric](x: T): T = x
-      """.stripMargin)
+      """.stripMargin, runMonomorph = false)
       val f = tp.decls(0).asInstanceOf[TFunDecl]
       val g = tp.decls(1).asInstanceOf[TFunDecl]
       f.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Float)
@@ -602,5 +610,117 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       """.stripMargin)
       tp.decls(0).asInstanceOf[TFunDecl].params.head.tpe shouldBe TyComplex
       tp.decls(1).asInstanceOf[TFunDecl].params.head.tpe shouldBe TyComplex
+    }
+  }
+
+  // ==========================================================================
+  // Stage 3-β.1 — generic call-site type-argument deduction
+  // ==========================================================================
+
+  // For a call to a generic def, the elaborator unifies each formal
+  // parameter type against the actual argument type, building a
+  // substitution map from kind-variable names to concrete types. The
+  // resulting `TCall.tpe` is the substituted return type — the callee's
+  // `TVarRef` still points at the generic symbol so monomorphization
+  // (Stage 3-β.2) can rewrite it later. Constraint admission is
+  // validated; same kind variable bound to two different types is a
+  // hard error unless the two are numeric and promote.
+
+  "generic call-site inference (Stage 3-β.1)" should {
+
+    "call to `def id[T](x: T): T` with an integer arg infers integer return" in {
+      val tp = elab("""
+        |def id[T](x: T): T = x
+        |def use() = print(id(42))
+      """.stripMargin, runMonomorph = false)
+      // Walk to the `id(42)` call and check its inferred return type.
+      val use    = tp.decls(1).asInstanceOf[TFunDecl]
+      val print  = use.body.asInstanceOf[TCall]
+      val idCall = print.args.head.asInstanceOf[TCall]
+      idCall.tpe shouldBe TyInteger
+    }
+
+    "call to `def id[T](x: T): T` with a real arg infers real return" in {
+      val tp = elab("""
+        |def id[T](x: T): T = x
+        |def use(): real = id(3.14)
+      """.stripMargin, runMonomorph = false)
+      val use    = tp.decls(1).asInstanceOf[TFunDecl]
+      val idCall = use.body.asInstanceOf[TCall]
+      idCall.tpe shouldBe TyReal
+    }
+
+    "Float-constrained type param rejects integer arg" in {
+      val errs = elabExpect("""
+        |def sq[T: Float](x: T): T = x
+        |def use() = print(sq(2))
+      """.stripMargin)
+      errs.exists(e => e.contains("`T`") && e.contains("Float")) shouldBe true
+    }
+
+    "Numeric constraint admits integer, real, complex" in {
+      val tp = elab("""
+        |def f[T: Numeric](x: T): T = x
+        |def use() =
+        |  print(f(1))
+        |  print(f(1.0))
+      """.stripMargin, runMonomorph = false)
+      val use      = tp.decls(1).asInstanceOf[TFunDecl]
+      val block    = use.body.asInstanceOf[TBlock]
+      val firstPr  = block.items.collect { case TBlockExpr(e) => e }.head.asInstanceOf[TCall]
+      val secondPr = block.result.asInstanceOf[TCall]
+      firstPr.args.head.asInstanceOf[TCall].tpe shouldBe TyInteger
+      secondPr.args.head.asInstanceOf[TCall].tpe shouldBe TyReal
+    }
+
+    "same kind var bound to two consistent integer args stays integer" in {
+      val tp = elab("""
+        |def f[T: Numeric](x: T, y: T): T = x
+        |def use(): integer = f(1, 2)
+      """.stripMargin, runMonomorph = false)
+      val use    = tp.decls(1).asInstanceOf[TFunDecl]
+      val fCall  = use.body.asInstanceOf[TCall]
+      fCall.tpe shouldBe TyInteger
+    }
+
+    "same kind var bound to integer+real widens to real (numeric promotion)" in {
+      val tp = elab("""
+        |def f[T: Numeric](x: T, y: T): T = x
+        |def use(): real = f(1, 2.0)
+      """.stripMargin, runMonomorph = false)
+      val use   = tp.decls(1).asInstanceOf[TFunDecl]
+      val fCall = use.body.asInstanceOf[TCall]
+      fCall.tpe shouldBe TyReal
+    }
+
+    "kind var inside array element unifies with array's actual element type" in {
+      val tp = elab("""
+        |def head[T](xs: [T]): T = xs[0]
+        |def use(): real = head([1.0, 2.0, 3.0])
+      """.stripMargin, runMonomorph = false)
+      val use   = tp.decls(1).asInstanceOf[TFunDecl]
+      val hCall = use.body.asInstanceOf[TCall]
+      hCall.tpe shouldBe TyReal
+    }
+
+    "monomorphization rewrites callee to specialized clone with concrete signature" in {
+      val tp = elab("""
+        |def id[T](x: T): T = x
+        |def use(): integer = id(42)
+      """.stripMargin)
+      // After monomorph, the generic template is gone from `decls` and
+      // a specialized clone has been appended. The user's `use` body
+      // calls into the clone, not into a generic.
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      // Originals: `use` (non-generic), plus the `id$integer` clone.
+      // The generic `id` template was dropped.
+      funDecls.exists(_.sym.name == "id$integer") shouldBe true
+      funDecls.exists(_.sym.name == "id") shouldBe false
+      val use    = funDecls.find(_.sym.name == "use").get
+      val call   = use.body.asInstanceOf[TCall]
+      val callee = call.callee.asInstanceOf[TVarRef]
+      callee.sym.name shouldBe "id$integer"
+      // The specialized signature has no kind variables left.
+      callee.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
     }
   }

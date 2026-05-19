@@ -23,19 +23,46 @@ protected trait NexElabInference extends NexElabState:
 
   /** Numeric promotion lattice (§3.2): integer → real → complex. Returns
     * the higher of the two types, or `None` if either is non-numeric.
+    *
+    * Inside a generic body, an operand may carry a `TyKindVar` rather than
+    * a concrete numeric. The lattice extends as follows:
+    *  - `T op T` (same variable) — result is `T`.
+    *  - `T op concrete` / `concrete op T` — result is `T`. After
+    *    monomorphization substitutes `T := X`, the result becomes `X`
+    *    (which is the same as `promote(X, concrete)` collapsing through
+    *    `X`'s position). Strictly this is too narrow when
+    *    `promote(X, concrete)` widens (e.g. `T := integer`, concrete = real,
+    *    promote should give real), but `Stage 3-β.1` does not insert an
+    *    implicit coerce against a kind variable, so the body computes
+    *    `X op concrete` natively at runtime and the lattice mismatch
+    *    surfaces as an explicit return-type-coercion check at the call
+    *    site rather than a silent miscompile. The common pattern in v0
+    *    generic code is `T op T`, which this lattice handles exactly.
+    *  - Two different `TyKindVar`s — `None`; the elaborator surfaces the
+    *    operand mismatch as a normal error.
     */
   protected def promote(a: Type, b: Type): Option[Type] =
-    def rank(t: Type): Option[Int] = t match
-      case TyInteger => Some(0)
-      case TyReal    => Some(1)
-      case TyComplex => Some(2)
-      case _         => None
-    for ra <- rank(a); rb <- rank(b) yield
-      if ra >= rb then a else b
+    (a, b) match
+      case (k1: TyKindVar, k2: TyKindVar) if k1 == k2 => Some(k1)
+      case (k: TyKindVar, t) if isNumeric(t)          => Some(k)
+      case (t, k: TyKindVar) if isNumeric(t)          => Some(k)
+      case _ =>
+        def rank(t: Type): Option[Int] = t match
+          case TyInteger => Some(0)
+          case TyReal    => Some(1)
+          case TyComplex => Some(2)
+          case _         => None
+        for ra <- rank(a); rb <- rank(b) yield
+          if ra >= rb then a else b
 
-  /** True iff `t` is one of integer / real / complex. */
+  /** True iff `t` is one of integer / real / complex, or a `TyKindVar`
+    * whose constraint admits at least one numeric type (so the body
+    * can be type-checked optimistically; monomorphization later sees a
+    * concrete numeric).
+    */
   protected def isNumeric(t: Type): Boolean = t match
     case TyInteger | TyReal | TyComplex => true
+    case TyKindVar(_, c)                => c.admits(TyInteger) || c.admits(TyReal) || c.admits(TyComplex)
     case _                              => false
 
   /** Element type of an array, or None if `t` isn't an array type. */
@@ -130,13 +157,13 @@ protected trait NexElabInference extends NexElabState:
     // work uniformly without manual `1.0 + 0i` cosmetics.
     case TArrayLit(elems, p, _) =>
       expected match
-        case TyArray(elemT, 1) =>
+        case TyArray(elemT, 1) if !hasKindVar(elemT) =>
           val coerced = elems.map { e =>
             val inferred = inferArg(e, elemT)
             coerceTo(inferred, elemT)
           }
           TArrayLit(coerced, p, TyArray(elemT, 1))
-        case TyArray(elemT, 2) =>
+        case TyArray(elemT, 2) if !hasKindVar(elemT) =>
           // Rank-2 literal — each row is itself a `[elemT]` array, so
           // recurse with the rank-1 element type.
           val rowT = TyArray(elemT, 1)
@@ -350,6 +377,7 @@ protected trait NexElabInference extends NexElabState:
     val actual = v.tpe
     if actual == TyUnknown || expected == TyUnknown then v
     else if actual == expected then v
+    else if hasKindVar(expected) || hasKindVar(actual) then v  // generic — monomorph resolves
     else (actual, expected) match
       case (a, b) if isNumeric(a) && isNumeric(b) =>
         promote(a, b) match
@@ -936,6 +964,106 @@ protected trait NexElabInference extends NexElabState:
       val aa = args.map(infExpr)
       TCall(callee, aa, p, TyUnknown)
 
+  // ==========================================================================
+  // Kind-variable unification (Stage 3-β.1)
+  // ==========================================================================
+
+  /** True iff `t` mentions a `TyKindVar` anywhere in its structure. Used to
+    * decide whether a `TyFunc` callee needs the generic call path.
+    */
+  protected def hasKindVar(t: Type): Boolean = t match
+    case _: TyKindVar  => true
+    case TyArray(e, _) => hasKindVar(e)
+    case TyTuple(es)   => es.exists(hasKindVar)
+    case TyFunc(ps, r) => ps.exists((pt, _) => hasKindVar(pt)) || hasKindVar(r)
+    case _             => false
+
+  /** Substitute `TyKindVar` occurrences in `t` using `subs`. A variable
+    * absent from `subs` is left in place (so we can detect under-determined
+    * generic calls after unification).
+    */
+  protected def substituteKindVars(t: Type, subs: Map[String, Type]): Type = t match
+    case TyKindVar(name, _) => subs.getOrElse(name, t)
+    case TyArray(e, r)      => TyArray(substituteKindVars(e, subs), r)
+    case TyTuple(es)        => TyTuple(es.map(substituteKindVars(_, subs)))
+    case TyFunc(ps, r) =>
+      TyFunc(
+        ps.map { case (pt, m) => (substituteKindVars(pt, subs), m) },
+        substituteKindVars(r, subs),
+      )
+    case _ => t
+
+  /** Outcome of unifying one formal parameter type against an actual
+    * argument type while building a kind-variable substitution.
+    */
+  protected sealed trait UnifyResult
+  protected case object UnifyOk extends UnifyResult
+  protected case class UnifyConstraintViolation(name: String, constraint: KindConstraint, actual: Type) extends UnifyResult
+  protected case class UnifyInconsistent(name: String, prior: Type, actual: Type) extends UnifyResult
+  protected case class UnifyShapeMismatch(formal: Type, actual: Type) extends UnifyResult
+
+  /** Unify `formal` (which may mention `TyKindVar`) against `actual`,
+    * extending `subs` with any new bindings. `TyKindVar` binds to the
+    * actual type if its constraint admits it; structural shapes
+    * (`TyArray`, `TyTuple`, `TyFunc`) recurse pointwise. A previously
+    * bound kind variable must re-encounter the same type, modulo numeric
+    * promotion within the same constraint (so `f[T: Numeric](x: T, y: T)`
+    * called as `f(1, 2.0)` widens T to real).
+    */
+  protected def unifyKindVars(
+      formal: Type,
+      actual: Type,
+      subs:   mutable.Map[String, Type],
+  ): UnifyResult =
+    (formal, actual) match
+      case (_, TyUnknown) => UnifyOk
+      case (TyKindVar(name, c), t) =>
+        subs.get(name) match
+          case None =>
+            if c.admits(t) then
+              subs(name) = t
+              UnifyOk
+            else
+              UnifyConstraintViolation(name, c, t)
+          case Some(prev) =>
+            if prev == t then UnifyOk
+            else if isNumeric(prev) && isNumeric(t) then
+              promote(prev, t) match
+                case Some(joined) if c.admits(joined) =>
+                  subs(name) = joined
+                  UnifyOk
+                case _ => UnifyInconsistent(name, prev, t)
+            else UnifyInconsistent(name, prev, t)
+      case (TyArray(e1, r1), TyArray(e2, r2)) if r1 == r2 =>
+        unifyKindVars(e1, e2, subs)
+      case (TyTuple(es1), TyTuple(es2)) if es1.size == es2.size =>
+        es1.zip(es2).foldLeft[UnifyResult](UnifyOk) {
+          case (UnifyOk, (a, b)) => unifyKindVars(a, b, subs)
+          case (err, _)          => err
+        }
+      case (TyFunc(p1, r1), TyFunc(p2, r2)) if p1.size == p2.size =>
+        val paramRes = p1.zip(p2).foldLeft[UnifyResult](UnifyOk) {
+          case (UnifyOk, ((a, _), (b, _))) => unifyKindVars(a, b, subs)
+          case (err, _)                    => err
+        }
+        paramRes match
+          case UnifyOk => unifyKindVars(r1, r2, subs)
+          case other   => other
+      case (a, b) if a == b                  => UnifyOk
+      case (a, b) if isNumeric(a) && isNumeric(b) && promote(a, b).contains(a) =>
+        // Numeric widening — the callee's formal is the wider type and the
+        // actual is narrower, so an implicit coercion will run. This isn't
+        // a kind-variable issue but it's reached through the same path.
+        UnifyOk
+      case (a, b) => UnifyShapeMismatch(a, b)
+
+  /** Render a `KindConstraint` for a user-facing diagnostic. */
+  protected def constraintLabel(c: KindConstraint): String = c match
+    case KindConstraint.Any     => "Any"
+    case KindConstraint.Numeric => "Numeric"
+    case KindConstraint.Real    => "Real"
+    case KindConstraint.Float   => "Float"
+
   protected def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr =
     callee match
       case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
@@ -956,6 +1084,8 @@ protected trait NexElabInference extends NexElabState:
             if params.size != args.size then
               err(s"function call expects ${params.size} args, got ${args.size}", p)
               TCall(callee, args, p, ret)
+            else if params.exists((pt, _) => hasKindVar(pt)) || hasKindVar(ret) then
+              inferGenericCall(callee, params, ret, args, p)
             else
               val coercedArgs = params.zip(args).map { case ((pt, _), a) => coerceTo(a, pt) }
               TCall(callee, coercedArgs, p, ret)
@@ -971,6 +1101,59 @@ protected trait NexElabInference extends NexElabState:
                 preludeReturnTypeFor(s.name, args)
               case _ => TyUnknown
             TCall(callee, args, p, ret)
+
+  /** Generic-call path. The callee's `TyFunc` mentions one or more
+    * `TyKindVar`s. We unify each formal parameter against the actual
+    * argument's type to build a substitution map, validate it,
+    * substitute through the formal parameter list and return type, and
+    * emit a `TCall` whose `tpe` is the substituted return type — but
+    * whose `callee` still references the generic symbol. The
+    * monomorphization pass (Stage 3-β.2) rewrites the call site to
+    * point at a specialized clone.
+    */
+  protected def inferGenericCall(
+      callee: TExpr,
+      params: List[(Type, ParamMode)],
+      ret:    Type,
+      args:   List[TExpr],
+      p:      Option[Position],
+  ): TExpr =
+    val subs = mutable.Map.empty[String, Type]
+    var failed = false
+    params.zip(args).foreach { case ((pt, _), a) =>
+      if failed then ()
+      else
+        unifyKindVars(pt, a.tpe, subs) match
+          case UnifyOk => ()
+          case UnifyConstraintViolation(name, c, actual) =>
+            err(
+              s"type argument `$name` cannot be `$actual`: constraint `${constraintLabel(c)}` does not admit it",
+              a.pos.orElse(p),
+            )
+            failed = true
+          case UnifyInconsistent(name, prior, actual) =>
+            err(
+              s"type argument `$name` was inferred as `$prior` but the next argument requires `$actual`",
+              a.pos.orElse(p),
+            )
+            failed = true
+          case UnifyShapeMismatch(f, b) =>
+            err(s"cannot pass `$b` where `$f` is expected", a.pos.orElse(p))
+            failed = true
+    }
+    if failed then TCall(callee, args, p, substituteKindVars(ret, subs.toMap))
+    else
+      val substMap     = subs.toMap
+      val substParams  = params.map { case (pt, m) => (substituteKindVars(pt, substMap), m) }
+      val substRet     = substituteKindVars(ret, substMap)
+      val coercedArgs  = substParams.zip(args).map { case ((pt, _), a) => coerceTo(a, pt) }
+      // `substRet` may still contain a kind variable when a generic
+      // function calls another generic with one of its own type
+      // parameters threaded through (`def f[T](x: T) = id(x)`).
+      // Monomorphization later substitutes the outer T to a concrete
+      // type and re-derives the inner call's type arguments — there is
+      // nothing to report here.
+      TCall(callee, coercedArgs, p, substRet)
 
   /** Lookup table for prelude functions whose return type is known
     * statically and doesn't depend on argument types. HOFs (map/reduce/
