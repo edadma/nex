@@ -287,6 +287,14 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin) shouldBe "6\n8\n"
     }
 
+    "string-arg call refines a bound-then-called lambda using `+` for concat" in {
+      runOut("""
+        |def main() =
+        |  val shout = s -> s + "!"
+        |  print(shout("hi"))
+      """.stripMargin) shouldBe "hi!\n"
+    }
+
     "for with tuple destructuring on enumerate(xs)" in {
       runOut("""
         |def main() =

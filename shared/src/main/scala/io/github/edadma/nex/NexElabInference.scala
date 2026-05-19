@@ -205,7 +205,7 @@ protected trait NexElabInference extends NexElabState:
     val declared = currentType(b.sym)
     val v2 =
       if declared != TyUnknown then inferArg(b.value, declared)
-      else infExpr(b.value)
+      else inferBindingValue(b.value)
     val (vCoerced, t) = declared match
       case TyUnknown => (v2, v2.tpe)
       case _         => (coerceTo(v2, declared), declared)
@@ -287,6 +287,33 @@ protected trait NexElabInference extends NexElabState:
     case lam: TLambda if isPartiallyInferredLambda(lam) =>
       deferredLambdas(sym.id) = lam
     case _ => ()
+
+  /** Infer the RHS of a `val` / `var` binding with no declared type.
+    *
+    * Special case for `val f = x -> body` where `body`'s typing depends
+    * on `x`'s eventual type (e.g. `s -> s + "!"` — the `+` operator's
+    * branch is selected by operand type). Running the body through
+    * Stage 2 with `x: TyUnknown` would record real diagnostics like
+    * "`+` requires numeric operands, got TyString" that stick in the
+    * error list even after the later call-site refinement gives `x`
+    * its concrete type. Roll those errors back when the lambda is
+    * still partially-inferred after the first pass — the deferred-
+    * resolve path re-runs body inference with the refined param
+    * types and will report any genuine bugs there.
+    */
+  protected def inferBindingValue(v: TExpr): TExpr = v match
+    case lam: TLambda if lam.params.exists(s => currentType(s) == TyUnknown) =>
+      val errSnapshot = errors.size
+      val result      = infExpr(lam)
+      result match
+        case refined: TLambda if isPartiallyInferredLambda(refined) =>
+          // The lambda stayed partially inferred — body errors are
+          // premature, drop them so refinement can speak authoritatively.
+          if errors.size > errSnapshot then
+            errors.remove(errSnapshot, errors.size - errSnapshot)
+          refined
+        case _ => result
+    case _ => infExpr(v)
 
   /** Assignment-compatibility check used at val/var/const sites and at
     * `assignment-expression` sites. If `expected` is numeric and the
@@ -609,7 +636,7 @@ protected trait NexElabInference extends NexElabState:
       val declared = currentType(s)
       val vv =
         if declared != TyUnknown then inferArg(v, declared)
-        else infExpr(v)
+        else inferBindingValue(v)
       val (vvCoerced, t) = declared match
         case TyUnknown => (vv, vv.tpe)
         case _         => (coerceTo(vv, declared), declared)
