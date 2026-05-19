@@ -836,6 +836,23 @@ class NexElaborator:
   // -- program -------------------------------------------------------------
 
   private def inferProgram(p: TProgram): TProgram =
+    // Two-pass: first register every function's declared TyFunc shape
+    // (params + declared return type, or TyUnknown if not declared),
+    // then infer bodies. Without this, mutual recursion broke: when
+    // inferring `def isEven(...)` whose body calls `isOdd` (defined
+    // later), isOdd's symbol still carried its registration-time type
+    // — usually TyUnknown — and the call site captured that stale
+    // type. Codegen then emitted `call i64 @isOdd(...)` while the
+    // body's other branch had the declared return type, producing
+    // phi-node type mismatches.
+    p.decls.foreach {
+      case f: TFunDecl =>
+        val params = f.params.map(pp =>
+          (currentType(pp), paramModes.getOrElse(pp.id, ParamMode.Read)),
+        )
+        setSymType(f.sym, TyFunc(params, f.returnType))
+      case _ => ()
+    }
     p.copy(decls = p.decls.map(inferDecl))
 
   private def inferDecl(d: TDecl): TDecl = d match
