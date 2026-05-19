@@ -38,6 +38,44 @@ case class TyStruct(name: String, fields: List[(String, Type)]) extends Type
 /** Function type. Each parameter carries its mode (read or mut) per §6.4. */
 case class TyFunc(params: List[(Type, ParamMode)], ret: Type) extends Type
 
+/** A kind-parameterized type variable as it appears in a generic `def`
+  * signature: `def my_norm[T: Float](xs: [T]) -> T`. The `name` is the
+  * source-level identifier (`T`, `A`, etc.) and `constraint` is the
+  * closed kind set the variable is allowed to range over.
+  *
+  * `TyKindVar` only ever appears inside a generic function's signature
+  * or body — it is substituted out by the monomorphization pass before
+  * codegen runs, so backends never need to handle it.
+  */
+case class TyKindVar(name: String, constraint: KindConstraint) extends Type
+
+/** Closed set of kinds a `TyKindVar` may range over. Each constraint
+  * pins down a hardcoded list of concrete types in [[KindConstraint.members]];
+  * v1 keeps the constraint set small and non-extensible so the elaborator's
+  * kind-unification check is finite and decidable.
+  */
+enum KindConstraint:
+  case Any
+  case Numeric
+  case Real
+  case Float
+
+  /** The concrete types this constraint admits, in the current v0 type
+    * world. `real`/`real64` are the same physical type until split-precision
+    * types (real32, real128) land; the constraint set anticipates that
+    * future widening by being expressed as a membership predicate rather
+    * than tied to a single canonical type.
+    */
+  def admits(t: Type): Boolean = (this, t) match
+    case (Any,     _)         => true
+    case (Numeric, TyInteger) => true
+    case (Numeric, TyReal)    => true
+    case (Numeric, TyComplex) => true
+    case (Real,    TyInteger) => true
+    case (Real,    TyReal)    => true
+    case (Float,   TyReal)    => true
+    case _                    => false
+
 // ============================================================================
 // Symbols (resolved names)
 // ============================================================================

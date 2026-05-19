@@ -83,14 +83,21 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       case attrs ~ d => attachAttrs(d, attrs)
     }
 
-  /** `@name` or `@name("arg1", "arg2", ...)`. Only string literal arguments
-    * are accepted — keeps the grammar small and serves the immediate need
-    * (`@intrinsic("libm.sqrt")`). Richer attribute payloads can come later.
+  /** `@name` or `@name(arg1, arg2, ...)`. Each argument is either a
+    * string literal (`"libm.sqrt"`) or a bare identifier (referring to
+    * a type parameter, as in `@intrinsic("libm.sqrt", T)` on a
+    * kind-generic def). String args are kept verbatim; identifier args
+    * are stored with a `@` prefix so the elaborator can distinguish
+    * them at decode time. Keeps `Attribute.args: List[String]`
+    * uniform across decl shapes.
     */
   lazy val attribute: PackratParser[Attribute] =
-    "@" ~> ident ~ opt("(" ~> repsep(stringLit, ",") <~ ")") ^^ {
+    "@" ~> ident ~ opt("(" ~> repsep(attributeArg, ",") <~ ")") ^^ {
       case n ~ argsOpt => Attribute(n, argsOpt.getOrElse(Nil))
     }
+
+  lazy val attributeArg: PackratParser[String] =
+    stringLit | ident ^^ (n => s"@$n")
 
   private def attachAttrs(d: DeclAST, attrs: List[Attribute]): DeclAST =
     if attrs.isEmpty then d else d match
@@ -147,17 +154,34 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     */
   lazy val defDecl: PackratParser[DeclAST] =
     opt("private") ~ ("def" ~> ident) ~
+      opt(typeParamList) ~
       ("(" ~> repsep(funParam, ",") <~ ")") ~
       opt(":" ~> typeExpr) ~
       opt("=" ~> funBody) ~ opt(trailingEnd) ^^ {
-      case priv ~ name ~ params ~ ret ~ body ~ _ =>
-        FunDeclAST(name, params, ret, body, isPrivate = priv.isDefined)
+      case priv ~ name ~ tps ~ params ~ ret ~ body ~ _ =>
+        FunDeclAST(name, params, ret, body,
+                   isPrivate  = priv.isDefined,
+                   typeParams = tps.getOrElse(Nil))
     }
 
   lazy val funParam: PackratParser[FunParam] =
     ident ~ ":" ~ opt("mut") ~ typeExpr ^^ {
       case n ~ _ ~ mut ~ t =>
         FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read)
+    }
+
+  /** Optional type-parameter list on a generic def head: `[T]` for an
+    * unbounded type parameter (equivalent to `[T: Any]`), or
+    * `[T: Float, U: Numeric, V]` for a mixed bounded/unbounded list.
+    * The constraint name is a bare identifier — the elaborator decodes
+    * it against the [[KindConstraint]] enum at scope-binding time.
+    */
+  lazy val typeParamList: PackratParser[List[TypeParamAST]] =
+    "[" ~> rep1sep(typeParam, ",") <~ "]"
+
+  lazy val typeParam: PackratParser[TypeParamAST] =
+    ident ~ opt(":" ~> ident) ^^ {
+      case n ~ c => TypeParamAST(n, c)
     }
 
   /** Function body: either a single expression on the same line as `=`, or

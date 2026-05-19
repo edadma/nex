@@ -49,12 +49,22 @@ case class FunDeclAST(
     body:       Option[ExprAST],
     isPrivate:  Boolean = false,
     attributes: List[Attribute] = Nil,
+    typeParams: List[TypeParamAST] = Nil,
 ) extends DeclAST
 
 /** A function-declaration parameter. `mode` is `read` (inferred) or `mut`
   * (declared) per spec §6.4.
   */
 case class FunParam(name: String, typ: TypeAST, mode: ParamMode)
+
+/** A kind-parameter declaration on a generic `def` head:
+  * `def f[T: Float, U: Numeric](...)`. The `constraint` is the source-
+  * level name (`"Float"`, `"Numeric"`, etc.); the elaborator maps it to
+  * a [[KindConstraint]] enum value during scope minting. `None` means
+  * the parameter is unbounded, i.e. `[T]` — equivalent to
+  * `[T: Any]`.
+  */
+case class TypeParamAST(name: String, constraint: Option[String])
 
 enum ParamMode:
   case Read   // inferred default

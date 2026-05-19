@@ -343,8 +343,17 @@ class NexElaborator
 
   private def elabFun(f: FunDeclAST, sym: Symbol): TFunDecl =
     var paramSyms: List[Symbol] = Nil
+    var retTy: Type             = TyUnknown
     val intrinsicAttr = f.attributes.find(_.name == "intrinsic")
     val body = scoped {
+      // Mint each type parameter as a TypeName symbol carrying a
+      // TyKindVar. The body's `typeOf("T")` look-up then resolves
+      // through this scope and yields the kind-variable type directly.
+      // Type parameters are scope-local to the def body; the outer
+      // module never sees them.
+      for tp <- f.typeParams do
+        val kc = decodeKindConstraint(tp.constraint, f)
+        defineNoError(tp.name, SymKind.TypeName, TyKindVar(tp.name, kc))
       paramSyms = f.params.map { p =>
         val ty = typeOf(p.typ)
         val s  = define(p.name, SymKind.Param, ty, f)
@@ -352,6 +361,11 @@ class NexElaborator
         if p.mode == ParamMode.Mut then mutableSymIds += s.id
         s
       }
+      // Resolve the return type inside the scoped block so a generic
+      // `def f[T: Float](x: T): T` finds `T` for the return-type
+      // position — by the time the block exits the type-param scope
+      // is gone.
+      retTy = f.returnType.map(typeOf).getOrElse(TyUnknown)
       (f.body, intrinsicAttr) match
         case (Some(b), None)    => elabExpr(b)
         case (None, Some(attr)) =>
@@ -367,7 +381,6 @@ class NexElaborator
           err("def declaration without body requires @intrinsic(\"opId\")", f)
           TUnitLit(Some(f.pos))
     }
-    val retTy = f.returnType.map(typeOf).getOrElse(TyUnknown)
     TFunDecl(sym, paramSyms, retTy, body, f.isPrivate, f.attributes.map(_.name), Some(f.pos))
 
   private def elabStruct(s: StructDeclAST, sym: Symbol): TStructDecl =
@@ -494,20 +507,30 @@ class NexElaborator
     */
   private def typeOf(t: TypeAST): Type =
     t match
-      case NamedType("bool")    => TyBool
-      case NamedType("integer") => TyInteger
-      case NamedType("real")    => TyReal
-      case NamedType("complex") => TyComplex
-      case NamedType("unit")    => TyUnit
-      case NamedType("string")  => TyString
+      case NamedType("bool")      => TyBool
+      case NamedType("integer")   => TyInteger
+      // `real` and `real64` denote the same type in v0; once explicit
+      // precision types (`real32`, `real128`) land, `real` stays as
+      // the canonical alias for `real64` per the prelude roadmap.
+      // Same convention for the complex pair.
+      case NamedType("real")      => TyReal
+      case NamedType("real64")    => TyReal
+      case NamedType("complex")   => TyComplex
+      case NamedType("complex64") => TyComplex
+      case NamedType("unit")      => TyUnit
+      case NamedType("string")    => TyString
       case NamedType(other)     =>
         // Read the fresh symbol from the table — the symbol stored in
         // scope.bindings is the snapshot from Pass A and may be stale
-        // (e.g. struct fields not yet known).
+        // (e.g. struct fields not yet known). Type parameters of a
+        // generic `def` arrive here as TypeName symbols carrying a
+        // `TyKindVar`; pass the kind-variable type through verbatim
+        // (no struct-wrapping).
         current.lookup(other).flatMap(s => symbols.get(s.id)) match
-          case Some(Symbol(_, _, ts: TyStruct, SymKind.TypeName)) => ts
-          case Some(Symbol(_, _, _, SymKind.TypeName))            => TyStruct(other, Nil)
-          case _                                                  =>
+          case Some(Symbol(_, _, ts: TyStruct, SymKind.TypeName))   => ts
+          case Some(Symbol(_, _, kv: TyKindVar, SymKind.TypeName))  => kv
+          case Some(Symbol(_, _, _, SymKind.TypeName))              => TyStruct(other, Nil)
+          case _                                                    =>
             err(s"unknown type `$other`", t); TyUnknown
       case ArrayType(inner) =>
         // Detect rank-2 by recursive shape (only rank 1 and 2 in v0).
@@ -517,6 +540,23 @@ class NexElaborator
       case TupleType(elems) => TyTuple(elems.map(typeOf))
       case FuncType(params, ret) =>
         TyFunc(params.map(p => (typeOf(p), ParamMode.Read)), typeOf(ret))
+
+  /** Decode a source-level kind-constraint name (`Float`, `Numeric`,
+    * `Real`, `Any`) into the matching [[KindConstraint]] enum case.
+    * `None` (`[T]` with no constraint) defaults to `Any`. An unknown
+    * constraint name records an error and returns `Any` so elaboration
+    * can continue and surface every other issue with the function.
+    */
+  private def decodeKindConstraint(name: Option[String], where: Positional): KindConstraint =
+    name match
+      case None             => KindConstraint.Any
+      case Some("Any")      => KindConstraint.Any
+      case Some("Numeric")  => KindConstraint.Numeric
+      case Some("Real")     => KindConstraint.Real
+      case Some("Float")    => KindConstraint.Float
+      case Some(other)      =>
+        err(s"unknown kind constraint `$other` — supported: Any, Numeric, Real, Float", where)
+        KindConstraint.Any
 
   // ==========================================================================
   // Expressions

@@ -361,6 +361,13 @@ protected trait NexLLVMState:
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
     case TyFunc(_, _)   => "{ ptr, ptr }"
     case TyUnknown      => "i64" // best-effort placeholder for missing inference
+    case TyKindVar(n, _) =>
+      // Reaching codegen with an un-monomorphized kind variable is a
+      // compiler bug — the monomorphization pass should have produced
+      // a concrete specialization before codegen ran.
+      throw new RuntimeException(
+        s"llvmType: encountered un-substituted kind variable `$n` — monomorphization pass did not run or missed this site",
+      )
 
   /** Storage type for an array element. `i1` (bool) is stored as `i8` so the
     * buffer's stride is one byte per element rather than packed bits.

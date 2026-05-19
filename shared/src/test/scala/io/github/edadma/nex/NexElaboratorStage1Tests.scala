@@ -535,3 +535,72 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("exactly one string argument")) shouldBe true
     }
   }
+
+  // ==========================================================================
+  // Stage 3-α — kind-parameterized defs
+  // ==========================================================================
+  //
+  // The elaborator mints each `[T: Float]` type parameter as a
+  // TypeName symbol carrying a TyKindVar. Param and return type
+  // references to `T` resolve through scope lookup to that
+  // kind-variable type. Stage 3-β (monomorphization) substitutes
+  // these out before codegen sees them.
+
+  "kind-parameterized defs (Stage 3-α)" should {
+
+    "parameter type resolves to TyKindVar carrying the source name + constraint" in {
+      val tp = elab("def f[T: Float](x: T): T = x")
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Float)
+      fn.returnType shouldBe TyKindVar("T", KindConstraint.Float)
+    }
+
+    "unbounded type parameter `[T]` defaults to KindConstraint.Any" in {
+      val tp = elab("def id[T](x: T): T = x")
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Any)
+    }
+
+    "multiple type parameters each carry their own constraint" in {
+      val tp = elab("def f[T: Real, U: Numeric](x: T, y: U): T = x")
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params(0).tpe shouldBe TyKindVar("T", KindConstraint.Real)
+      fn.params(1).tpe shouldBe TyKindVar("U", KindConstraint.Numeric)
+    }
+
+    "type parameter is scope-local: another def can reuse the name `T`" in {
+      val tp = elab("""
+        |def f[T: Float](x: T): T = x
+        |def g[T: Numeric](x: T): T = x
+      """.stripMargin)
+      val f = tp.decls(0).asInstanceOf[TFunDecl]
+      val g = tp.decls(1).asInstanceOf[TFunDecl]
+      f.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Float)
+      g.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Numeric)
+    }
+
+    "unknown constraint name is an error" in {
+      val errs = elabExpect("def f[T: NotAKind](x: T): T = x")
+      errs.exists(_.contains("unknown kind constraint `NotAKind`")) shouldBe true
+    }
+
+    "`real64` resolves to the same type as `real`" in {
+      val tp = elab("""
+        |def f(x: real): real = x
+        |def g(x: real64): real64 = x
+      """.stripMargin)
+      val f = tp.decls(0).asInstanceOf[TFunDecl]
+      val g = tp.decls(1).asInstanceOf[TFunDecl]
+      f.params.head.tpe shouldBe TyReal
+      g.params.head.tpe shouldBe TyReal
+    }
+
+    "`complex64` resolves to the same type as `complex`" in {
+      val tp = elab("""
+        |def f(x: complex): complex = x
+        |def g(x: complex64): complex64 = x
+      """.stripMargin)
+      tp.decls(0).asInstanceOf[TFunDecl].params.head.tpe shouldBe TyComplex
+      tp.decls(1).asInstanceOf[TFunDecl].params.head.tpe shouldBe TyComplex
+    }
+  }

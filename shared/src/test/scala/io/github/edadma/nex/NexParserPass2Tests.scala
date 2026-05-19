@@ -251,6 +251,37 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
     }
   }
 
+  // Stage 3-α — type-parameter syntax on def heads.
+  "kind-parameterized defs (Stage 3-α)" should {
+    "parse a single bounded type parameter" in {
+      val src   = "def f[T: Float](x: T): T = x"
+      val fn    = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.typeParams shouldBe List(TypeParamAST("T", Some("Float")))
+      fn.params shouldBe List(FunParam("x", NamedType("T"), ParamMode.Read))
+      fn.returnType shouldBe Some(NamedType("T"))
+    }
+    "parse an unbounded type parameter" in {
+      val src = "def id[T](x: T): T = x"
+      val fn  = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.typeParams shouldBe List(TypeParamAST("T", None))
+    }
+    "parse multiple type parameters with mixed constraints" in {
+      val src = "def zip[T, U: Numeric](xs: [T], ys: [U]): integer = 0"
+      val fn  = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.typeParams shouldBe List(
+        TypeParamAST("T", None),
+        TypeParamAST("U", Some("Numeric")),
+      )
+    }
+    "type-parameter list combines with @intrinsic and a bodyless decl" in {
+      val src = """@intrinsic("libm.sqrt", T)
+                  |def sqrt[T: Float](x: T): T""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      fn.typeParams shouldBe List(TypeParamAST("T", Some("Float")))
+      fn.body shouldBe None
+    }
+  }
+
   // ========================================================================
   // if / for / while / return expressions
   // ========================================================================
