@@ -942,13 +942,14 @@ class NexLLVMCodegen
       registerArraySlot(sym.id, slot, sym.tpe)
 
   // ---------------------------------------------------------------------------
-  // Complex (TyComplex) arithmetic helpers (chunk 12).
+  // Complex (TyComplex) arithmetic helpers.
   //
   // The value layout is `{ double real, double imag }`. Integer and real
   // operands promote to `{ x, 0.0 }` before per-component arithmetic.
   // Division follows the canonical (a + bi) / (c + di) = ((ac + bd) +
-  // (bc - ad)i) / (c² + d²) formula; no zero-denominator trap is emitted
-  // here (matches the interpreter's behaviour for now).
+  // (bc - ad)i) / (c² + d²) formula and traps when the denominator
+  // c² + d² is zero, matching the interpreter's `complex division by
+  // zero` trap.
   // ---------------------------------------------------------------------------
 
   /** Decompose a value of type `t` into its real and imaginary
@@ -1159,7 +1160,7 @@ class NexLLVMCodegen
         notYet(s"field access on non-struct type $other"); "0"
 
   // ---------------------------------------------------------------------------
-  // Interpolated string at value position (Wave 6 phase 3).
+  // Interpolated string at value position.
   //
   // Builds a fresh %nex_str descriptor by concat-chaining each part. Text
   // parts route through the literal-descriptor pool (immortal); $ref and

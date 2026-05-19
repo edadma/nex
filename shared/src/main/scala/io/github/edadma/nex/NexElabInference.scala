@@ -668,10 +668,9 @@ protected trait NexElabInference extends NexElabState:
           return TBroadcast(l, r, op, scalarFirst = true, p, rt)
         case _ => ()
 
-    // string + string → string concat. Phase 2 of Wave 6 (string +). Mixed
-    // string + value (interpreter accepts via formatValue auto-promotion)
-    // is a phase-3 follow-up that requires the per-Type value-to-string
-    // runtime.
+    // string + string → string concat. Mixed string + value (interpreter
+    // accepts via formatValue auto-promotion) would require a per-Type
+    // value-to-string runtime; that case is currently rejected here.
     if op == "+" && lt == TyString && rt == TyString then
       return TBinOp(op, l, r, p, TyString)
 
@@ -1050,9 +1049,9 @@ protected trait NexElabInference extends NexElabState:
         TyArray(TyInteger, 1)
       case "linspace" if args.size == 3 =>
         TyArray(TyReal, 1)
-      // §10.4 rank-2 ops (Wave 5). shape returns a tuple whose arity
-      // matches the source rank; transpose / matmul / diag / reshape /
-      // flatten compute their result type from the argument shape.
+      // §10.4 rank-2 ops. shape returns a tuple whose arity matches the
+      // source rank; transpose / matmul / diag / reshape / flatten compute
+      // their result type from the argument shape.
       case "shape" if args.size == 1 =>
         args.head.tpe match
           case TyArray(_, 1) => TyTuple(List(TyInteger))

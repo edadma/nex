@@ -336,7 +336,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     out.append("}\n\n")
 
   // ---------------------------------------------------------------------------
-  // Closure construction + dispatch (chunk 9).
+  // Closure construction + dispatch.
   // ---------------------------------------------------------------------------
 
   /** Construct a closure value `{ fn_ptr, env_ptr }` from a TLambda. The

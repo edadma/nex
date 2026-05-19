@@ -458,7 +458,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     "to_real (int → real)"     in parityCheck("def main() = print(to_real(5))", "5.0\n")
   }
 
-  "rank-1 prelude reductions (Wave 1)" should {
+  "rank-1 prelude reductions" should {
     "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
     "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")
     "sum of mixed → real" in parityCheck("def main() = print(sum([1.0, 2.0, 3.0, 4.0]))", "10.0\n")
@@ -500,7 +500,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "rank-1 HOFs added in Wave 1" should {
+  "rank-1 HOFs (extended set)" should {
     "flatMap (inline)" in parityCheck(
       "def main() = print([1, 2, 3].flatMap(x -> [x, -x]))",
       "[1, -1, 2, -2, 3, -3]\n",
@@ -511,7 +511,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "rank-1 builders (Wave 2)" should {
+  "rank-1 builders" should {
     "range produces a materialized integer array" in parityCheck(
       "def main() = print(range(0, 5))",
       "[0, 1, 2, 3, 4]\n",
@@ -564,7 +564,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "rank-2 HOFs (Wave 3)" should {
+  "rank-2 HOFs" should {
     "sum of a 2x3 integer matrix sums all elements" in parityCheck(
       """
         |def main() =
@@ -616,7 +616,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "rank-2 construction (Wave 4)" should {
+  "rank-2 construction" should {
     "zeros((2, 3)) builds a zero matrix" in parityCheck(
       """
         |def main() =
@@ -658,7 +658,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "rank-2 matrix ops (Wave 5)" should {
+  "rank-2 matrix ops" should {
     "shape of a rank-1 array prints as a 1-tuple" in parityCheck(
       """
         |def main() =
@@ -819,7 +819,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "string concat (Wave 6 phase 2)" should {
+  "string concat" should {
     "literal + literal" in parityCheck(
       """
         |def main() = print("foo" + "bar")
@@ -1146,7 +1146,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {
+  "interpolated `s\"...\"` at value position" should {
     "with an integer ref" in parityCheck(
       """
         |def main() =
@@ -1223,7 +1223,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
-  "aggregate value-to-string (Wave 6 follow-up)" should {
+  "aggregate value-to-string" should {
     "interpolate a complex" in parityCheck(
       """
         |def main() =

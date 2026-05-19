@@ -918,11 +918,11 @@ class NexInterpreter:
     * call-site check forbids in well-formed programs) fall back to the
     * by-value path.
     *
-    * Phase 1 supports only direct `TVarRef` mut args. Struct-field /
-    * array-index / tuple-projection mut args (allowed by the elaborator
-    * when rooted at a var/mut) fall back to by-value: the elaborator
-    * check accepted them but full by-ref of those slot kinds wants a
-    * proper LValueRef abstraction and is left for phase 2.
+    * Only direct `TVarRef` mut args take the by-ref path today. Struct-
+    * field / array-index / tuple-projection mut args (which the elaborator
+    * accepts when rooted at a var/mut) fall back to by-value — full by-ref
+    * for those slot kinds needs a proper LValueRef abstraction that v0
+    * doesn't provide.
     */
   private def callUserFunctionWithModes(
       f: VUserFunc,
@@ -948,7 +948,8 @@ class NexInterpreter:
                 case Some(cell) => frame.bind(param.id, cell)
                 case None       => frame.define(param.id, evalExpr(argExpr, callerEnv))
             case _ =>
-              // Slot-into-struct / array element / tuple-proj — phase 2.
+              // Slot-into-struct / array element / tuple-proj fall back to
+              // by-value (no LValueRef abstraction in v0).
               frame.define(param.id, evalExpr(argExpr, callerEnv))
         case ParamMode.Read =>
           frame.define(param.id, evalExpr(argExpr, callerEnv))

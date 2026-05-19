@@ -10,8 +10,8 @@ import scala.util.parsing.input.Position
   * a single uniform array-producer node that can be emitted as one loop
   * instead of one loop per arithmetic operator. The interpreter has eval
   * cases for both shapes so running this pass has no semantic effect on
-  * interpreter output — chunk 1 is groundwork; chunk 2 will add the
-  * chain-inlining rule that actually fuses nested loops.
+  * interpreter output. The chain-inlining rewrite then collapses nested
+  * fused loops into one.
   *
   * Not auto-wired into [[NexElaborator.elaborate]] — call it explicitly
   * via `NexFusion(program).fuseProgram(program)`. That keeps existing
@@ -47,10 +47,10 @@ class NexFusion(symbols: SymbolTable):
     * during the walk. Populated as we process top-level [[TTopBinding]]s in
     * order, and as we walk block items inside function bodies. Consumed by
     * [[fuseMap]] when the lambda argument to `map(...)` is a [[TVarRef]] —
-    * chunk 4's named-lambda chasing. Sequential population means forward
-    * references at the top level are NOT chased (the binding has to lexically
-    * precede the call site within the program); that's a documented chunk-4
-    * limitation, not a soundness issue — the unfused TCall is still emitted.
+    * named-lambda chasing. Sequential population means forward references
+    * at the top level are NOT chased (the binding has to lexically precede
+    * the call site within the program); the unfused TCall is still emitted
+    * in that case — fusion is an optimisation, not a soundness requirement.
     */
   private val lambdaBindings = mutable.Map.empty[Int, TLambda]
 
@@ -69,7 +69,7 @@ class NexFusion(symbols: SymbolTable):
 
   /** Walk the typed AST, recursively fusing children first (bottom-up),
     * then applying the rewrite rule at the current node if it matches.
-    * Bottom-up so chunk 2's chain-inlining rule can spot nested TFusedLoops.
+    * Bottom-up so the chain-inlining rule can spot nested TFusedLoops.
     */
   private def fuseExpr(e: TExpr): TExpr = e match
     case TElementWise(op, l, r, p, t) =>
@@ -208,21 +208,21 @@ class NexFusion(symbols: SymbolTable):
 
   /** Rule 1c: `map(arr, fn)` → fused loop, with two ways to resolve `fn`:
     *
-    *  - **Inline lambda (chunk 3):** `map(arr, x -> body)` — the lambda's
-    *    body is inlined with its single param substituted to the indexed
-    *    access on the array temp.
+    *  - **Inline lambda:** `map(arr, x -> body)` — the lambda's body is
+    *    inlined with its single param substituted to the indexed access on
+    *    the array temp.
     *
-    *  - **Named lambda (chunk 4):** `map(arr, f)` where `f` is a
-    *    [[TVarRef]] whose binding (top-level [[TTopBinding]] or block-level
-    *    [[TBlockBinding]]) was registered in [[lambdaBindings]] earlier in
-    *    the walk. The looked-up lambda is treated identically to an inline
-    *    lambda from here on. The original `val f = ...` stays in the
-    *    program — fusion duplicates the body at each call site, it does
-    *    not consume the binding.
+    *  - **Named lambda:** `map(arr, f)` where `f` is a [[TVarRef]] whose
+    *    binding (top-level [[TTopBinding]] or block-level [[TBlockBinding]])
+    *    was registered in [[lambdaBindings]] earlier in the walk. The
+    *    looked-up lambda is treated identically to an inline lambda from
+    *    here on. The original `val f = ...` stays in the program — fusion
+    *    duplicates the body at each call site, it does not consume the
+    *    binding.
     *
-    * If `arr` is itself a fused subexpression, chunk-2's chain inlining
-    * applies via [[sourceOperand]], so e.g. `map(2 * a + b, x -> x * 10)`
-    * collapses to one loop.
+    * If `arr` is itself a fused subexpression, chain inlining via
+    * [[sourceOperand]] collapses both into a single loop, so e.g.
+    * `map(2 * a + b, x -> x * 10)` collapses to one loop.
     *
     * Limited to single-param lambdas — `map` only takes `(elem -> U)`.
     * Returns `None` when `fn` is neither an inline TLambda nor a TVarRef

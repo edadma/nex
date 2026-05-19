@@ -141,8 +141,8 @@ case class TMatMul(lhs: TExpr, rhs: TExpr, pos: Option[Position] = None, tpe: Ty
   * to the current flat index. Source arrays are accessed through
   * [[TFlatIndex]] so rank-1 and rank-2 share the same loop shape.
   *
-  *  - `cols = None` (chunks 1–4) — the result is rank-1 (`VArray1`).
-  *  - `cols = Some(c)` (chunk 5) — the result is rank-2 (`VArray2` with
+  *  - `cols = None` — the result is rank-1 (`VArray1`).
+  *  - `cols = Some(c)` — the result is rank-2 (`VArray2` with
   *    `rows = length / c`, `cols = c`). The row-major flat layout matches
   *    [[NexInterpreter.VArray2]]'s storage so a single linear loop fills
   *    the buffer in-order.

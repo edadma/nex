@@ -272,7 +272,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("linspace",  List(lo, hi, n))      => emitLinspaceCall(lo, hi, n)
 
       // §10.4 array HOFs — direct inlined loops that dispatch each
-      // iteration through the chunk-9 closure call helper. Works
+      // iteration through the indirect-call closure helper. Works
       // identically for inline TLambda args and TVarRef closure
       // bindings (both emit a `{ptr, ptr}` value via emitExpr).
       case ("map",     List(arr, fn))          => emitMapCall(arr, fn, resultT)
@@ -290,7 +290,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("ones",     List(n))               => emitConstFill(n, "1", TyInteger, resultT)
       case ("identity", List(n))               => emitIdentityCall(n, resultT)
 
-      // §10.4 rank-2 ops (Wave 5).
+      // §10.4 rank-2 ops.
       case ("shape",     List(a))              => emitShapeCall(a, resultT)
       case ("transpose", List(a))              => emitTransposeCall(a, resultT)
       case ("matmul",    List(a, b))           => emitMatMulCall(a, b, resultT)
@@ -704,7 +704,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     result
 
   // ---------------------------------------------------------------------------
-  // §10.4 array higher-order functions (chunk 11).
+  // §10.4 array higher-order functions.
   //
   // map / reduce / filter all share the same shape:
   //   1. Evaluate `arr` once into an owning SSA value.
@@ -1438,7 +1438,7 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     arr
 
   // ---------------------------------------------------------------------------
-  // §10.4 rank-2 ops (Wave 5).
+  // §10.4 rank-2 ops.
   //
   // All of these read an existing array, allocate a result, and dec the
   // input's owning share before returning. The interpreter is the

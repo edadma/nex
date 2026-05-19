@@ -2,14 +2,14 @@ package io.github.edadma.nex
 
 import org.scalatest.wordspec.AnyWordSpec
 
-/** Lambda chunk-9 coverage: `{ ptr, ptr }` closure layout, env malloc,
+/** Lambda codegen coverage: `{ ptr, ptr }` closure layout, env malloc,
   * synthetic `__nex_lambda_<N>` signatures, indirect dispatch, val vs
   * var capture (ByVal vs ByRef), multi-arg lambdas, and that captured
   * values are observed at closure-construction time.
   */
 class NexLLVMLambdasTests extends AnyWordSpec with NexCodegenTestBase:
 
-  "lambdas (chunk 9)" should {
+  "lambdas" should {
     "TyFunc lowers to a `{ ptr, ptr }` closure value" in {
       val ir = compile("""
         |def callIt(f: (integer -> integer), x: integer) = f(x)

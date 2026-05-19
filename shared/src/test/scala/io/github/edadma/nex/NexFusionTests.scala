@@ -176,7 +176,7 @@ class NexFusionTests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
-  // Chain inlining (chunk 2) — nested fused subtrees collapse into one loop
+  // Chain inlining — nested fused subtrees collapse into one loop
   // ==========================================================================
 
   "chain inlining" should {
@@ -194,7 +194,8 @@ class NexFusionTests extends AnyWordSpec with Matchers:
       val block = body.asInstanceOf[TBlock]
       block.result shouldBe a[TFusedLoop]
       val loop = block.result.asInstanceOf[TFusedLoop]
-      // Body must NOT contain a nested TFusedLoop — chunk 2's job.
+      // Body must NOT contain a nested TFusedLoop — chain inlining
+      // is responsible for collapsing them.
       countFusedLoops(loop.body) shouldBe 0
     }
 
@@ -245,7 +246,7 @@ class NexFusionTests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
-  // Prelude map fusion (chunk 3) — `map(arr, x -> body)` inlines lambda body
+  // Prelude map fusion — `map(arr, x -> body)` inlines lambda body
   // ==========================================================================
 
   "map fusion" should {
@@ -323,8 +324,8 @@ class NexFusionTests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
-  // Named-lambda chasing (chunk 4) — `map(xs, f)` where `f` is a TVarRef
-  // that resolves to a registered TLambda. Lookup is sequential, so the
+  // Named-lambda chasing — `map(xs, f)` where `f` is a TVarRef that
+  // resolves to a registered TLambda. Lookup is sequential, so the
   // binding must lexically precede the call site within the program.
   // ==========================================================================
 
@@ -433,8 +434,8 @@ class NexFusionTests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
-  // Rank-2 fusion (chunk 5) — flat-loop body via TFlatIndex; result wraps
-  // in a rank-2 array via TFusedLoop.cols.
+  // Rank-2 fusion — flat-loop body via TFlatIndex; result wraps in a
+  // rank-2 array via TFusedLoop.cols.
   // ==========================================================================
 
   "rank-2 fusion" should {

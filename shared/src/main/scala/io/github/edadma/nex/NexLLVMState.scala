@@ -81,29 +81,32 @@ protected trait NexLLVMState:
   protected var blockArrayScopes: List[mutable.LinkedHashMap[Int, (String, Type)]] = Nil
 
   // ---------------------------------------------------------------------------
-  // Closure / lambda support (chunk 9).
+  // Closure / lambda support.
   //
   // Closure value layout: `{ ptr fn, ptr env }` (16 bytes). The fn pointer
   // targets a synthetic top-level function `__nex_lambda_<N>` with signature
   // `(ptr env, T0 arg0, ...)`; the env points at a heap-allocated capture
   // struct (or null if the lambda captures nothing).
   //
+  // The env carries a negative-offset header `[ rc(i64) | dtor(ptr) ]`. The
+  // env pointer is participates in the same scope-based ARC machinery as
+  // arrays and strings: function-param slots, val/var/assign bindings, and
+  // map/reduce/filter HOFs all route through `__nex_env_inc/dec`, and the
+  // per-lambda dtor walks ByVal captures to dec strings, arrays (deep-dec
+  // when the element is refcounted), and nested closures before freeing.
+  //
   // Captures:
-  //   - val / param / const: by-value (the capture stores the value).
+  //   - val / param / const: by-value (the capture stores the value;
+  //                          refcounted values are inc'd at capture time
+  //                          and dec'd by the env dtor).
   //   - var:                 by-reference (the capture stores a ptr to the
   //                          parent's alloca, so mutations on either side
-  //                          are visible to the other — see the interpreter
-  //                          test "closure captures live cells").
+  //                          are visible to the other).
   //
-  // Limitations (acknowledged, not fixed in this chunk):
-  //   - Captured arrays / closures (recursive): the env free path doesn't
-  //     dec captured array refs, so capturing an array leaks. Diagnosed
-  //     with `notYet`.
-  //   - Closure escape: a closure returned from a fn whose stack still
-  //     contains a captured `var` alloca would dangle. v0 test surface
-  //     doesn't exercise this; documented in roadmap.
-  //   - No closure-ARC: the env malloc is never freed. Long-running loops
-  //     that build many closures will leak. Acceptable for v0 tests.
+  // Closure escape: a closure returned from a fn whose stack still contains
+  // a ByRef-captured `var` alloca would dangle. The v0 test surface doesn't
+  // exercise this; lifting the captured var to the heap (or always boxing
+  // closure-escaping vars) is the v1+ fix.
   // ---------------------------------------------------------------------------
 
   protected enum CaptureMode:

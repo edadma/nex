@@ -2,13 +2,13 @@ package io.github.edadma.nex
 
 import org.scalatest.wordspec.AnyWordSpec
 
-/** Prelude (chunk 10): scalar math (sqrt, trig, abs, min/max, sign,
+/** Prelude codegen: scalar math (sqrt, trig, abs, min/max, sign,
   * constants pi/e/inf/nan, atan2, asinh/acosh/atanh) and assertion
   * helpers (assert, assert_eq, assert_approx, failing-assert trap).
   */
 class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
 
-  "prelude scalar math (chunk 10)" should {
+  "prelude scalar math" should {
     "sqrt routes to libm @sqrt" in {
       val ir = compile("def main() = print(sqrt(16.0))")
       ir should include("declare double @sqrt(double)")
@@ -104,7 +104,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
-  "prelude assertions (chunk 10)" should {
+  "prelude assertions" should {
     "assert(bool) routes to @__nex_assert" in {
       val ir = compile("def main() = assert(1 + 1 == 2)")
       ir should include("define void @__nex_assert(i1 %cond)")
@@ -178,7 +178,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
-  "prelude array HOFs (chunk 11)" should {
+  "prelude array HOFs" should {
     "map(arr, lambda) allocates a result array of the same length" in {
       val ir = compile("""
         |def main() =
@@ -190,7 +190,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       // Closure is extracted into fn+env once outside the loop.
       ir should include regex """extractvalue \{ ptr, ptr \} %t\d+, 0"""
       ir should include regex """extractvalue \{ ptr, ptr \} %t\d+, 1"""
-      // Loop body dispatches via the chunk-9 indirect call.
+      // Loop body dispatches via the indirect closure call.
       ir should include regex """call i64 \(ptr, i64\) %t\d+\(ptr %t\d+, i64 %t\d+\)"""
     }
 
@@ -245,7 +245,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """getelementptr inbounds %nex_arr1, ptr %t\d+, i32 0, i32 1"""
     }
 
-    "map on rank-2 lowers to __nex_arr2_alloc + a flat counting loop (Wave 3)" in {
+    "map on rank-2 lowers to __nex_arr2_alloc + a flat counting loop" in {
       val ir = compile("""
         |def main() =
         |  val m: [[integer]] = [[1, 2], [3, 4]]
@@ -269,7 +269,7 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
-  "complex numbers (chunk 12)" should {
+  "complex numbers" should {
     "TyComplex lowers to a `{ double, double }` aggregate" in {
       val ir = compile("""
         |def main() =
