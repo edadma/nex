@@ -1674,3 +1674,158 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "1.0E-7\n",
     )
   }
+
+  "slice assignment (spec §4.14 lvalue form, Fortran-90 array-section)" should {
+    "rank-1 exclusive slice-assign" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [10, 20, 30, 40, 50]
+        |  xs[1..4] = [200, 300, 400]
+        |  print(xs)
+      """.stripMargin,
+      "[10, 200, 300, 400, 50]\n",
+    )
+    "rank-1 inclusive slice-assign" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [10, 20, 30, 40, 50]
+        |  xs[0..=2] = [1, 2, 3]
+        |  print(xs)
+      """.stripMargin,
+      "[1, 2, 3, 40, 50]\n",
+    )
+    "rank-1 slice-assign covering full array" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [0, 0, 0]
+        |  xs[0..3] = [9, 8, 7]
+        |  print(xs)
+      """.stripMargin,
+      "[9, 8, 7]\n",
+    )
+    "rank-1 slice-assign empty range is a no-op" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [10, 20, 30]
+        |  val empty: [integer] = []
+        |  xs[1..1] = empty
+        |  print(xs)
+      """.stripMargin,
+      "[10, 20, 30]\n",
+    )
+    "rank-1 slice-assign from another array variable" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [0, 0, 0, 0, 0]
+        |  val ys = [11, 22]
+        |  xs[2..4] = ys
+        |  print(xs)
+      """.stripMargin,
+      "[0, 0, 11, 22, 0]\n",
+    )
+    "rank-2 row replacement via row-index + col-all" in parityCheck(
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  m[1, :] = [40, 50, 60]
+        |  print(m)
+      """.stripMargin,
+      "[[1, 2, 3], [40, 50, 60], [7, 8, 9]]\n",
+    )
+    "rank-2 column replacement via col-index + row-all" in parityCheck(
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  m[:, 1] = [20, 50, 80]
+        |  print(m)
+      """.stripMargin,
+      "[[1, 20, 3], [4, 50, 6], [7, 80, 9]]\n",
+    )
+    "rank-2 submatrix replacement" in parityCheck(
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  m[0..2, 0..2] = [[10, 20], [30, 40]]
+        |  print(m)
+      """.stripMargin,
+      "[[10, 20, 3], [30, 40, 6], [7, 8, 9]]\n",
+    )
+    "rank-2 submatrix replacement (inclusive)" in parityCheck(
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  m[0..=1, 1..=2] = [[20, 30], [50, 60]]
+        |  print(m)
+      """.stripMargin,
+      "[[1, 20, 30], [4, 50, 60], [7, 8, 9]]\n",
+    )
+    "rank-2 partial row replacement: m[i, lo..hi]" in parityCheck(
+      """
+        |def main() =
+        |  var m = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        |  m[0, 1..3] = [20, 30]
+        |  print(m)
+      """.stripMargin,
+      "[[1, 20, 30, 4], [5, 6, 7, 8]]\n",
+    )
+    "rank-1 slice-assign with shape mismatch traps" in parityCheck(
+      """
+        |def bad_len(xs: mut [integer]) = xs[1..4] = [9, 9]
+        |def main() =
+        |  var xs = [1, 2, 3, 4, 5]
+        |  assert_traps(() -> bad_len(xs), "length mismatch")
+        |  print(xs)
+      """.stripMargin,
+      "[1, 2, 3, 4, 5]\n",
+    )
+    "rank-2 slice-assign with shape mismatch traps" in parityCheck(
+      """
+        |def bad_shape(m: mut [[integer]]) = m[0..2, 0..2] = [[1, 2]]
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  assert_traps(() -> bad_shape(m), "shape mismatch")
+        |  print(m)
+      """.stripMargin,
+      "[[1, 2, 3], [4, 5, 6], [7, 8, 9]]\n",
+    )
+    "rank-1 slice-assign with hi past end traps" in parityCheck(
+      """
+        |def bad_oob(xs: mut [integer]) = xs[0..10] = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9]
+        |def main() =
+        |  var xs = [1, 2, 3]
+        |  assert_traps(() -> bad_oob(xs), "out of bounds")
+        |  print(xs)
+      """.stripMargin,
+      "[1, 2, 3]\n",
+    )
+    "rank-1 slice-assign of reals" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [1.0, 2.0, 3.0, 4.0]
+        |  xs[1..3] = [20.0, 30.0]
+        |  print(xs)
+      """.stripMargin,
+      "[1.0, 20.0, 30.0, 4.0]\n",
+    )
+    "rank-1 slice-assign within a loop (sweep update)" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [0, 0, 0, 0, 0, 0]
+        |  for i in 0..3 do
+        |    xs[2 * i..2 * i + 2] = [i + 1, i + 1]
+        |  print(xs)
+      """.stripMargin,
+      "[1, 1, 2, 2, 3, 3]\n",
+    )
+    "interleaved slice-assigns build up a result" in parityCheck(
+      """
+        |def main() =
+        |  var xs = [0, 0, 0, 0, 0, 0]
+        |  xs[0..2] = [1, 2]
+        |  xs[2..4] = [3, 4]
+        |  xs[4..6] = [5, 6]
+        |  print(xs)
+      """.stripMargin,
+      "[1, 2, 3, 4, 5, 6]\n",
+    )
+  }

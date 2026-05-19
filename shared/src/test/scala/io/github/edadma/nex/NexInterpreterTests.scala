@@ -728,6 +728,66 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |  print(xs[5])
       """.stripMargin).msg should include("index out of bounds")
     }
+
+    "rank-1 slice-assign overwrites underlying buffer" in {
+      runOut("""
+        |def main() =
+        |  var xs = [1, 2, 3, 4, 5]
+        |  xs[1..4] = [20, 30, 40]
+        |  print(xs)
+      """.stripMargin) shouldBe "[1, 20, 30, 40, 5]\n"
+    }
+
+    "rank-1 inclusive slice-assign" in {
+      runOut("""
+        |def main() =
+        |  var xs = [1, 2, 3, 4]
+        |  xs[0..=1] = [10, 20]
+        |  print(xs)
+      """.stripMargin) shouldBe "[10, 20, 3, 4]\n"
+    }
+
+    "rank-1 slice-assign length mismatch traps" in {
+      shouldTrap("""
+        |def main() =
+        |  var xs = [1, 2, 3, 4, 5]
+        |  xs[1..4] = [99]
+      """.stripMargin).msg should include("length mismatch")
+    }
+
+    "rank-1 slice-assign out-of-bounds traps" in {
+      shouldTrap("""
+        |def main() =
+        |  var xs = [1, 2, 3]
+        |  xs[0..10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      """.stripMargin).msg should include("out of bounds")
+    }
+
+    "rank-2 row replace via m[i, :] = rhs" in {
+      runOut("""
+        |def main() =
+        |  var m = [[1, 2], [3, 4]]
+        |  m[0, :] = [10, 20]
+        |  print(m)
+      """.stripMargin) shouldBe "[[10, 20], [3, 4]]\n"
+    }
+
+    "rank-2 column replace via m[:, j] = rhs" in {
+      runOut("""
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6]]
+        |  m[:, 2] = [30, 60]
+        |  print(m)
+      """.stripMargin) shouldBe "[[1, 2, 30], [4, 5, 60]]\n"
+    }
+
+    "rank-2 submatrix replace traps on shape mismatch" in {
+      shouldTrap("""
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6]]
+        |  m[0..2, 0..2] = [[1, 2]]
+      """.stripMargin).msg should include("shape mismatch")
+    }
   }
 
   // ==========================================================================

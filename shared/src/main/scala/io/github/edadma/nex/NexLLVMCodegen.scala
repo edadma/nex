@@ -918,6 +918,12 @@ class NexLLVMCodegen
         // The receiver array `av` was loaded as an owning share — release it.
         emitArrDec(av, arr.tpe)
 
+      case TSlice(arr, lo, hi, inclusive, _, _) =>
+        emitSliceAssign(arr, lo, hi, inclusive, value)
+
+      case TSlice2(arr, rowAx, colAx, _, _) =>
+        emitSlice2Assign(arr, rowAx, colAx, value)
+
       case other =>
         notYet(s"assign to ${other.getClass.getSimpleName}")
 

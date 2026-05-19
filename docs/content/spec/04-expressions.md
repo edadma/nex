@@ -324,6 +324,28 @@ m[:, :]              // full copy (rank-2)
 
 All slice forms return freshly-owned arrays. View-style slicing (returning a borrow into the source array without copying) is *deferred to v1+*.
 
+**Slice assignment** (Fortran-90 array-section assignment). Slice forms are also valid as l-values, letting you overwrite an entire sub-extent in one statement:
+
+```nex
+var xs = [10, 20, 30, 40, 50]
+xs[1..4] = [200, 300, 400]        // xs = [10, 200, 300, 400, 50]
+xs[0..=2] = [1, 2, 3]             // xs = [1, 2, 3, 400, 50]
+
+var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+m[1, :]       = [40, 50, 60]      // replace row 1
+m[:, 0]       = [-1, -4, -7]      // replace column 0
+m[0..2, 0..2] = [[10, 20], [30, 40]]   // replace a 2×2 sub-matrix
+```
+
+The right-hand side must be shape-conforming with the slice:
+- A rank-1 slice expects a rank-1 array of the same length.
+- A rank-2 slice with both axes preserved expects a rank-2 array of matching shape.
+- A rank-2 slice with one axis collapsed (`m[i, lo..hi]` / `m[:, j]`) expects a rank-1 array of matching length.
+
+Length / shape mismatches trap at runtime, as does any out-of-bounds slice bound. The underlying buffer is mutated in place — the array variable does not get a new identity, so the assignment is observable through every binding that aliases the same underlying array.
+
+Strided slice forms (`xs[lo..hi by k] = rhs`) are *deferred to v1+*.
+
 ## 4.15 Struct construction and access
 
 ```nex

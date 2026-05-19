@@ -208,11 +208,16 @@ protected trait NexElabLowering extends NexElabState:
       case _ => ()
 
   /** The "root" symbol of an l-value: the variable at the base of a chain
-    * of `.field` / `[idx]` / `.0`-style tuple projections. */
+    * of `.field` / `[idx]` / `[lo..hi]` / `[axes...]` / `.0`-style tuple
+    * projections. Slice forms appear when the chain is the LHS of an
+    * array-section assignment (`xs[lo..hi] = rhs`); the underlying var
+    * must still be mutable for the write to be legal. */
   protected def rootSym(e: TExpr): Option[Symbol] = e match
     case TVarRef(s, _, _)         => Some(s)
     case TField(r, _, _, _)       => rootSym(r)
     case TIndex(r, _, _, _)       => rootSym(r)
+    case TSlice(r, _, _, _, _, _) => rootSym(r)
+    case TSlice2(r, _, _, _, _)   => rootSym(r)
     case TTupleProj(r, _, _, _)   => rootSym(r)
     case _                        => None
 

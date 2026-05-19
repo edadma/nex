@@ -163,6 +163,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.axis_oob_msg     = private unnamed_addr constant [32 x i8] c"trap: axis index out of bounds\0A\00"
         |@.dot_mismatch_msg = private unnamed_addr constant [28 x i8] c"trap: dot: length mismatch\0A\00"
         |@.sum_axis_msg     = private unnamed_addr constant [37 x i8] c"trap: sum_axis: axis must be 0 or 1\0A\00"
+        |@.slice_assign_len_msg = private unnamed_addr constant [37 x i8] c"trap: slice-assign: length mismatch\0A\00"
+        |@.slice_assign_shape_msg = private unnamed_addr constant [36 x i8] c"trap: slice-assign: shape mismatch\0A\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:

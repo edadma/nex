@@ -273,6 +273,30 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       """.stripMargin)
       errs.exists(_.contains("invalid assignment target")) shouldBe true
     }
+
+    "accept rank-1 slice target (spec §4.14 lvalue form)" in {
+      elab("""
+        |def f() =
+        |  var xs = [1, 2, 3, 4]
+        |  xs[0..2] = [10, 20]
+      """.stripMargin)
+    }
+
+    "accept rank-2 slice target with range axis" in {
+      elab("""
+        |def f() =
+        |  var m = [[1, 2], [3, 4]]
+        |  m[0..1, :] = [[10, 20]]
+      """.stripMargin)
+    }
+
+    "accept rank-2 slice target with axis-all" in {
+      elab("""
+        |def f() =
+        |  var m = [[1, 2], [3, 4]]
+        |  m[:, 0] = [9, 9]
+      """.stripMargin)
+    }
   }
 
   // ==========================================================================

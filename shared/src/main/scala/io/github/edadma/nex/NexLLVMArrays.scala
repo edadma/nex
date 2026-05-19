@@ -535,6 +535,243 @@ protected trait NexLLVMArrays extends NexLLVMState:
     emitArrDec(av, arr.tpe)
     result
 
+  /** Lower a rank-1 slice-assign: `xs[lo..hi] = rhs`. Spec §4.14 lvalue
+    * form (Fortran-90 array-section assignment). Bounds-checks the slice
+    * against the destination, length-checks RHS against the slice length,
+    * then per-element refcount-aware copies the elements from RHS into
+    * the destination's underlying buffer. Both descriptor shares (LHS
+    * and RHS) are released at exit.
+    */
+  protected def emitSliceAssign(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, value: TExpr): Unit =
+    val elem  = arrayElem(arr.tpe)
+    val stE   = storageType(elem)
+    val langE = llvmType(elem)
+    val esz   = elemSize(elem)
+
+    val av  = emitExpr(arr)
+    val loV = emitExpr(lo)
+    val hiV = emitExpr(hi)
+    val rv  = emitExpr(value)
+
+    val dstLen = newReg()
+    emitLine(s"  $dstLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val negLo = newReg()
+    emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
+    val hiLtLo = newReg()
+    emitLine(s"  $hiLtLo = icmp slt i64 $hiV, $loV\n")
+    val hiBad = newReg()
+    if inclusive then
+      emitLine(s"  $hiBad = icmp sge i64 $hiV, $dstLen\n")
+    else
+      emitLine(s"  $hiBad = icmp sgt i64 $hiV, $dstLen\n")
+    val any01 = newReg()
+    emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+    val any = newReg()
+    emitLine(s"  $any = or i1 $any01, $hiBad\n")
+    val okL   = freshLabel("sla1.ok")
+    val failL = freshLabel("sla1.fail")
+    emitTerminator(s"  br i1 $any, label %$failL, label %$okL\n")
+    startBlock(failL)
+    emitLine(s"  call void @__nex_trap_with(ptr @.slice_oob_msg)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL)
+
+    val rawLen = newReg()
+    emitLine(s"  $rawLen = sub i64 $hiV, $loV\n")
+    val length = if inclusive then
+      val r = newReg()
+      emitLine(s"  $r = add i64 $rawLen, 1\n")
+      r
+    else rawLen
+
+    val rhsLen = newReg()
+    emitLine(s"  $rhsLen = call i64 @__nex_arr1_len(ptr $rv)\n")
+    val mismatch = newReg()
+    emitLine(s"  $mismatch = icmp ne i64 $rhsLen, $length\n")
+    val okL2   = freshLabel("sla1.lenok")
+    val failL2 = freshLabel("sla1.lenfail")
+    emitTerminator(s"  br i1 $mismatch, label %$failL2, label %$okL2\n")
+    startBlock(failL2)
+    emitLine(s"  call void @__nex_trap_with(ptr @.slice_assign_len_msg)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL2)
+
+    val dstBuf = bufPtr(av, arr.tpe)
+    val srcBuf = bufPtr(rv, value.tpe)
+
+    emitCountingLoop(length, "sla1") { i =>
+      val dIdx = newReg()
+      emitLine(s"  $dIdx = add i64 $loV, $i\n")
+      val dSlot = newReg()
+      emitLine(s"  $dSlot = getelementptr inbounds $stE, ptr $dstBuf, i64 $dIdx\n")
+      val sSlot = newReg()
+      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $i\n")
+      val newV = loadElem(stE, sSlot, langE)
+      if isRefCountedType(elem) then
+        val oldV = loadElem(stE, dSlot, langE)
+        emitArrInc(newV, elem)
+        emitArrDec(oldV, elem)
+      storeElem(stE, newV, dSlot)
+    }
+
+    emitArrDec(rv, value.tpe)
+    emitArrDec(av, arr.tpe)
+
+  /** Lower a rank-2 slice-assign: `m[axes...] = rhs`. Reuses the same
+    * per-axis (lo, hi, preserved) decomposition as [[emitSlice2]], then
+    * walks the slice region writing from RHS. RHS shape rules:
+    *   - both axes preserved → RHS is rank-2 with matching rows/cols.
+    *   - exactly one axis preserved → RHS is rank-1 of matching length.
+    *   - both collapsed → never reaches here (TIndex path).
+    */
+  protected def emitSlice2Assign(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, value: TExpr): Unit =
+    val elem  = arrayElem(arr.tpe)
+    val stE   = storageType(elem)
+    val langE = llvmType(elem)
+
+    val av = emitExpr(arr)
+    val rowsAll = newReg()
+    emitLine(s"  $rowsAll = call i64 @__nex_arr2_rows(ptr $av)\n")
+    val colsAll = newReg()
+    emitLine(s"  $colsAll = call i64 @__nex_arr2_cols(ptr $av)\n")
+
+    def axis(spec: TAxisSpec, total: String, label: String): (String, String, Boolean) = spec match
+      case TAxisAll => ("0", total, true)
+      case TAxisIndex(idx) =>
+        val iv = emitExpr(idx)
+        val neg = newReg()
+        emitLine(s"  $neg = icmp slt i64 $iv, 0\n")
+        val ge  = newReg()
+        emitLine(s"  $ge  = icmp sge i64 $iv, $total\n")
+        val bad = newReg()
+        emitLine(s"  $bad = or i1 $neg, $ge\n")
+        val okL = freshLabel(s"$label.ix.ok")
+        val flL = freshLabel(s"$label.ix.fail")
+        emitTerminator(s"  br i1 $bad, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.axis_oob_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
+        val hi = newReg()
+        emitLine(s"  $hi = add i64 $iv, 1\n")
+        (iv, hi, false)
+      case TAxisRange(lo, hi, inclusive) =>
+        val loV = emitExpr(lo)
+        val hiV = emitExpr(hi)
+        val negLo = newReg()
+        emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
+        val hiLtLo = newReg()
+        emitLine(s"  $hiLtLo = icmp slt i64 $hiV, $loV\n")
+        val hiBad = newReg()
+        if inclusive then
+          emitLine(s"  $hiBad = icmp sge i64 $hiV, $total\n")
+        else
+          emitLine(s"  $hiBad = icmp sgt i64 $hiV, $total\n")
+        val any01 = newReg()
+        emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+        val any = newReg()
+        emitLine(s"  $any = or i1 $any01, $hiBad\n")
+        val okL = freshLabel(s"$label.rg.ok")
+        val flL = freshLabel(s"$label.rg.fail")
+        emitTerminator(s"  br i1 $any, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.slice_oob_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
+        val end = if inclusive then
+          val r = newReg(); emitLine(s"  $r = add i64 $hiV, 1\n"); r
+        else hiV
+        (loV, end, true)
+
+    val (rLo, rEnd, rPres) = axis(rowAx, rowsAll, "sla2r")
+    val (cLo, cEnd, cPres) = axis(colAx, colsAll, "sla2c")
+    val rLen = newReg()
+    emitLine(s"  $rLen = sub i64 $rEnd, $rLo\n")
+    val cLen = newReg()
+    emitLine(s"  $cLen = sub i64 $cEnd, $cLo\n")
+
+    val rv     = emitExpr(value)
+    val dstBuf = bufPtr(av, arr.tpe)
+
+    def writeSlot(rIdx: String, cIdx: String, newV: String): Unit =
+      val flat = newReg(); emitLine(s"  $flat = mul i64 $rIdx, $colsAll\n")
+      val idx  = newReg(); emitLine(s"  $idx  = add i64 $flat, $cIdx\n")
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds $stE, ptr $dstBuf, i64 $idx\n")
+      if isRefCountedType(elem) then
+        val oldV = loadElem(stE, slot, langE)
+        emitArrInc(newV, elem)
+        emitArrDec(oldV, elem)
+      storeElem(stE, newV, slot)
+
+    (rPres, cPres) match
+      case (true, true) =>
+        // rank-2 RHS — shape check rows*cols.
+        val srcRows = newReg()
+        emitLine(s"  $srcRows = call i64 @__nex_arr2_rows(ptr $rv)\n")
+        val srcCols = newReg()
+        emitLine(s"  $srcCols = call i64 @__nex_arr2_cols(ptr $rv)\n")
+        val mr = newReg(); emitLine(s"  $mr = icmp ne i64 $srcRows, $rLen\n")
+        val mc = newReg(); emitLine(s"  $mc = icmp ne i64 $srcCols, $cLen\n")
+        val mm = newReg(); emitLine(s"  $mm = or i1 $mr, $mc\n")
+        val okL = freshLabel("sla2.sok")
+        val flL = freshLabel("sla2.sfail")
+        emitTerminator(s"  br i1 $mm, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.slice_assign_shape_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
+        val srcBuf = bufPtr(rv, value.tpe)
+        emitCountingLoop(rLen, "sla2r") { i =>
+          emitCountingLoop(cLen, "sla2c") { j =>
+            val dr = newReg(); emitLine(s"  $dr = add i64 $rLo, $i\n")
+            val dc = newReg(); emitLine(s"  $dc = add i64 $cLo, $j\n")
+            val sFlat = newReg(); emitLine(s"  $sFlat = mul i64 $i, $cLen\n")
+            val sIdx  = newReg(); emitLine(s"  $sIdx  = add i64 $sFlat, $j\n")
+            val sSlot = newReg()
+            emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $sIdx\n")
+            val newV = loadElem(stE, sSlot, langE)
+            writeSlot(dr, dc, newV)
+          }
+        }
+      case (true, false) | (false, true) =>
+        // rank-1 RHS — flat length = rLen * cLen (one of them is 1).
+        val sliceLen = newReg()
+        emitLine(s"  $sliceLen = mul i64 $rLen, $cLen\n")
+        val rhsLen = newReg()
+        emitLine(s"  $rhsLen = call i64 @__nex_arr1_len(ptr $rv)\n")
+        val mm = newReg()
+        emitLine(s"  $mm = icmp ne i64 $rhsLen, $sliceLen\n")
+        val okL = freshLabel("sla2.lok")
+        val flL = freshLabel("sla2.lfail")
+        emitTerminator(s"  br i1 $mm, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.slice_assign_len_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
+        val srcBuf = bufPtr(rv, value.tpe)
+        val kSlot = newReg()
+        emitLine(s"  $kSlot = alloca i64\n")
+        emitLine(s"  store i64 0, ptr $kSlot\n")
+        emitCountingLoop(rLen, "sla2rk") { i =>
+          emitCountingLoop(cLen, "sla2ck") { j =>
+            val dr = newReg(); emitLine(s"  $dr = add i64 $rLo, $i\n")
+            val dc = newReg(); emitLine(s"  $dc = add i64 $cLo, $j\n")
+            val k = newReg(); emitLine(s"  $k = load i64, ptr $kSlot\n")
+            val sSlot = newReg()
+            emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $k\n")
+            val newV = loadElem(stE, sSlot, langE)
+            writeSlot(dr, dc, newV)
+            val k1 = newReg(); emitLine(s"  $k1 = add i64 $k, 1\n")
+            emitLine(s"  store i64 $k1, ptr $kSlot\n")
+          }
+        }
+      case (false, false) =>
+        notYet("rank-2 slice-assign with both axes collapsed")
+
+    emitArrDec(rv, value.tpe)
+    emitArrDec(av, arr.tpe)
+
   /** Lower [[TClone]] — deep-copy the source descriptor and its buffer
     * into a fresh allocation. Source's owning share is released.
     */

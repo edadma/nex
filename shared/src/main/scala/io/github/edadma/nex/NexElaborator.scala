@@ -582,11 +582,13 @@ class NexElaborator
       case WildcardPat() => List(symbols.mint("_", TyUnknown, SymKind.Local))
       case TuplePat(es)  => es.flatMap(collectPatternSyms)
 
-  /** Assignment targets must be a name, a field access, or an index — per
-    * the AssignExpr docstring. Anything else is a structural error.
+  /** Assignment targets must be a name, a field access, an index, or a
+    * slice form. Anything else is a structural error. Slice targets get
+    * Fortran-90-style array-section assignment semantics in the interpreter
+    * and codegen.
     */
   private def validateLValue(te: TExpr, src: ExprAST): Unit =
     te match
-      case _: TVarRef | _: TField | _: TIndex => ()
-      case _                                  =>
+      case _: TVarRef | _: TField | _: TIndex | _: TSlice | _: TSlice2 => ()
+      case _                                                            =>
         err("invalid assignment target", src)

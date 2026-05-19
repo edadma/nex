@@ -994,6 +994,98 @@ class NexInterpreter:
         val iv = idx.map(evalExpr(_, env))
         indexSet(av, iv, rhs, p)
 
+      case TSlice(arr, lo, hi, inclusive, _, _) =>
+        val av = evalExpr(arr, env)
+        val (loI, hiI) = (evalExpr(lo, env), evalExpr(hi, env)) match
+          case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
+          case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+        av match
+          case VArray1(b) =>
+            val upper = if inclusive then hiI + 1 else hiI
+            if loI < 0 || upper > b.size || loI > upper then
+              trap(s"slice-assign [$loI..${if inclusive then "=" else ""}$hiI] out of bounds for array of size ${b.size}", p)
+            val sliceLen = upper - loI
+            rhs match
+              case VArray1(src) =>
+                if src.size != sliceLen then
+                  trap(s"slice-assign: length mismatch — rhs length ${src.size}, slice length $sliceLen", p)
+                var i = 0
+                while i < sliceLen do
+                  b(loI + i) = src(i)
+                  i += 1
+              case _ =>
+                trap(s"slice-assign: rhs must be a rank-1 array, got ${formatValue(rhs)}", p)
+          case other =>
+            trap(s"rank-1 slice-assign requires a rank-1 array, got ${formatValue(other)}", p)
+
+      case TSlice2(arr, rowAx, colAx, _, _) =>
+        val av = evalExpr(arr, env)
+        val (rows, cols, buf) = av match
+          case VArray2(b, r, c) => (r, c, b)
+          case other            => trap(s"rank-2 slice-assign requires a rank-2 array, got ${formatValue(other)}", p)
+
+        def resolveAxis(spec: TAxisSpec, extent: Int, label: String): (Int, Int, Boolean) =
+          spec match
+            case TAxisAll => (0, extent, false)
+            case TAxisIndex(e) =>
+              evalExpr(e, env) match
+                case VInt(i) =>
+                  if i < 0 || i >= extent then trap(s"$label index $i out of bounds for extent $extent", p)
+                  (i.toInt, i.toInt + 1, true)
+                case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
+            case TAxisRange(lo, hi, inclusive) =>
+              (evalExpr(lo, env), evalExpr(hi, env)) match
+                case (VInt(l), VInt(h)) =>
+                  val lI = l.toInt
+                  val hExcl = if inclusive then h.toInt + 1 else h.toInt
+                  if lI < 0 || hExcl > extent || lI > hExcl then
+                    trap(s"$label slice-assign [$lI..${if inclusive then "=" else ""}$h] out of bounds for extent $extent", p)
+                  (lI, hExcl, false)
+                case (l, h) => trap(s"$label slice-assign bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+
+        val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
+        val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")
+        val outRows = rHi - rLo
+        val outCols = cHi - cLo
+
+        // Result rank of the LHS matches what TSlice2's read path would produce.
+        (rCollapsed, cCollapsed) match
+          case (true, true) =>
+            // Both axes collapsed: this never reaches TSlice2 from the
+            // parser (two integer indices route through TIndex). Defensive.
+            buf(rLo * cols + cLo) = rhs
+          case (true, false) | (false, true) =>
+            val sliceLen = outRows * outCols
+            rhs match
+              case VArray1(src) =>
+                if src.size != sliceLen then
+                  trap(s"slice-assign: length mismatch — rhs length ${src.size}, slice length $sliceLen", p)
+                var k = 0
+                var r = rLo
+                while r < rHi do
+                  var c = cLo
+                  while c < cHi do
+                    buf(r * cols + c) = src(k)
+                    k += 1
+                    c += 1
+                  r += 1
+              case _ =>
+                trap(s"slice-assign: rhs must be a rank-1 array, got ${formatValue(rhs)}", p)
+          case (false, false) =>
+            rhs match
+              case VArray2(src, sr, sc) =>
+                if sr != outRows || sc != outCols then
+                  trap(s"slice-assign: shape mismatch — rhs shape ${sr}x${sc}, slice shape ${outRows}x${outCols}", p)
+                var i = 0
+                while i < outRows do
+                  var j = 0
+                  while j < outCols do
+                    buf((rLo + i) * cols + (cLo + j)) = src(i * sc + j)
+                    j += 1
+                  i += 1
+              case _ =>
+                trap(s"slice-assign: rhs must be a rank-2 array of shape ${outRows}x${outCols}, got ${formatValue(rhs)}", p)
+
       case other => trap(s"invalid assignment target", p)
 
   // --------------------------------------------------------------------------
