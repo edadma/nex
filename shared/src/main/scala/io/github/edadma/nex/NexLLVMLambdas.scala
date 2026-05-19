@@ -262,6 +262,9 @@ protected trait NexLLVMLambdas extends NexLLVMState:
               val env = freshLocal()
               sb.append(s"  $env = extractvalue { ptr, ptr } $v, 1\n")
               sb.append(s"  call void @__nex_env_dec(ptr $env)\n")
+            case _ if aggregateContainsRefCounted(t) =>
+              requestAggHelper(t)
+              sb.append(s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $v)\n")
             case _ => ()
         case _ => ()
     val hdr = freshLocal()

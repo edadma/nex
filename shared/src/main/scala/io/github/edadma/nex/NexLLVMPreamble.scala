@@ -603,6 +603,113 @@ protected trait NexLLVMPreamble extends NexLLVMState:
           case 2 => emitDeepDec2Helper(elem)
           case _ => ()
 
+  /** Flush every pending per-aggregate-type inc / drop helper to the
+    * module. Drains [[aggHelperPending]] (which may grow during
+    * emission — a drop for `(string, (string, integer))` registers an
+    * inner drop helper for the inner tuple) until stable.
+    */
+  protected def flushAggHelpers(): Unit =
+    while aggHelperPending.nonEmpty do
+      val t = aggHelperPending.head
+      aggHelperPending -= t
+      if !aggHelperEmitted.contains(t) then
+        aggHelperEmitted += t
+        emitAggIncHelper(t)
+        emitAggDropHelper(t)
+
+  /** Return the (type, index) list of fields for an aggregate type.
+    * Tuples are positional; structs use their declared field order.
+    * Non-aggregates return Nil — emitters should guard with
+    * [[aggregateContainsRefCounted]] before requesting helpers.
+    */
+  private def aggFields(t: Type): List[(Type, Int)] = t match
+    case TyTuple(es)     => es.zipWithIndex
+    case TyStruct(_, fs) => fs.zipWithIndex.map { case ((_, ft), i) => (ft, i) }
+    case _               => Nil
+
+  /** IR text for a single inc / dec call on a field's loaded value
+    * `fv`. Aggregate fields recurse via their own helpers (and request
+    * them for emission); other refcounted leaves call the direct
+    * runtime helper. Non-refcounted fields produce an empty string.
+    */
+  private def fieldIncIR(fT: Type, fv: String, freshLocal: () => String): String =
+    if isArrayType(fT) then
+      s"  call void ${arrIncFor(fT)}(ptr $fv)\n"
+    else if isClosureType(fT) then
+      val env = freshLocal()
+      s"  $env = extractvalue { ptr, ptr } $fv, 1\n" +
+        s"  call void @__nex_env_inc(ptr $env)\n"
+    else if fT == TyString then
+      s"  call void @__nex_str_inc(ptr $fv)\n"
+    else if aggregateContainsRefCounted(fT) then
+      requestAggHelper(fT)
+      s"  call void ${aggIncHelperName(fT)}(${llvmType(fT)} $fv)\n"
+    else ""
+
+  private def fieldDecIR(fT: Type, fv: String, freshLocal: () => String): String =
+    if isArrayType(fT) then
+      s"  call void ${arrDecFor(fT)}(ptr $fv)\n"
+    else if isClosureType(fT) then
+      val env = freshLocal()
+      s"  $env = extractvalue { ptr, ptr } $fv, 1\n" +
+        s"  call void @__nex_env_dec(ptr $env)\n"
+    else if fT == TyString then
+      s"  call void @__nex_str_dec(ptr $fv)\n"
+    else if aggregateContainsRefCounted(fT) then
+      requestAggHelper(fT)
+      s"  call void ${aggDropHelperName(fT)}(${llvmType(fT)} $fv)\n"
+    else ""
+
+  /** Emit `define void @__nex_inc_<mangle>(<aggTy> %v)` — extracts each
+    * refcounted field by index and inc's the share. Used when an
+    * aggregate-typed local var is loaded into a fresh consumer (the
+    * symmetric inc to the slot-end drop) and when an aggregate is
+    * stashed into a closure env. Non-refcounted fields are skipped.
+    */
+  protected def emitAggIncHelper(t: Type): Unit =
+    val name = aggIncHelperName(t).drop(1)
+    val tyL  = llvmType(t)
+    val sb   = new StringBuilder
+    sb.append(s"define void @$name($tyL %v) {\n")
+    sb.append("entry:\n")
+    var ctr = 0
+    def fresh(): String =
+      ctr += 1
+      s"%r$ctr"
+    for ((fT, idx) <- aggFields(t)) do
+      if isRefCountedType(fT) then
+        val fv = fresh()
+        sb.append(s"  $fv = extractvalue $tyL %v, $idx\n")
+        sb.append(fieldIncIR(fT, fv, () => fresh()))
+    sb.append("  ret void\n")
+    sb.append("}\n\n")
+    out.append(sb.toString)
+
+  /** Emit `define void @__nex_drop_<mangle>(<aggTy> %v)` — extracts
+    * each refcounted field by index and dec's the share. Aggregate
+    * fields recurse via their own drop helper. Called when an
+    * aggregate-typed slot leaves scope (block / function end) or when
+    * a parent aggregate's drop walks a nested aggregate field.
+    */
+  protected def emitAggDropHelper(t: Type): Unit =
+    val name = aggDropHelperName(t).drop(1)
+    val tyL  = llvmType(t)
+    val sb   = new StringBuilder
+    sb.append(s"define void @$name($tyL %v) {\n")
+    sb.append("entry:\n")
+    var ctr = 0
+    def fresh(): String =
+      ctr += 1
+      s"%r$ctr"
+    for ((fT, idx) <- aggFields(t)) do
+      if isRefCountedType(fT) then
+        val fv = fresh()
+        sb.append(s"  $fv = extractvalue $tyL %v, $idx\n")
+        sb.append(fieldDecIR(fT, fv, () => fresh()))
+    sb.append("  ret void\n")
+    sb.append("}\n\n")
+    out.append(sb.toString)
+
   /** Element-dec call text for a single element of a deep-dec body. The
     * value register `valReg` holds the slot's loaded ptr; this returns
     * the LLVM IR instruction(s) that dec it according to its static

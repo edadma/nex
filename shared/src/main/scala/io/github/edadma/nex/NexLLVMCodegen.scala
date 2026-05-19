@@ -97,6 +97,18 @@ class NexLLVMCodegen
     // inner helper for `[String]` while emitting.
     flushDeepDecs()
 
+    // Emit any per-aggregate-type inc / drop helpers that were
+    // registered during function-body / deep-dec emission. Same
+    // fixed-point pattern: nested aggregates register their inner
+    // helpers as their outer helper is emitted.
+    flushAggHelpers()
+
+    // A deep-dec body emitted by flushAggHelpers may have requested a
+    // new array deep-dec (e.g., a struct holds `[String]` — the drop
+    // helper calls `__nex_arr1_dec_str`). Drain once more so those
+    // late-registered helpers land in the module too.
+    flushDeepDecs()
+
     out.toString
 
   // ---------------------------------------------------------------------------
@@ -1026,12 +1038,20 @@ class NexLLVMCodegen
         acc = next
       acc
 
-  /** Lower `t.<idx>` — extract field `idx` from a tuple value. */
+  /** Lower `t.<idx>` — extract field `idx` from a tuple value. When the
+    * receiver tuple carries refcounted fields, the projection inc's
+    * the extracted share and dec's the receiver as a whole (the drop
+    * helper walks every field, including the extracted one, but the
+    * pre-inc keeps the projected share alive). Mirrors `emitIndex` for
+    * array element loads.
+    */
   private def emitTupleProj(receiver: TExpr, idx: Int, resultT: Type): String =
     val recv = emitExpr(receiver)
     val recvTy = llvmType(receiver.tpe)
     val reg = newReg()
     emitLine(s"  $reg = extractvalue $recvTy $recv, $idx\n")
+    if isRefCountedType(resultT) then emitArrInc(reg, resultT)
+    if isRefCountedType(receiver.tpe) then emitArrDec(recv, receiver.tpe)
     reg
 
   // ---------------------------------------------------------------------------
@@ -1055,8 +1075,10 @@ class NexLLVMCodegen
     acc
 
   /** Lower `recv.field` — pick out the field's index from the receiver's
-    * TyStruct then emit `extractvalue`. Complex receivers get `.re`
-    * (field 0) and `.im` (field 1).
+    * TyStruct then emit `extractvalue`. When the struct carries
+    * refcounted fields, inc the extracted share and dec the whole
+    * receiver — same scheme as [[emitTupleProj]]. Complex receivers
+    * get `.re` (field 0) and `.im` (field 1).
     */
   private def emitFieldAccess(receiver: TExpr, fieldName: String, resultT: Type): String =
     receiver.tpe match
@@ -1069,6 +1091,8 @@ class NexLLVMCodegen
           val ty = llvmType(receiver.tpe)
           val reg = newReg()
           emitLine(s"  $reg = extractvalue $ty $rv, $idx\n")
+          if isRefCountedType(resultT) then emitArrInc(reg, resultT)
+          if isRefCountedType(receiver.tpe) then emitArrDec(rv, receiver.tpe)
           reg
       case TyComplex =>
         val idx = fieldName match

@@ -968,6 +968,93 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "deep ARC for tuples and structs" should {
+    // Tuple holding a heap string. The slot's drop must release the
+    // string when the tuple goes out of scope. Tuples are addressed
+    // by destructuring in Nex source.
+    "tuple with a heap string destructures and the source var still works" in parityCheck(
+      """
+        |def main() =
+        |  val s = "hi" + "!"
+        |  val t = (s, 42)
+        |  val a, b = t
+        |  print(a)
+        |  print(s)
+      """.stripMargin,
+      "hi!\nhi!\n",
+    )
+
+    "stress: tuples-with-strings built and released in a loop" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 6 do
+        |    val s = "k=" + "v"
+        |    val t = (s, i)
+        |    val a, b = t
+        |    print(a)
+        |    i = i + 1
+      """.stripMargin,
+      "k=v\nk=v\nk=v\nk=v\nk=v\nk=v\n",
+    )
+
+    "struct with a string field releases it cleanly" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val w = Wrap("hello" + " world", 7)
+        |  print(w.msg)
+        |  print(w.n)
+      """.stripMargin,
+      "hello world\n7\n",
+    )
+
+    "stress: struct-with-string built and released in a loop" in parityCheck(
+      """
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val w = Wrap("tag" + "X", i)
+        |    print(w.msg)
+        |    i = i + 1
+      """.stripMargin,
+      "tagX\ntagX\ntagX\ntagX\ntagX\n",
+    )
+
+    "nested struct (Inner of string) releases every share" in parityCheck(
+      """
+        |struct Inner
+        |  s: string
+        |struct Outer
+        |  inner: Inner
+        |  tag: string
+        |def main() =
+        |  val o = Outer(Inner("a" + "1"), "b" + "2")
+        |  print(o.inner.s)
+        |  print(o.tag)
+      """.stripMargin,
+      "a1\nb2\n",
+    )
+
+    "struct re-binding inc's shares so both vars stay valid" in parityCheck(
+      """
+        |struct Wrap
+        |  s: string
+        |def main() =
+        |  val a = Wrap("x" + "y")
+        |  val b = a
+        |  print(a.s)
+        |  print(b.s)
+      """.stripMargin,
+      "xy\nxy\n",
+    )
+  }
+
   "deep ARC for closure env captures" should {
     // Capture a heap string by value into a closure. The dtor must dec
     // it when the env's last share dies, so the descriptor doesn't leak.

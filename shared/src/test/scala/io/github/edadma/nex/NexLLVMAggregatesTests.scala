@@ -154,3 +154,96 @@ class NexLLVMAggregatesTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("@__nex_arr1_alloc(i64 2, i64 16)")
     }
   }
+
+  "deep ARC for aggregates" should {
+    // A tuple holding a string is built from a TVarRef. The deep-ARC
+    // pass should emit a per-aggregate drop helper that dec's the
+    // string field when the tuple slot exits scope.
+    "tuple with refcounted field gets a drop helper that dec's the string" in {
+      val ir = compile("""
+        |def main() =
+        |  val s = "hi" + "!"
+        |  val t = (s, 42)
+        |  print(s)
+      """.stripMargin)
+      ir should include regex """define void @__nex_drop_tup_str_i64\(\{ ptr, i64 \} %v\)"""
+      // The drop helper extracts field 0 (string ptr) and calls __nex_str_dec.
+      val dropFn = ir.substring(ir.indexOf("@__nex_drop_tup_str_i64"))
+      dropFn should include("extractvalue { ptr, i64 } %v, 0")
+      dropFn should include("call void @__nex_str_dec(ptr ")
+    }
+
+    "tuple inc helper inc's each refcounted field" in {
+      val ir = compile("""
+        |def main() =
+        |  val s = "hi" + "!"
+        |  val t = (s, 42)
+        |  val u = t
+        |  print(s)
+      """.stripMargin)
+      // The val u = t re-binding triggers an inc on the loaded tuple
+      // value so u and t each own a share.
+      ir should include regex """define void @__nex_inc_tup_str_i64\(\{ ptr, i64 \} %v\)"""
+      val incFn = ir.substring(ir.indexOf("@__nex_inc_tup_str_i64"))
+      incFn should include("extractvalue { ptr, i64 } %v, 0")
+      incFn should include("call void @__nex_str_inc(ptr ")
+    }
+
+    "tuple of two strings gets a drop helper that dec's BOTH fields" in {
+      val ir = compile("""
+        |def main() =
+        |  val a = "a" + "b"
+        |  val b = "c" + "d"
+        |  val t = (a, b)
+        |  print(a)
+      """.stripMargin)
+      val dropFn = ir.substring(ir.indexOf("@__nex_drop_tup_str_str"))
+      dropFn should include("extractvalue { ptr, ptr } %v, 0")
+      dropFn should include("extractvalue { ptr, ptr } %v, 1")
+      // str_dec called twice in the helper body.
+      val decCalls = """call void @__nex_str_dec\(ptr """.r.findAllIn(dropFn).toList
+      decCalls.size should be >= 2
+    }
+
+    "struct with refcounted field gets a per-struct drop helper" in {
+      val ir = compile("""
+        |struct Wrap
+        |  msg: string
+        |  n: integer
+        |def main() =
+        |  val w = Wrap("k" + "v", 7)
+        |  print(w.msg)
+      """.stripMargin)
+      ir should include regex """define void @__nex_drop_struct_Wrap_str_i64\("""
+      val dropFn = ir.substring(ir.indexOf("@__nex_drop_struct_Wrap_str_i64"))
+      dropFn should include("extractvalue { ptr, i64 } %v, 0")
+      dropFn should include("call void @__nex_str_dec(ptr ")
+    }
+
+    "nested aggregate drop helper recurses into the inner drop" in {
+      val ir = compile("""
+        |def main() =
+        |  val s = "x" + "y"
+        |  val inner = (s, 1)
+        |  val outer = (inner, "z" + "")
+        |  print(s)
+      """.stripMargin)
+      // Outer's drop helper exists and calls the inner tuple's drop
+      // helper plus the string-field's dec.
+      val outerDrop = ir.substring(ir.indexOf("@__nex_drop_tup_tup_str_i64_str"))
+      outerDrop should include("call void @__nex_drop_tup_str_i64({ ptr, i64 } ")
+      outerDrop should include("call void @__nex_str_dec(ptr ")
+    }
+
+    "non-refcounted aggregate types don't generate any drop helper" in {
+      val ir = compile("""
+        |def main() =
+        |  val t = (1, 2, 3)
+        |  val a, b, c = t
+        |  print(a + b + c)
+      """.stripMargin)
+      // No refcounted fields → no per-aggregate helper.
+      ir should not include "@__nex_drop_tup_"
+      ir should not include "@__nex_inc_tup_"
+    }
+  }
