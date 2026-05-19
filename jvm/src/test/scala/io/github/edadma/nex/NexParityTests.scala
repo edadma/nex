@@ -417,6 +417,59 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     "to_real (int → real)"     in parityCheck("def main() = print(to_real(5))", "5.0\n")
   }
 
+  "rank-1 prelude reductions (Wave 1)" should {
+    "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
+    "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")
+    "sum of mixed → real" in parityCheck("def main() = print(sum([1.0, 2.0, 3.0, 4.0]))", "10.0\n")
+    "sum of an empty integer array is 0" in parityCheck(
+      """
+        |def main() =
+        |  val xs: [integer] = []
+        |  print(sum(xs))
+      """.stripMargin,
+      "0\n",
+    )
+
+    "product of integers"   in parityCheck("def main() = print(product([1, 2, 3, 4]))",       "24\n")
+    "product of reals"      in parityCheck("def main() = print(product([1.0, 2.0, 0.5]))",    "1.0\n")
+    "product of empty array is 1" in parityCheck(
+      """
+        |def main() =
+        |  val xs: [integer] = []
+        |  print(product(xs))
+      """.stripMargin,
+      "1\n",
+    )
+
+    "dot product (integer)" in parityCheck(
+      "def main() = print(dot([1, 2, 3], [4, 5, 6]))",
+      "32\n",   // 1*4 + 2*5 + 3*6
+    )
+    "dot product (real)" in parityCheck(
+      "def main() = print(dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]))",
+      "32.0\n",
+    )
+
+    // Dot-notation forms (method-call sugar; spec §4.9 / §10.4).
+    "sum via dot notation"      in parityCheck("def main() = print([1, 2, 3, 4].sum())",     "10\n")
+    "product via dot notation"  in parityCheck("def main() = print([1, 2, 3, 4].product())", "24\n")
+    "chained map.sum"           in parityCheck(
+      "def main() = print([1, 2, 3, 4].map(x -> x * x).sum())",
+      "30\n",
+    )
+  }
+
+  "rank-1 HOFs added in Wave 1" should {
+    "flatMap (inline)" in parityCheck(
+      "def main() = print([1, 2, 3].flatMap(x -> [x, -x]))",
+      "[1, -1, 2, -2, 3, -3]\n",
+    )
+    "flatMap (single-element acts like map)" in parityCheck(
+      "def main() = print([1, 2, 3].flatMap(x -> [x * x]))",
+      "[1, 4, 9]\n",
+    )
+  }
+
   "assertions (positive cases — passing assertions exit cleanly)" should {
     "assert(true)" in parityCheck(
       """

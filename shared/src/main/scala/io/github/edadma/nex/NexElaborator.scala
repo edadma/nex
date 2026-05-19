@@ -1691,6 +1691,18 @@ class NexElaborator:
           case TyInteger                              => TyArray(TyInteger, 1)
           case TyTuple(List(TyInteger, TyInteger))    => TyArray(TyInteger, 2)
           case _                                       => TyUnknown
+      // §10.4 rank-1 reductions — return the element type of the
+      // (first) array argument. Without an arg-aware path, the static
+      // default would be TyUnknown and downstream `print(sum(xs))`
+      // would silently drop the value.
+      case "sum" | "product" if args.size == 1 =>
+        args.head.tpe match
+          case TyArray(e, 1) => e
+          case _             => TyUnknown
+      case "dot" if args.size == 2 =>
+        args.head.tpe match
+          case TyArray(e, 1) => e
+          case _             => TyUnknown
       case _ => preludeReturnType(name)
 
   private def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr =
