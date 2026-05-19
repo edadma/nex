@@ -508,3 +508,61 @@ class NexParserTests extends AnyWordSpec with Matchers:
         VarRefExpr("n"))
     }
   }
+
+  // ========================================================================
+  // Semicolon as statement separator (spec §2.8)
+  // ========================================================================
+
+  "`;` as a statement separator" should {
+    "join two top-level declarations on one line" in {
+      val prog = parseProg("def f() = 1; def g() = 2")
+      prog.decls.size shouldBe 2
+      prog.decls(0).asInstanceOf[FunDeclAST].name shouldBe "f"
+      prog.decls(1).asInstanceOf[FunDeclAST].name shouldBe "g"
+    }
+
+    "join two block-level val declarations on one line" in {
+      val src =
+        """def main() =
+          |  val x = 1; val y = 2
+          |  x + y""".stripMargin
+      val prog = parseProg(src)
+      val body = prog.decls.head.asInstanceOf[FunDeclAST].body
+      val block = body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 2
+      block.items(0) shouldBe BlockDecl(ValDeclAST(VarPat("x"), None, IntLitExpr(1)))
+      block.items(1) shouldBe BlockDecl(ValDeclAST(VarPat("y"), None, IntLitExpr(2)))
+      block.result shouldBe BinOpExpr("+", VarRefExpr("x"), VarRefExpr("y"))
+    }
+
+    "mix `;` with newlines on the same line" in {
+      val src =
+        """def main() =
+          |  val a = 1; val b = 2; val c = 3
+          |  a + b + c""".stripMargin
+      val prog = parseProg(src)
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 3
+    }
+
+    "accept a trailing `;` on a block-item line" in {
+      val src =
+        """def main() =
+          |  val x = 1;
+          |  x""".stripMargin
+      val prog = parseProg(src)
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 1
+      block.result shouldBe VarRefExpr("x")
+    }
+
+    "treat repeated `;` like a single separator" in {
+      val src =
+        """def main() =
+          |  val x = 1;; val y = 2
+          |  x + y""".stripMargin
+      val prog = parseProg(src)
+      val block = prog.decls.head.asInstanceOf[FunDeclAST].body.asInstanceOf[BlockExpr]
+      block.items.size shouldBe 2
+    }
+  }

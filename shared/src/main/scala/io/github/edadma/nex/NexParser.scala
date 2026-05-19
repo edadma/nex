@@ -55,8 +55,23 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   // --- Program -----------------------------------------------------------
 
+  /** One or more statement-separator tokens: either Newlines or `;` (or any
+    * mix). `;` is an inline separator for multiple statements on one source
+    * line; Newline is the usual implicit terminator. The parser treats them
+    * interchangeably wherever statements appear in sequence.
+    */
+  private lazy val stmtSep: PackratParser[Any] =
+    rep1(Newline | ";")
+
+  /** Zero or more statement separators — used at the start / end of a
+    * block-like region where leading / trailing blank lines or `;` are
+    * harmless.
+    */
+  private lazy val stmtSepOpt: PackratParser[Any] =
+    rep(Newline | ";")
+
   lazy val program: PackratParser[ProgramAST] =
-    rep(Newline) ~> repsep(attributedDecl, rep1(Newline)) <~ rep(Newline) ^^ ProgramAST.apply
+    stmtSepOpt ~> repsep(attributedDecl, stmtSep) <~ stmtSepOpt ^^ ProgramAST.apply
 
   // --- Attribute prefix --------------------------------------------------
 
@@ -155,7 +170,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     }
 
   lazy val blockOfFields: PackratParser[List[StructField]] =
-    Newline ~> Indent ~> repsep(structField, rep1(Newline)) <~ rep(Newline) <~ Dedent
+    Newline ~> Indent ~> repsep(structField, stmtSep) <~ stmtSepOpt <~ Dedent
 
   lazy val structField: PackratParser[StructField] =
     ident ~ (":" ~> typeExpr) ^^ { case n ~ t => StructField(n, t) }
@@ -213,7 +228,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * If the last item is a decl, the implicit result is `unit`.
     */
   lazy val block: PackratParser[ExprAST] =
-    rep1sep(blockItem, rep1(Newline)) <~ rep(Newline) ^^ { items =>
+    rep1sep(blockItem, stmtSep) <~ stmtSepOpt ^^ { items =>
       items.last match
         case Right(e) if items.size == 1 => e
         case Right(e) =>

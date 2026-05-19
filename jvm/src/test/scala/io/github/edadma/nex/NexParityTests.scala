@@ -1320,3 +1320,37 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "7\n",
     )
   }
+
+  "`;` as a statement separator (spec §2.8)" should {
+    "join two block-level decls on a single source line" in parityCheck(
+      """
+        |def main() =
+        |  val x = 1; val y = 2
+        |  print(x + y)
+      """.stripMargin,
+      "3\n",
+    )
+    "three decls separated by `;` on one line" in parityCheck(
+      """
+        |def main() =
+        |  val a = 10; val b = 20; val c = 30
+        |  print(a + b + c)
+      """.stripMargin,
+      "60\n",
+    )
+    "two top-level functions on a single source line" in parityCheck(
+      """
+        |def f() = 1; def g() = 2
+        |def main() = print(f() + g())
+      """.stripMargin,
+      "3\n",
+    )
+    "trailing `;` is harmless" in parityCheck(
+      """
+        |def main() =
+        |  val x = 7;
+        |  print(x)
+      """.stripMargin,
+      "7\n",
+    )
+  }
