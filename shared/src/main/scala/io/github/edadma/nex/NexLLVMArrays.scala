@@ -100,9 +100,12 @@ protected trait NexLLVMArrays extends NexLLVMState:
         loadElem(stT, slot, llvmType(elem))
       case (r, ixs) =>
         notYet(s"index of rank $r with ${ixs.size} indices"); "0"
-    // If the element is itself an array (nested), the loaded value needs
-    // an inc since we shared it out of the slot — but v0 doesn't support
-    // nested arrays via TArrayLit, so skip for now.
+    // When the element is itself refcounted (string, nested array), the
+    // loaded value is a borrowed share from the slot. Inc so the caller
+    // has its own owning share — without this, a `print(arr[i])` would
+    // dec the slot's share to zero and free the inner descriptor while
+    // the array still claims to own it.
+    if isRefCountedType(elem) then emitArrInc(result, elem)
     emitArrDec(arrV, arr.tpe)
     result
 

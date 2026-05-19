@@ -902,6 +902,72 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  "deep ARC for arrays of refcounted elements" should {
+    // Reading the same element twice used to corrupt the slot: index-load
+    // gave a borrowed ptr; print's dec drove the string to rc=0 and freed
+    // the descriptor while the slot still pointed at it. The deep-dec
+    // patch adds an inc on element load so the caller has its own share.
+    "reading the same string element twice is safe" in parityCheck(
+      """
+        |def main() =
+        |  val arr = ["x" + "y"]
+        |  print(arr[0])
+        |  print(arr[0])
+      """.stripMargin,
+      "xy\nxy\n",
+    )
+
+    "freeing an array of computed strings doesn't leak the elements" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 4 do
+        |    val arr = ["a" + "b", "c" + "d"]
+        |    print(arr[0])
+        |    print(arr[1])
+        |    i = i + 1
+      """.stripMargin,
+      "ab\ncd\nab\ncd\nab\ncd\nab\ncd\n",
+    )
+
+    "var-captured string + array share the same descriptor cleanly" in parityCheck(
+      """
+        |def main() =
+        |  val s = "hi" + " there"
+        |  val arr = [s, s]
+        |  print(arr[0])
+        |  print(arr[1])
+        |  print(s)
+      """.stripMargin,
+      "hi there\nhi there\nhi there\n",
+    )
+
+    "stress: array of strings built and released in a loop" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 8 do
+        |    val arr = ["k=" + "v", "n=" + "m"]
+        |    val first = arr[0]
+        |    print(first)
+        |    i = i + 1
+      """.stripMargin,
+      "k=v\nk=v\nk=v\nk=v\nk=v\nk=v\nk=v\nk=v\n",
+    )
+
+    "rank-2 array of strings releases every element on free" in parityCheck(
+      """
+        |def main() =
+        |  val grid = [["a" + "1", "b" + "2"], ["c" + "3", "d" + "4"]]
+        |  print(grid[0, 0])
+        |  print(grid[0, 1])
+        |  print(grid[1, 0])
+        |  print(grid[1, 1])
+      """.stripMargin,
+      "a1\nb2\nc3\nd4\n",
+    )
+  }
+
   "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {
     "with an integer ref" in parityCheck(
       """

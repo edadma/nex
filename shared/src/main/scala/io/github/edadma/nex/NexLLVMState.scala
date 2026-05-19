@@ -408,11 +408,64 @@ protected trait NexLLVMState:
     case 2 => "@__nex_arr2_inc"
     case _ => "@__nex_arr1_inc"
 
-  /** Pick the right ARC dec helper based on the array's static rank. */
-  protected def arrDecFor(t: Type): String = arrayRank(t) match
-    case 1 => "@__nex_arr1_dec"
-    case 2 => "@__nex_arr2_dec"
-    case _ => "@__nex_arr1_dec"
+  /** Pick the right ARC dec helper based on the array's rank AND element
+    * type. For arrays whose element type is itself refcounted (strings,
+    * nested arrays), this returns a per-element-type deep-dec variant
+    * and registers it for emission. The deep variant walks the buffer
+    * and dec's each element before freeing — without it, releasing the
+    * outer descriptor would leak every inner refcounted descriptor.
+    */
+  protected def arrDecFor(t: Type): String =
+    val rank = arrayRank(t)
+    val elem = arrayElem(t)
+    val flat = rank match
+      case 1 => "@__nex_arr1_dec"
+      case 2 => "@__nex_arr2_dec"
+      case _ => "@__nex_arr1_dec"
+    if !deepDecEligible(elem) then flat
+    else
+      val name = s"@__nex_arr${rank}_dec_${typeMangle(elem)}"
+      val key  = (rank, elem)
+      if !deepDecEmitted.contains(key) then deepDecPending += key
+      name
+
+  /** Element types for which we generate per-element-type deep-dec
+    * helpers. Strings and nested arrays carry refcounts and are stored
+    * as plain ptr slots, so a single load + matching dec call works
+    * uniformly. Closure values are `{ ptr, ptr }` (16 bytes) — they
+    * don't fit the 8-byte slot stride v0 assumes and are not yet
+    * supported as array elements. Tuples / structs holding refcounted
+    * fields are a separate follow-up (their dec walk needs field
+    * traversal, not just a single element dec).
+    */
+  protected def deepDecEligible(elem: Type): Boolean = elem match
+    case TyString      => true
+    case TyArray(_, _) => true
+    case _             => false
+
+  /** Stable mangling of a Nex type for use in generated symbol names.
+    * Strings and primitive scalars get short tags; nested arrays
+    * recurse so `[[String]]` mangles to `arr1_str`. Only the cases we
+    * actually generate helpers for are exhaustively named; everything
+    * else falls through to `any` (currently unused — guarded by
+    * [[deepDecEligible]]).
+    */
+  protected def typeMangle(t: Type): String = t match
+    case TyString      => "str"
+    case TyInteger     => "i64"
+    case TyReal        => "f64"
+    case TyBool        => "i1"
+    case TyComplex     => "complex"
+    case TyArray(e, r) => s"arr${r}_${typeMangle(e)}"
+    case _             => "any"
+
+  /** Per-element-type deep-dec helpers that still need an emitted
+    * definition. Populated by [[arrDecFor]] each time a previously
+    * unseen `(rank, elem)` pair is requested; drained by
+    * `flushDeepDecs` at end-of-module.
+    */
+  protected val deepDecPending = mutable.LinkedHashSet.empty[(Int, Type)]
+  protected val deepDecEmitted = mutable.Set.empty[(Int, Type)]
 
   /** Emit an inc-refcount call appropriate for [[t]]. For arrays the
     * SSA `value` is the array descriptor ptr; for closures it's the

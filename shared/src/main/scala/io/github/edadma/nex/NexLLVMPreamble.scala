@@ -574,6 +574,125 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |""".stripMargin,
     )
 
+  /** Flush every pending per-element-type deep-dec helper to the module.
+    * Drains [[deepDecPending]] (which may grow during emission — a deep
+    * dec for `[[String]]` registers an inner helper for `[String]`)
+    * until stable.
+    */
+  protected def flushDeepDecs(): Unit =
+    while deepDecPending.nonEmpty do
+      val key @ (rank, elem) = deepDecPending.head
+      deepDecPending -= key
+      if !deepDecEmitted.contains(key) then
+        deepDecEmitted += key
+        rank match
+          case 1 => emitDeepDec1Helper(elem)
+          case 2 => emitDeepDec2Helper(elem)
+          case _ => ()
+
+  /** Element-dec call text for a single element of a deep-dec body. The
+    * value register `valReg` holds the slot's loaded ptr; this returns
+    * the LLVM IR instruction(s) that dec it according to its static
+    * type. Calling [[arrDecFor]] here may register additional deep
+    * helpers for nested arrays.
+    */
+  private def elemDecCallIR(elem: Type, valReg: String): String = elem match
+    case TyString      => s"  call void @__nex_str_dec(ptr $valReg)\n"
+    case TyArray(_, _) => s"  call void ${arrDecFor(elem)}(ptr $valReg)\n"
+    case other         => s"  ; unsupported deep-dec elem $other\n"
+
+  /** Emit `define void @__nex_arr1_dec_<mangle>(ptr %a)` — the deep-dec
+    * variant that walks each refcounted element before freeing the
+    * descriptor and buffer. Body otherwise mirrors `__nex_arr1_dec`.
+    */
+  protected def emitDeepDec1Helper(elem: Type): Unit =
+    val name = s"__nex_arr1_dec_${typeMangle(elem)}"
+    val elemDec = elemDecCallIR(elem, "%v")
+    out.append(
+      s"""define void @$name(ptr %a) {
+         |entry:
+         |  %is_null = icmp eq ptr %a, null
+         |  br i1 %is_null, label %done, label %dec
+         |dec:
+         |  %rcp = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 0
+         |  %rc  = load i64, ptr %rcp
+         |  %new = sub i64 %rc, 1
+         |  store i64 %new, ptr %rcp
+         |  %iz  = icmp eq i64 %new, 0
+         |  br i1 %iz, label %walk, label %done
+         |walk:
+         |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
+         |  %len = load i64, ptr %lp
+         |  %dp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
+         |  %buf = load ptr, ptr %dp
+         |  br label %loop_hdr
+         |loop_hdr:
+         |  %i = phi i64 [0, %walk], [%i1, %loop_body]
+         |  %cmp = icmp slt i64 %i, %len
+         |  br i1 %cmp, label %loop_body, label %free_it
+         |loop_body:
+         |  %slot = getelementptr inbounds ptr, ptr %buf, i64 %i
+         |  %v = load ptr, ptr %slot
+         |${elemDec}  %i1 = add i64 %i, 1
+         |  br label %loop_hdr
+         |free_it:
+         |  call void @free(ptr %buf)
+         |  call void @free(ptr %a)
+         |  br label %done
+         |done:
+         |  ret void
+         |}
+         |
+         |""".stripMargin,
+    )
+
+  /** Rank-2 sibling of [[emitDeepDec1Helper]]. Length is `rows * cols`;
+    * the buffer is row-major (matches `emitArrayLit`).
+    */
+  protected def emitDeepDec2Helper(elem: Type): Unit =
+    val name = s"__nex_arr2_dec_${typeMangle(elem)}"
+    val elemDec = elemDecCallIR(elem, "%v")
+    out.append(
+      s"""define void @$name(ptr %a) {
+         |entry:
+         |  %is_null = icmp eq ptr %a, null
+         |  br i1 %is_null, label %done, label %dec
+         |dec:
+         |  %rcp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 0
+         |  %rc  = load i64, ptr %rcp
+         |  %new = sub i64 %rc, 1
+         |  store i64 %new, ptr %rcp
+         |  %iz  = icmp eq i64 %new, 0
+         |  br i1 %iz, label %walk, label %done
+         |walk:
+         |  %rp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
+         |  %rs  = load i64, ptr %rp
+         |  %cp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+         |  %cs  = load i64, ptr %cp
+         |  %len = mul i64 %rs, %cs
+         |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+         |  %buf = load ptr, ptr %dp
+         |  br label %loop_hdr
+         |loop_hdr:
+         |  %i = phi i64 [0, %walk], [%i1, %loop_body]
+         |  %cmp = icmp slt i64 %i, %len
+         |  br i1 %cmp, label %loop_body, label %free_it
+         |loop_body:
+         |  %slot = getelementptr inbounds ptr, ptr %buf, i64 %i
+         |  %v = load ptr, ptr %slot
+         |${elemDec}  %i1 = add i64 %i, 1
+         |  br label %loop_hdr
+         |free_it:
+         |  call void @free(ptr %buf)
+         |  call void @free(ptr %a)
+         |  br label %done
+         |done:
+         |  ret void
+         |}
+         |
+         |""".stripMargin,
+    )
+
   /** Runs every top-level binding initializer in declaration order. The
     * function returns void and is called once from `main`'s entry block.
     * Functions are already initialized at compile time (each is a

@@ -91,6 +91,12 @@ class NexLLVMCodegen
     // uses `@.str.N` works even though the constant is defined below.
     flushStringPool()
 
+    // Emit any per-element-type deep-dec helpers that were registered
+    // by [[arrDecFor]] during function-body emission. The flush loop
+    // is fixed-point — a deep dec for `[[String]]` registers an
+    // inner helper for `[String]` while emitting.
+    flushDeepDecs()
+
     out.toString
 
   // ---------------------------------------------------------------------------
