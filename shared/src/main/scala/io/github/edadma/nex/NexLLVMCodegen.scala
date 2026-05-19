@@ -270,13 +270,17 @@ class NexLLVMCodegen
     case TBinOp("or",  l, r, _, _) => emitShortCircuit(l, r, isAnd = false)
 
     case TBinOp("+", l, r, _, TyString) =>
-      // String concat. Both operands are %nex_str descriptor pointers;
-      // result is a fresh heap descriptor with refcount=1 (leaked under
-      // the phase-1 ARC model — proper lifetime tracking is a follow-up).
+      // String concat. Both operands are owning %nex_str descriptor
+      // pointers (TVarRef inc'd a share at load, or they're already-
+      // owning concat / value-to-string results). After concat the
+      // result has refcount=1 and we release the operand shares —
+      // immortal-literal shares are silently no-op'd by __nex_str_dec.
       val lv = emitExpr(l)
       val rv = emitExpr(r)
       val res = newReg()
       emitLine(s"  $res = call ptr @__nex_str_concat(ptr $lv, ptr $rv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $lv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $rv)\n")
       res
 
     case TBinOp(op, l, r, _, TyComplex) =>
@@ -1241,6 +1245,7 @@ class NexLLVMCodegen
       emitLine(s"  $curS = load ptr, ptr $accSlot\n")
       val withSep = newReg()
       emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $curS, ptr $sep)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $curS)\n")
       emitLine(s"  store ptr $withSep, ptr $accSlot\n")
       emitTerminator(s"  br label %$afterS\n")
       startBlock(ifFirst)
@@ -1254,12 +1259,15 @@ class NexLLVMCodegen
       emitLine(s"  $cur2 = load ptr, ptr $accSlot\n")
       val with2 = newReg()
       emitLine(s"  $with2 = call ptr @__nex_str_concat(ptr $cur2, ptr $elemS)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $cur2)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $elemS)\n")
       emitLine(s"  store ptr $with2, ptr $accSlot\n")
     }
     val finalAcc = newReg()
     emitLine(s"  $finalAcc = load ptr, ptr $accSlot\n")
     val withClose = newReg()
     emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $finalAcc, ptr $close)\n")
+    emitLine(s"  call void @__nex_str_dec(ptr $finalAcc)\n")
     withClose
 
   /** Build a `[[a, b], [c, d]]` descriptor for a rank-2 array. Outer
@@ -1294,16 +1302,17 @@ class NexLLVMCodegen
       emitLine(s"  $curS = load ptr, ptr $accSlot\n")
       val withSep = newReg()
       emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $curS, ptr $sep)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $curS)\n")
       emitLine(s"  store ptr $withSep, ptr $accSlot\n")
       emitTerminator(s"  br label %$afterS\n")
       startBlock(ifFst)
       emitTerminator(s"  br label %$afterS\n")
       startBlock(afterS)
-      // Open the inner row.
       val curOpen = newReg()
       emitLine(s"  $curOpen = load ptr, ptr $accSlot\n")
       val withOpen = newReg()
       emitLine(s"  $withOpen = call ptr @__nex_str_concat(ptr $curOpen, ptr $open)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $curOpen)\n")
       emitLine(s"  store ptr $withOpen, ptr $accSlot\n")
       val rowOff = newReg()
       emitLine(s"  $rowOff = mul i64 $i, $cols\n")
@@ -1319,6 +1328,7 @@ class NexLLVMCodegen
         emitLine(s"  $curSj = load ptr, ptr $accSlot\n")
         val withSepJ = newReg()
         emitLine(s"  $withSepJ = call ptr @__nex_str_concat(ptr $curSj, ptr $sep)\n")
+        emitLine(s"  call void @__nex_str_dec(ptr $curSj)\n")
         emitLine(s"  store ptr $withSepJ, ptr $accSlot\n")
         emitTerminator(s"  br label %$jAfter\n")
         startBlock(jFst)
@@ -1334,18 +1344,22 @@ class NexLLVMCodegen
         emitLine(s"  $cur2 = load ptr, ptr $accSlot\n")
         val with2 = newReg()
         emitLine(s"  $with2 = call ptr @__nex_str_concat(ptr $cur2, ptr $elemS)\n")
+        emitLine(s"  call void @__nex_str_dec(ptr $cur2)\n")
+        emitLine(s"  call void @__nex_str_dec(ptr $elemS)\n")
         emitLine(s"  store ptr $with2, ptr $accSlot\n")
       }
       val curClose = newReg()
       emitLine(s"  $curClose = load ptr, ptr $accSlot\n")
       val withClose = newReg()
       emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $curClose, ptr $close)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $curClose)\n")
       emitLine(s"  store ptr $withClose, ptr $accSlot\n")
     }
     val finalAcc = newReg()
     emitLine(s"  $finalAcc = load ptr, ptr $accSlot\n")
     val withClose = newReg()
     emitLine(s"  $withClose = call ptr @__nex_str_concat(ptr $finalAcc, ptr $close)\n")
+    emitLine(s"  call void @__nex_str_dec(ptr $finalAcc)\n")
     withClose
 
   /** Like [[emitValueToString]] but takes an already-emitted SSA value
@@ -1354,7 +1368,13 @@ class NexLLVMCodegen
     */
   protected def emitTypedValueToString(v: String, t: Type): String =
     t match
-      case TyString  => v   // already a descriptor
+      case TyString  =>
+        // `v` was loaded out of an aggregate (extractvalue / loadElem)
+        // and carries no ownership — inc here so the caller (concat
+        // chain or print site) can dec uniformly with every other
+        // typed-formatter result.
+        emitLine(s"  call void @__nex_str_inc(ptr $v)\n")
+        v
       case TyInteger => emitValueToStringInt(v)
       case TyReal    => emitValueToStringReal(v)
       case TyBool    => emitValueToStringBool(v)
@@ -1365,8 +1385,12 @@ class NexLLVMCodegen
       case other =>
         notYet(s"value-to-string for nested $other"); internStringDescriptor("")
 
-  /** Fold a list of descriptor pointers down to one via repeated
-    * __nex_str_concat. Empty list → empty-string descriptor.
+  /** Fold a list of owning descriptor pointers down to one via repeated
+    * __nex_str_concat, releasing each operand share as it's consumed.
+    * Empty list → empty-string literal descriptor (immortal). Single-
+    * element list → the input untouched (caller owns it). Immortal
+    * literals are silently skipped by __nex_str_dec, so mixing
+    * computed and literal parts is safe.
     */
   protected def concatChain(parts: List[String]): String =
     parts match
@@ -1376,6 +1400,8 @@ class NexLLVMCodegen
         ds.foldLeft(d) { (acc, next) =>
           val r = newReg()
           emitLine(s"  $r = call ptr @__nex_str_concat(ptr $acc, ptr $next)\n")
+          emitLine(s"  call void @__nex_str_dec(ptr $acc)\n")
+          emitLine(s"  call void @__nex_str_dec(ptr $next)\n")
           r
         }
 

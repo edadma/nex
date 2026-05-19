@@ -821,6 +821,40 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "msg: hello, world\n",
     )
+
+    // TyString-ARC stress: each iteration concats a fresh result. Without
+    // refcounting every iteration leaks an intermediate descriptor; with
+    // refcounting concat operands and the val slot all release cleanly.
+    "many concats in a loop release intermediates each iteration" in parityCheck(
+      """
+        |def main() =
+        |  var i = 0
+        |  while i < 5 do
+        |    val s = "step " + "done"
+        |    print(s)
+        |    i = i + 1
+      """.stripMargin,
+      "step done\nstep done\nstep done\nstep done\nstep done\n",
+    )
+
+    "long left-associated concat chain has no double-free" in parityCheck(
+      """
+        |def main() =
+        |  val s = "a" + "b" + "c" + "d" + "e" + "f"
+        |  print(s)
+      """.stripMargin,
+      "abcdef\n",
+    )
+
+    "interpolated string in a loop releases each iteration's result" in parityCheck(
+      """
+        |def main() =
+        |  for i in 1..=3 do
+        |    val msg = s"step $i complete"
+        |    print(msg)
+      """.stripMargin,
+      "step 1 complete\nstep 2 complete\nstep 3 complete\n",
+    )
   }
 
   "interpolated `s\"...\"` at value position (Wave 6 phase 3)" should {

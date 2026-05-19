@@ -57,6 +57,7 @@ protected trait NexLLVMPrint extends NexLLVMState:
                 val data = newReg()
                 emitLine(s"  $data = call ptr @__nex_str_data(ptr $v)\n")
                 emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str, ptr $data)\n")
+                emitLine(s"  call void @__nex_str_dec(ptr $v)\n")
               case other =>
                 notYet(s"print(${other})")
 
@@ -86,6 +87,7 @@ protected trait NexLLVMPrint extends NexLLVMState:
         val data = newReg()
         emitLine(s"  $data = call ptr @__nex_str_data(ptr $v)\n")
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $data)\n")
+        emitLine(s"  call void @__nex_str_dec(ptr $v)\n")
       case TyArray(_, _) =>
         emitPrintArray(arg)
       case TyTuple(_) =>

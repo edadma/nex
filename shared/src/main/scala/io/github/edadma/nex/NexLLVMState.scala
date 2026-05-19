@@ -392,13 +392,15 @@ protected trait NexLLVMState:
     case TyFunc(_, _) => true
     case _            => false
 
-  /** Types that participate in scope-based refcounting. Array and
-    * closure are tracked uniformly through [[arrayLocalSlots]] /
+  /** Types that participate in scope-based refcounting. Array, closure,
+    * and string are tracked uniformly through [[arrayLocalSlots]] /
     * [[blockArrayScopes]]; the load shape and dec helper differ but
-    * the registration / decrement timing is identical.
+    * the registration / decrement timing is identical. String literals
+    * carry the immortal sentinel (rc=-1), so inc/dec on them is a
+    * no-op — only heap-allocated descriptors actually free.
     */
   protected def isRefCountedType(t: Type): Boolean =
-    isArrayType(t) || isClosureType(t)
+    isArrayType(t) || isClosureType(t) || t == TyString
 
   /** Pick the right ARC inc helper based on the array's static rank. */
   protected def arrIncFor(t: Type): String = arrayRank(t) match
@@ -424,6 +426,8 @@ protected trait NexLLVMState:
       val env = newReg()
       emitLine(s"  $env = extractvalue { ptr, ptr } $value, 1\n")
       emitLine(s"  call void @__nex_env_inc(ptr $env)\n")
+    else if t == TyString then
+      emitLine(s"  call void @__nex_str_inc(ptr $value)\n")
 
   /** Symmetric dec — see [[emitArrInc]] for shape semantics. */
   protected def emitArrDec(value: String, t: Type): Unit =
@@ -433,6 +437,8 @@ protected trait NexLLVMState:
       val env = newReg()
       emitLine(s"  $env = extractvalue { ptr, ptr } $value, 1\n")
       emitLine(s"  call void @__nex_env_dec(ptr $env)\n")
+    else if t == TyString then
+      emitLine(s"  call void @__nex_str_dec(ptr $value)\n")
 
   /** Decrement-ref every slot registered as an array-typed local in the
     * current function — innermost block first, then the function-level
