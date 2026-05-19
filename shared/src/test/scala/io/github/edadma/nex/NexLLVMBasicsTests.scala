@@ -46,6 +46,23 @@ class NexLLVMBasicsTests extends AnyWordSpec with NexCodegenTestBase:
     }
   }
 
+  "real shortest-round-trip print" should {
+    "declares strtod and emits the shortest-round-trip helper" in {
+      val ir = compile("def main() = print(0.1 + 0.2)")
+      ir should include("declare double @strtod(ptr, ptr)")
+      ir should include("define void @__nex_print_real_shortest(double %v)")
+      // The helper loops through precisions and builds a "%.{p}g" format.
+      ir should include("@.fmt_real_prec_g")
+      ir should include("call double @strtod(ptr")
+    }
+    "routes non-whole reals through the shortest helper, not %g directly" in {
+      val ir = compile("def main() = print(0.1 + 0.2)")
+      // The generic branch of __nex_print_real_raw calls the shortest
+      // helper instead of printing %g eagerly.
+      ir should include("call void @__nex_print_real_shortest(double")
+    }
+  }
+
   "integer arithmetic" should {
     "emit add/sub/mul/sdiv for + - * /" in {
       val ir = compile("""

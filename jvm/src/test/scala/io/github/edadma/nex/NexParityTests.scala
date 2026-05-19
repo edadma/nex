@@ -1419,3 +1419,49 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "99\n",
     )
   }
+
+  "real shortest-round-trip print (Ryu-equivalent via iterative %.Ng)" should {
+    "0.1 + 0.2 prints all 17 round-trip digits, not %g's 6" in parityCheck(
+      "def main() = print(0.1 + 0.2)",
+      "0.30000000000000004\n",
+    )
+    "1.0 / 3.0 prints 16-digit repeating mantissa" in parityCheck(
+      "def main() = print(1.0 / 3.0)",
+      "0.3333333333333333\n",
+    )
+    "2.0 / 7.0 prints its shortest round-trip" in parityCheck(
+      "def main() = print(2.0 / 7.0)",
+      "0.2857142857142857\n",
+    )
+    "values that round-trip at low precision stay short" in parityCheck(
+      """
+        |def main() =
+        |  print(0.5)
+        |  print(0.25)
+        |  print(0.125)
+      """.stripMargin,
+      "0.5\n0.25\n0.125\n",
+    )
+    "whole reals still print with the `.0` suffix" in parityCheck(
+      """
+        |def main() =
+        |  print(3.0)
+        |  print(1.5 + 1.5)
+      """.stripMargin,
+      "3.0\n3.0\n",
+    )
+    "non-whole reals printed inside an array match the interpreter" in parityCheck(
+      """
+        |def main() = print([0.1 + 0.2, 1.0 / 3.0])
+      """.stripMargin,
+      "[0.30000000000000004, 0.3333333333333333]\n",
+    )
+    "non-whole reals printed inside a tuple match the interpreter" in parityCheck(
+      """
+        |def main() =
+        |  val t = (0.1 + 0.2, 1.0 / 3.0)
+        |  print(t)
+      """.stripMargin,
+      "(0.30000000000000004, 0.3333333333333333)\n",
+    )
+  }

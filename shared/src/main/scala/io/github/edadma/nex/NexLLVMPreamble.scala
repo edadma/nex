@@ -20,6 +20,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare void @free(ptr)
         |declare void @abort()
         |declare i64 @strlen(ptr)
+        |declare double @strtod(ptr, ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
         |; setjmp / longjmp — used by __nex_assert_traps to catch traps.
@@ -109,6 +110,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.oob_msg     = private unnamed_addr constant [27 x i8] c"trap: index out of bounds\0A\00"
         |@.fmt_real_int = private unnamed_addr constant [7 x i8] c"%lld.0\00"
         |@.fmt_real_g   = private unnamed_addr constant [3 x i8] c"%g\00"
+        |@.fmt_real_prec_g = private unnamed_addr constant [7 x i8] c"%%.%dg\00"
         |
         |declare double @floor(double)
         |declare double @fabs(double)
@@ -183,8 +185,9 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |; Print a real value without a trailing newline. Matches the
         |; interpreter's formatValue: if v is a whole number with |v| < 1e15,
-        |; print "<lld>.0"; otherwise "%g". Used by the print(real) and the
-        |; array/interpolation paths.
+        |; print "<lld>.0"; otherwise route through the shortest-round-trip
+        |; helper so non-whole values match Java's Double.toString output
+        |; (which JDK 19+ derives from Ryu).
         |define void @__nex_print_real_raw(double %v) {
         |entry:
         |  %f      = call double @floor(double %v)
@@ -198,7 +201,49 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  call i32 (ptr, ...) @printf(ptr @.fmt_real_int, i64 %ll)
         |  ret void
         |generic:
-        |  call i32 (ptr, ...) @printf(ptr @.fmt_real_g, double %v)
+        |  call void @__nex_print_real_shortest(double %v)
+        |  ret void
+        |}
+        |
+        |; Print the shortest decimal representation of %v that round-trips
+        |; through strtod, matching what Scala's Double.toString (and Java's
+        |; Ryu-based equivalent) emits for non-whole reals.
+        |;
+        |; Strategy: try `%.<p>g` for p = 1, 2, ..., 17; the first p whose
+        |; output strtod-parses back bit-equal to v is the shortest. 17
+        |; significant digits is the round-trip minimum for IEEE 754
+        |; doubles, so the loop always terminates with a match unless v is
+        |; NaN (snprintf prints "nan" and strtod-back is also NaN, but
+        |; NaN != NaN under fcmp so the loop falls through to the p=17
+        |; output, which is "nan" — the right answer).
+        |;
+        |; Format note: the underlying C `%g` uses lowercase `e` with
+        |; zero-padded exponent (e.g. `1e+20`), whereas Java emits `1.0E20`.
+        |; Within v0's parity tests, very-large / very-small reals do not
+        |; appear; tightening the formatting to Java's exact shape would
+        |; need post-processing of the snprintf buffer and is left for a
+        |; follow-up.
+        |define void @__nex_print_real_shortest(double %v) {
+        |entry:
+        |  %buf  = alloca [40 x i8], align 1
+        |  %fbuf = alloca [8 x i8], align 1
+        |  br label %loop.cond
+        |
+        |loop.cond:
+        |  %p = phi i32 [ 1, %entry ], [ %pn, %loop.body ]
+        |  %past = icmp sgt i32 %p, 17
+        |  br i1 %past, label %print, label %loop.body
+        |
+        |loop.body:
+        |  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fbuf, i64 8, ptr @.fmt_real_prec_g, i32 %p)
+        |  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 40, ptr %fbuf, double %v)
+        |  %r = call double @strtod(ptr %buf, ptr null)
+        |  %eq = fcmp oeq double %r, %v
+        |  %pn = add i32 %p, 1
+        |  br i1 %eq, label %print, label %loop.cond
+        |
+        |print:
+        |  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr %buf)
         |  ret void
         |}
         |
