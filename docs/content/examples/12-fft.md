@@ -55,13 +55,13 @@ Output (DC term `Y[0]` is the sum of inputs; real input gives `Y[k] = conj(Y[N-k
 ```
 FFT of [1, 1, 1, 1, 0, 0, 0, 0]:
 4.0+0.0i
-1.0-2.41421i
+1.0-2.414213562373095i
 0.0+0.0i
-1.0-0.414214i
+1.0-0.4142135623730949i
 0.0+0.0i
-1+0.414214i
+0.9999999999999999+0.4142135623730949i
 0.0+0.0i
-1+2.41421i
+0.9999999999999997+2.414213562373095i
 ```
 
 The full source lives at `examples/fft/main.nex`. Change `x` to any power-of-2 length and the same code transforms it.

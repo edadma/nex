@@ -21,7 +21,8 @@ Note that *language* version and *compiler* version are tracked independently. A
 - Default parameter values (`def f(x: real = 0.0) = ...`)
 - Named arguments at call sites (`f(x = 1.0, y = 2.0)`)
 - Function calls in `const` expressions (compile-time evaluation of pure-function calls)
-- Formatted output with precision / padding / hex specifiers (`f"..."` literals and format specifiers in the `format()` function)
+- Formatted output: positional `{}` substitution in `format()`, plus precision / padding / hex specifiers (`f"..."` literals and `format()` directives)
+- Array and complex overloads of `assert_approx` — currently the scalar `assert_approx(real, real, real)` is the only form; element-wise array forms and the complex-valued form are useful for testing numeric code at higher rank
 
 ## 11.2 Deferred to v1.0+
 

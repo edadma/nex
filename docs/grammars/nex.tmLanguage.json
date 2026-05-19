@@ -178,7 +178,7 @@
       "patterns": [
         {
           "name": "keyword.control.nex",
-          "match": "\\b(if|then|else|for|in|do|while|return|end)\\b"
+          "match": "\\b(if|then|else|elif|for|in|do|while|return|end)\\b"
         },
         {
           "name": "storage.modifier.nex",

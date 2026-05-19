@@ -509,7 +509,7 @@ identity(3)                                     // 3×3 identity matrix
 print("hello")                                  // with newline
 print()                                         // newline alone
 print(s"x = $x")                                // interpolated (preferred)
-val s = format("x={}, y={}", 1, 2)              // dynamic format string
+val s = format("x =", x, "y =", y)              // join args with spaces
 ```
 
 ## Prelude — conversions

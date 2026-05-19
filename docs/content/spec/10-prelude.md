@@ -145,12 +145,12 @@ identity(n: integer): [[real]]          // n × n identity matrix
 ```nex
 print(x: T)                  // print value with newline
 print()                      // print newline alone
-format(fmt: string, args...): string   // format args per fmt
+format(args...): string      // join args (in default form) with single spaces
 ```
 
-For string composition, prefer interpolated string literals (`s"x = $x"`, see the Lexical chapter) — they are the idiomatic form. The `format` function exists for the less common case where the format string itself is computed at runtime.
+For string composition, prefer interpolated string literals (`s"x = $x"`, see the Lexical chapter) — they are the idiomatic form. The `format` function is currently a minimal helper that converts each argument with the same rules as `print` (whole reals as `n.0`, strings unquoted, structs as `Name { ... }`) and joins them with single spaces; it does not interpret a format string.
 
-The `format` function uses simple positional substitution: `{}` is replaced by successive arguments converted to strings. Type-aware formatting (precision, padding, etc.) is *deferred to v1+*.
+Positional `{}` substitution and type-aware formatting (precision, padding, hex specifiers, the `f"..."` literal form) are *deferred to v0.1+*.
 
 ## 10.7 Type conversions
 
@@ -170,15 +170,13 @@ For use in test functions (see the Functions chapter) and test modules (see the 
 assert(cond: bool)
 assert(cond: bool, msg: string)
 assert_eq(actual: T, expected: T)
-assert_eq(actual: T, expected: T, msg: string)
 assert_approx(actual: real, expected: real, tol: real)
-assert_approx(actual: [real], expected: [real], tol: real)
-assert_approx(actual: complex, expected: complex, tol: real)
 assert_traps(thunk: () -> T)
+assert_traps(thunk: () -> T, expected_substring: string)
 ```
 
-All assertions trap on failure with structured information (source location, the compared values, the user-supplied `msg` if any). The test runner catches the trap and reports the failure without halting the rest of the test suite.
+All assertions trap on failure with a message naming the assertion type and (where applicable) the user-supplied `msg`. The test runner catches the trap and reports the failure without halting the rest of the test suite.
 
-**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect.
+**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. (Array and complex overloads of `assert_approx` are *deferred to v0.1+*.)
 
-`assert_traps` takes a zero-argument closure and passes if invoking it traps; it fails if the thunk returns normally. Useful for testing that error paths fire.
+`assert_traps` takes a zero-argument closure and passes if invoking it traps; it fails if the thunk returns normally. The 2-arg form additionally checks that the trap message contains `expected_substring` — useful for asserting a specific failure mode rather than "any trap fires".

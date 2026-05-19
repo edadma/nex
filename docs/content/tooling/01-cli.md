@@ -7,15 +7,20 @@ weight: 10
 ## Subcommands
 
 ```bash
-nex tokens    <file>      # lex; print the token stream
-nex parse     <file>      # lex + parse; print the AST
-nex elaborate <file>      # parse + name resolution; print the typed AST
-nex run       <file>      # parse, elaborate, execute via the tree-walking interpreter
-nex test      <file>      # discover and run every @test function reachable from <file>'s project root
-nex compile   <file>      # emit LLVM IR and invoke clang -O1 to produce a native binary
+nex tokens    <file>                # lex; print the token stream
+nex parse     <file>                # lex + parse; print the AST
+nex elaborate <file>                # parse + name resolution; print the typed AST
+nex run       <file>                # parse, elaborate, execute via the tree-walking interpreter
+nex test      <file>                # discover and run every @test function reachable from <file>'s project root
+nex compile [--backend B] <file>    # emit IR and invoke a backend toolchain to produce a native binary
 ```
 
 `<file>` is always a single `.nex` source. For `test` and `compile`, the directory containing `<file>` is the project root — the import graph is discovered from there.
+
+`--backend` (only for `compile`) selects the codegen pipeline:
+
+- `llvm` (default) — emits LLVM IR text and invokes `clang -O1`. Covers the full language surface.
+- `mlir` — emits MLIR via `linalg` / `arith` / `scf` dialects and runs `mlir-opt` → `mlir-translate` → `clang -O1`. **Experimental** and currently limited to the milestones the parity suite covers (rank-1 / rank-2 array prints, element-wise binops, val-bindings, sum, matmul). Anything outside that subset raises a compile-time "not yet supported" diagnostic.
 
 ## Running the CLI from sbt
 

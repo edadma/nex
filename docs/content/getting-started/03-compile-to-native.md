@@ -28,7 +28,7 @@ Output is identical to what the interpreter produced.
 
 ## Verify parity
 
-The intended way to use Nex during development is to write code, run it under the interpreter for the fast edit/run cycle, then occasionally compile to native to confirm the AOT path produces the same output. Every commit to the compiler runs around 700 unit tests that compare the two paths line-by-line on a representative corpus. The one documented divergence is real-number formatting of irrationals: the interpreter uses Java's shortest-round-trip `Double.toString`, the native binary uses libc's `%g` (6 significant figures). Whole reals match exactly; `sqrt(2)` differs in trailing digits.
+The intended way to use Nex during development is to write code, run it under the interpreter for the fast edit/run cycle, then occasionally compile to native to confirm the AOT path produces the same output. Every commit to the compiler runs over a thousand unit tests that compare the two paths line-by-line on a representative corpus. The compiled binary's real-number printing matches Java's `Double.toString` byte-for-byte — non-whole reals like `0.1 + 0.2` print as `0.30000000000000004`, magnitudes like `1e20` print as `1.0E20`, and runtime traps (assertions, array-index OOB, division by zero, slice OOB) all carry the same human-readable messages as the interpreter so `assert_traps(fn, substring)` matches the same trap text on both sides.
 
 ## When you'd reach for which
 

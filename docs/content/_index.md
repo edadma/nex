@@ -44,7 +44,7 @@ The cards above are the two reference sections. The **Specification** is the cha
 
 ## Status
 
-The current implementation covers the language end-to-end: a tree-walking interpreter for `nex run` and `nex test`, plus an AOT compiler (LLVM IR → `clang -O1`) producing native Mac arm64 binaries for the full surface — scalar arithmetic, arrays (rank-1 and rank-2) with ARC and slicing, element-wise + broadcast + slice + clone + fused loops, tuples and structs, lambdas and closures (val + var capture), prelude scalar math + assertions, higher-order array functions (`map` / `reduce` / `filter`), and complex numbers. Compiled output is byte-for-byte verified against the reference interpreter on every commit (around 700 unit tests).
+The current implementation covers the language end-to-end: a tree-walking interpreter for `nex run` and `nex test`, plus an AOT compiler (LLVM IR → `clang -O1`) producing native Mac arm64 binaries for the full surface — scalar arithmetic, arrays (rank-1 and rank-2) with ARC and slicing, element-wise + broadcast + slice + clone + fused loops, tuples and structs, lambdas and closures (val + var capture), prelude scalar math + assertions, higher-order array functions (`map` / `flatMap` / `reduce` / `filter`), and complex numbers. Compiled output is byte-for-byte verified against the reference interpreter on every commit (over a thousand unit tests). An experimental MLIR codegen path is available behind `nex compile --backend mlir` for a small subset of the language.
 
 ```bash
 # Run a program with the tree-walking interpreter:
