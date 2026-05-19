@@ -167,21 +167,38 @@ An `if` expression has the form:
 if cond then expr1 else expr2
 ```
 
-It is an expression whose type is the common type of `expr1` and `expr2`. Multi-line form:
+It is an expression whose type is the common type of `expr1` and `expr2`.
+
+`then` is **required for an inline body** and **optional when the body starts on a new indented line**. Multi-line form (with or without `then`):
 
 ```nex
+// `then` optional when body is indented:
+if cond
+  expr1
+else
+  expr2
+
+// `then` still works for the multi-line form too:
 if cond then
   expr1
 else
   expr2
 ```
 
-For chained conditionals:
+For chained conditionals — both `else if` and `elif` (single-token shorthand) are accepted, with identical semantics:
 
 ```nex
-if cond1 then
+if cond1
   expr1
-else if cond2 then
+else if cond2
+  expr2
+else
+  expr3
+
+// Same shape with `elif`:
+if cond1
+  expr1
+elif cond2
   expr2
 else
   expr3
@@ -190,7 +207,7 @@ else
 An `if` without an `else` is an expression of type `unit`. Both branches in that case must also have type `unit`:
 
 ```nex
-if cond then
+if cond
   print(x)         // type unit
 ```
 

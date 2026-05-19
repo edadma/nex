@@ -500,33 +500,64 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * says comma is the loosest operator).
     */
   lazy val ifExpr: PackratParser[ExprAST] =
-    ("if" ~> exprNoTuple) ~ ("then" ~> branchBody) ~ opt(elseClause) ~ opt(trailingEnd) ^^ {
+    ("if" ~> exprNoTuple) ~ thenBody ~ opt(elseClause) ~ opt(trailingEnd) ^^ {
       case cond ~ thenB ~ elseB ~ _ => IfExpr(cond, thenB, elseB)
     }
 
-  /** The `else` clause may sit on the same line as the `then` body, or on
-    * a new line after the then-block's `Dedent` + trailing `Newline`.
+  /** `then` is required for an inline body and optional when the body
+    * starts on a new indented line (spec §4.10 / §7.1). The block-form
+    * fallback (`blockBody` = Newline + Indent + ... + Dedent) covers
+    * the latter; the `then`-prefixed form covers inline AND indented.
+    */
+  lazy val thenBody: PackratParser[ExprAST] =
+    ("then" ~> branchBody) | blockBody
+
+  /** The `else` clause may sit on the same line as the `then` body, or
+    * on a new line after the then-block's `Dedent` + trailing `Newline`.
     * `rep(Newline)` matches zero or more — opt backtracks cleanly if no
     * `else` ever shows up.
+    *
+    * Two shapes are accepted (spec §4.10):
+    *   - `else <body>` — the conventional form.
+    *   - `elif <cond> ...` — a single-token shorthand for
+    *     `else if <cond> ...`. Desugars to a nested `IfExpr` in the
+    *     else-branch position so chained `elif`s build the same AST
+    *     as chained `else if`s.
     */
   lazy val elseClause: PackratParser[ExprAST] =
-    rep(Newline) ~> "else" ~> branchBody
+    rep(Newline) ~> (elifClause | ("else" ~> branchBody))
+
+  /** `elif <cond> <body> [else / elif ...]` — sugar for
+    * `else if <cond> <body> [...]`. The result is an `IfExpr` placed
+    * in the else-branch position of the surrounding if; chained
+    * `elif`s nest the same way `else if` does.
+    */
+  lazy val elifClause: PackratParser[ExprAST] =
+    "elif" ~> exprNoTuple ~ thenBody ~ opt(elseClause) ^^ {
+      case cond ~ thenB ~ elseB => IfExpr(cond, thenB, elseB)
+    }
 
   lazy val forExpr: PackratParser[ExprAST] =
-    ("for" ~> patternList) ~ ("in" ~> exprNoTuple) ~ ("do" ~> branchBody) ~ opt(trailingEnd) ^^ {
+    ("for" ~> patternList) ~ ("in" ~> exprNoTuple) ~ doBody ~ opt(trailingEnd) ^^ {
       case pat ~ it ~ body ~ _ => ForExpr(pat, it, body)
     }
 
   lazy val whileExpr: PackratParser[ExprAST] =
-    ("while" ~> exprNoTuple) ~ ("do" ~> branchBody) ~ opt(trailingEnd) ^^ {
+    ("while" ~> exprNoTuple) ~ doBody ~ opt(trailingEnd) ^^ {
       case cond ~ body ~ _ => WhileExpr(cond, body)
     }
+
+  /** `do` is required for an inline body and optional when the body
+    * starts on a new indented line (spec §7.2 / §7.3).
+    */
+  lazy val doBody: PackratParser[ExprAST] =
+    ("do" ~> branchBody) | blockBody
 
   lazy val returnExpr: PackratParser[ExprAST] =
     "return" ~> opt(exprNoTuple) ^^ ReturnExpr.apply
 
-  /** Branch body — used for `then` / `else` of `if` and `do` of `for` /
-    * `while`. Either a single inline expression or a Newline-Indent block.
+  /** Branch body — used after explicit `then` / `do` / `else`. Either a
+    * single inline expression or a Newline-Indent block.
     */
   lazy val branchBody: PackratParser[ExprAST] =
     blockBody | exprNoTuple

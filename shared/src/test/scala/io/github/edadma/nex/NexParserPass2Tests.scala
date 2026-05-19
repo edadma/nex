@@ -238,6 +238,76 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         Some(BinOpExpr("/", VarRefExpr("v"), VarRefExpr("mag"))),
       )
     }
+
+    // ---- Spec §4.10 / §7.1: `then` optional when body is on a new
+    // indented line. Inline form still requires `then`.
+    "parse if without `then` when the body is an indented block" in {
+      val src =
+        """def f(x: integer) =
+          |  if x > 0
+          |    1
+          |  else
+          |    -1""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      // A def body that's a single multi-line statement parses as
+      // the statement directly (no BlockExpr wrapper); a single-stmt
+      // indented body likewise unwraps to just that statement.
+      val ifNode = fn.body.asInstanceOf[IfExpr]
+      ifNode.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
+      ifNode.thenBranch shouldBe IntLitExpr(1)
+      ifNode.elseBranch.get shouldBe UnaryOpExpr("-", IntLitExpr(1))
+    }
+
+    "still parse if with `then` when the body is indented" in {
+      val src =
+        """def f(x: integer) =
+          |  if x > 0 then
+          |    1
+          |  else
+          |    -1""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      val ifNode = fn.body.asInstanceOf[IfExpr]
+      // Same shape as the no-`then` form.
+      ifNode.thenBranch shouldBe IntLitExpr(1)
+    }
+
+    // ---- Spec §4.10: `elif` is a single-token shorthand for
+    // `else if`. Parses to the same nested IfExpr in the else-branch
+    // position — so a chain built with `elif` and one built with
+    // `else if` must produce identical ASTs.
+    "parse a single `elif` clause as `else if`" in {
+      val withElif = parseExpr("if a then 1 elif b then 2 else 3")
+      val withElseIf = parseExpr("if a then 1 else if b then 2 else 3")
+      withElif shouldBe withElseIf
+    }
+
+    "parse a chain of `elif`s as nested `else if`s" in {
+      val withElif = parseExpr(
+        "if a then 1 elif b then 2 elif c then 3 else 4",
+      )
+      val withElseIf = parseExpr(
+        "if a then 1 else if b then 2 else if c then 3 else 4",
+      )
+      withElif shouldBe withElseIf
+    }
+
+    "parse `elif` with the multi-line indented-body form (no `then`)" in {
+      val src =
+        """def f(x: integer) =
+          |  if x > 0
+          |    1
+          |  elif x < 0
+          |    -1
+          |  else
+          |    0""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      val outer = fn.body.asInstanceOf[IfExpr]
+      outer.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
+      // The elif is rendered as an IfExpr in the else-branch.
+      outer.elseBranch.get shouldBe a [IfExpr]
+      val mid = outer.elseBranch.get.asInstanceOf[IfExpr]
+      mid.cond shouldBe BinOpExpr("<", VarRefExpr("x"), IntLitExpr(0))
+    }
   }
 
   "for expressions" should {
@@ -257,6 +327,19 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           CallExpr(VarRefExpr("print"), List(VarRefExpr("k"))),
         )
     }
+
+    // ---- Spec §7.2: `do` optional when the body is on a new
+    // indented line. Inline form still requires `do`.
+    "parse for without `do` when the body is an indented block" in {
+      val src =
+        """def main() =
+          |  for k in 0..n
+          |    print(k)""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      val forNode = fn.body.asInstanceOf[ForExpr]
+      forNode.pat shouldBe VarPat("k")
+      forNode.body shouldBe CallExpr(VarRefExpr("print"), List(VarRefExpr("k")))
+    }
   }
 
   "while expressions" should {
@@ -266,6 +349,19 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0)),
           CallExpr(VarRefExpr("print"), List(VarRefExpr("x"))),
         )
+    }
+
+    // ---- Spec §7.3: `do` optional when the body is on a new
+    // indented line.
+    "parse while without `do` when the body is an indented block" in {
+      val src =
+        """def main() =
+          |  while x > 0
+          |    print(x)""".stripMargin
+      val fn = parseProg(src).decls.head.asInstanceOf[FunDeclAST]
+      val whileNode = fn.body.asInstanceOf[WhileExpr]
+      whileNode.cond shouldBe BinOpExpr(">", VarRefExpr("x"), IntLitExpr(0))
+      whileNode.body shouldBe CallExpr(VarRefExpr("print"), List(VarRefExpr("x")))
     }
   }
 
