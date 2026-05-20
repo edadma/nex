@@ -143,6 +143,8 @@ class NexMLIRCodegen:
       emitPrintCall(arg)
     case TBlock(items, TUnitLit(_), _, _) =>
       items.foreach(emitBlockItem)
+    case other if other.tpe == TyUnit =>
+      emitBlockItem(TBlockExpr(other))
     case other =>
       notYet(s"main body shape: ${other.getClass.getSimpleName}")
 
@@ -409,6 +411,27 @@ class NexMLIRCodegen:
         if s.kind == SymKind.Prelude && s.name == "abs" =>
       emitScalarAbs(emitExpr(x))
 
+    case TCall(TVarRef(s, _, _), List(TIntLit(lo, _, _), TIntLit(hi, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "range" =>
+      emitRangeCall(lo, hi)
+
+    case TCall(TVarRef(s, _, _), List(TIntLit(n, _, _)), _, _)
+        if s.kind == SymKind.Prelude && (s.name == "zeros" || s.name == "ones") =>
+      emitConstFill(s.name, n.toInt)
+
+    case TCall(TVarRef(s, _, _), List(loLit, hiLit, TIntLit(n, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "linspace" =>
+      val lo = realLitValue(loLit)
+      val hi = realLitValue(hiLit)
+      emitLinspaceCall(lo, hi, n.toInt)
+
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "transpose" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(rows, cols)) => emitTranspose(av.reg, t, rows, cols)
+        case other                            => notYet(s"transpose on $other")
+
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
@@ -450,6 +473,9 @@ class NexMLIRCodegen:
         case (aty, ity) =>
           notYet(s"rank-1 index on $aty with $ity")
 
+    case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
+      emitIfExpr(cond, thenB, elseB, MScalar(tpe))
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -463,8 +489,64 @@ class NexMLIRCodegen:
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
       emitPrintCall(arg)
+    case TBlockExpr(TFor(loopVars, TBinOp("..", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+      emitForRange(loopVars, lo, hi, inclusive = false, body)
+    case TBlockExpr(TFor(loopVars, TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+      emitForRange(loopVars, lo, hi, inclusive = true, body)
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
+
+  /** Statement-form `for i in lo..hi do body` over a constant integer
+    * range. Lowers to `scf.for %iv = %lo to %hi step %c1 { … }`. The
+    * loop var is provided as MLIR `index` type; we cast to i64 and
+    * bind to the symbol id so the body's references resolve as
+    * scalars. Inclusive ranges (`..=`) bump the bound by one (scf.for
+    * is exclusive on its upper bound).
+    *
+    * Body emission delegates to [[emitForBody]], which handles a
+    * `TBlock` body (multiple statements) the same way it handles
+    * `def main()`'s top-level block — items go through
+    * `emitBlockItem`, so nested prints / nested for-loops compose
+    * naturally.
+    */
+  private def emitForRange(loopVars: List[Symbol], lo: Long, hi: Long, inclusive: Boolean, body: TExpr): Unit =
+    if loopVars.size != 1 then
+      notYet(s"for over range with ${loopVars.size}-way destructuring")
+      return
+    val loopVar = loopVars.head
+    val loC     = fresh("flo")
+    out.append(s"  $loC = arith.constant $lo : index\n")
+    val hiVal   = if inclusive then hi + 1L else hi
+    val hiC     = fresh("fhi")
+    out.append(s"  $hiC = arith.constant $hiVal : index\n")
+    val stepC   = fresh("fst")
+    out.append(s"  $stepC = arith.constant 1 : index\n")
+    val ivName  = fresh("iv")
+    out.append(s"  scf.for $ivName = $loC to $hiC step $stepC {\n")
+    val ivI64   = fresh("ivi")
+    out.append(s"    $ivI64 = arith.index_castui $ivName : index to i64\n")
+    val prev    = env.get(loopVar.id)
+    env(loopVar.id) = MlirVal(ivI64, MScalar(TyInteger))
+    emitForBody(body)
+    prev match
+      case Some(v) => env(loopVar.id) = v
+      case None    => env.remove(loopVar.id)
+    out.append("  }\n")
+
+  /** Body of a loop. Accepts a bare `TBlock` whose result is `Unit`
+    * (the common shape `for i do … do print(i)` produces, since the
+    * `do` clause introduces a block), a `TBlock` that ends with a
+    * value-producing expression (the result is discarded), or a
+    * single non-block statement.
+    */
+  private def emitForBody(body: TExpr): Unit = body match
+    case TBlock(items, TUnitLit(_), _, _) =>
+      items.foreach(emitBlockItem)
+    case TBlock(items, last, _, _) =>
+      items.foreach(emitBlockItem)
+      emitBlockItem(TBlockExpr(last))
+    case other =>
+      emitBlockItem(TBlockExpr(other))
 
   /** Element-wise binop via `linalg.map` over a fresh `tensor.empty()`
     * output. Both operands must already have the same tensor type.
@@ -578,6 +660,38 @@ class NexMLIRCodegen:
     * rules let region bodies reference parent-scope SSA values, so
     * any vals captured by the rhs continue to work.
     */
+  /** Scalar types the backend can carry through an `scf.if -> (T)`
+    * result slot. Tensor-returning `if` would need shape inference
+    * (both branches must materialise the same static tensor type)
+    * and isn't yet supported.
+    */
+  private def isMlirScalarType(t: Type): Boolean = t match
+    case TyInteger | TyReal | TyBool => true
+    case _                           => false
+
+  /** Lower an `if cond then thenB else elseB` expression with a
+    * scalar result. Models on [[emitShortCircuit]] — the cond is
+    * evaluated eagerly, then both branches live inside an
+    * `scf.if -> (T)` whose regions yield through `scf.yield`. The
+    * pass pipeline already runs `--convert-scf-to-cf`, so this
+    * lowers to plain branches before LLVM IR is emitted. Both
+    * branches recurse through [[emitExpr]] so nested blocks /
+    * arithmetic / calls / nested ifs are all handled by the same
+    * machinery — MLIR is whitespace-insensitive, so the textual
+    * indentation of region bodies doesn't have to match.
+    */
+  private def emitIfExpr(cond: TExpr, thenB: TExpr, elseB: TExpr, outTy: MlirType): MlirVal =
+    val cv = emitExpr(cond)
+    val r  = fresh("if")
+    out.append(s"  $r = scf.if ${cv.reg} -> (${outTy.text}) {\n")
+    val tv = emitExpr(thenB)
+    out.append(s"    scf.yield ${tv.reg} : ${outTy.text}\n")
+    out.append("  } else {\n")
+    val ev = emitExpr(elseB)
+    out.append(s"    scf.yield ${ev.reg} : ${outTy.text}\n")
+    out.append("  }\n")
+    MlirVal(r, outTy)
+
   private def emitShortCircuit(lhs: TExpr, rhs: TExpr, isAnd: Boolean): MlirVal =
     val lv = emitExpr(lhs)
     val r  = fresh(if isAnd then "and" else "or")
@@ -829,6 +943,109 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : i1\n")
     out.append("    }\n")
     MlirVal(outR, outTy)
+
+  /** Rank-2 `.transpose()` / `transpose(m)`. Output shape swaps the
+    * row and column dimensions; element type is unchanged. Lowers to
+    * a single `linalg.transpose` with permutation `[1, 0]`, which
+    * `--convert-linalg-to-loops` reduces to a nested counting loop
+    * that does `out[j, i] = in[i, j]`.
+    */
+  private def emitTranspose(srcReg: String, ty: MTensor, rows: Int, cols: Int): MlirVal =
+    val outTy = MTensor(ty.elem, List(cols, rows))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("tr")
+    out.append(
+      s"  $outR = linalg.transpose ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) permutation = [1, 0]\n",
+    )
+    MlirVal(outR, outTy)
+
+  /** Literal `range(lo, hi)`: integer half-open range with statically
+    * known length. Length zero (when `hi <= lo`) lowers to an empty
+    * `tensor<0xi64>`. Otherwise we walk the iteration domain via
+    * `linalg.index` and add the loaded position to the literal `lo`.
+    */
+  private def emitRangeCall(lo: Long, hi: Long): MlirVal =
+    val len = math.max(0L, hi - lo).toInt
+    val ty  = MTensor(TyInteger, List(len))
+    if len == 0 then
+      val r = fresh("rng")
+      out.append(s"  $r = tensor.empty() : ${ty.text}\n")
+      return MlirVal(r, ty)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val loConst = fresh("lo")
+    out.append(s"  $loConst = arith.constant $lo : i64\n")
+    val outR = fresh("rng")
+    out.append(s"  $outR = linalg.map outs($initR : ${ty.text})\n")
+    out.append(s"    (%_o: i64) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val idxI  = fresh("idxi")
+    out.append(s"      $idxI = arith.index_castui $idxR : index to i64\n")
+    val sumR  = fresh("sum")
+    out.append(s"      $sumR = arith.addi $loConst, $idxI : i64\n")
+    out.append(s"      linalg.yield $sumR : i64\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
+
+  /** Literal `zeros(n)` / `ones(n)`. Always integer-typed per the
+    * elaborator (matches the interpreter; the spec's real-typed
+    * signature is a v0 divergence shared across backends). Emits a
+    * `linalg.fill` over a fresh empty tensor.
+    */
+  private def emitConstFill(name: String, n: Int): MlirVal =
+    val ty    = MTensor(TyInteger, List(n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val v     = if name == "zeros" then 0 else 1
+    val cR    = fresh("c")
+    out.append(s"  $cR = arith.constant $v : i64\n")
+    val outR  = fresh(name)
+    out.append(s"  $outR = linalg.fill ins($cR : i64) outs($initR : ${ty.text}) -> ${ty.text}\n")
+    MlirVal(outR, ty)
+
+  /** Literal `linspace(lo, hi, n)`: real array of length n with values
+    * `lo + i * (hi - lo) / (n - 1)`. We compute the step at codegen
+    * time and emit a `linalg.map` that yields `lo + step * i`. When
+    * `n == 1`, every element collapses to `lo` (`step` is a 0/0 NaN
+    * otherwise); special-case to avoid emitting NaN in the IR.
+    */
+  private def emitLinspaceCall(lo: Double, hi: Double, n: Int): MlirVal =
+    val ty    = MTensor(TyReal, List(n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val loC   = fresh("lo")
+    out.append(s"  $loC = arith.constant ${formatReal(lo)} : f64\n")
+    val step  = if n <= 1 then 0.0 else (hi - lo) / (n - 1)
+    val stepC = fresh("step")
+    out.append(s"  $stepC = arith.constant ${formatReal(step)} : f64\n")
+    val outR  = fresh("ls")
+    out.append(s"  $outR = linalg.map outs($initR : ${ty.text})\n")
+    out.append(s"    (%_o: f64) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val idxI  = fresh("idxi")
+    out.append(s"      $idxI = arith.index_castui $idxR : index to i64\n")
+    val idxF  = fresh("idxf")
+    out.append(s"      $idxF = arith.sitofp $idxI : i64 to f64\n")
+    val mulR  = fresh("mul")
+    out.append(s"      $mulR = arith.mulf $stepC, $idxF : f64\n")
+    val addR  = fresh("add")
+    out.append(s"      $addR = arith.addf $loC, $mulR : f64\n")
+    out.append(s"      linalg.yield $addR : f64\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
+
+  /** Pull a `Double` out of an `TIntLit` or `TRealLit`. Used by the
+    * `linspace` dispatch where the elaborator may leave `0` (int) or
+    * `0.0` (real) untouched on the lo/hi arguments — both meanings
+    * are valid sources.
+    */
+  private def realLitValue(e: TExpr): Double = e match
+    case TIntLit(v, _, _)  => v.toDouble
+    case TRealLit(v, _, _) => v
+    case other             => notYet(s"non-literal linspace bound: ${other.getClass.getSimpleName}")
 
   /** Predicate string for `arith.cmpi` / `arith.cmpf`. Integers use
     * signed predicates; reals use ordered (`oeq`, `olt`, …) for every

@@ -448,6 +448,54 @@ object NexProgramCorpus:
         |  print(x)
       """.stripMargin,
       "1\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression printed directly",
+      """
+        |def main() =
+        |  val n = 7
+        |  print(if n > 5 then n * 2 else n)
+      """.stripMargin,
+      "14\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression yields a real-typed value",
+      """
+        |def main() =
+        |  val x = 1.5
+        |  print(if x > 1.0 then x * 2.0 else x)
+      """.stripMargin,
+      "3.0\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression yields a bool",
+      """
+        |def main() =
+        |  val n = 5
+        |  print(if n > 0 then true else false)
+      """.stripMargin,
+      "true\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "nested if expression",
+      """
+        |def main() =
+        |  val x = 5
+        |  val y = if x > 0 then
+        |    if x > 10 then 100 else x
+        |  else 0
+        |  print(y)
+      """.stripMargin,
+      "5\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -480,6 +528,42 @@ object NexProgramCorpus:
         |    print(i)
       """.stripMargin,
       "0\n1\n2\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over inclusive range",
+      """
+        |def main() =
+        |  for i in 1..=3 do
+        |    print(i)
+      """.stripMargin,
+      "1\n2\n3\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over range computes a running sum",
+      """
+        |def main() =
+        |  var s = 0
+        |  for i in 1..=5 do
+        |    s = s + i
+        |  print(s)
+      """.stripMargin,
+      "15\n",
+    ),
+    Case(
+      "control flow",
+      "nested for over range",
+      """
+        |def main() =
+        |  for i in 0..2 do
+        |    for j in 0..2 do
+        |      print(i * 10 + j)
+      """.stripMargin,
+      "0\n1\n10\n11\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -1065,6 +1149,7 @@ object NexProgramCorpus:
         |  print(m.transpose())
       """.stripMargin,
       "[[1, 4], [2, 5], [3, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1506,12 +1591,14 @@ object NexProgramCorpus:
       "range",
       """def main() = print(range(0, 5))""",
       "[0, 1, 2, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "prelude",
       "linspace",
       """def main() = print(linspace(0.0, 1.0, 5))""",
       "[0.0, 0.25, 0.5, 0.75, 1.0]\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -1521,6 +1608,7 @@ object NexProgramCorpus:
         |  print(ones(3))
       """.stripMargin,
       "[0, 0, 0]\n[1, 1, 1]\n",
+      mlir = true,
     ),
     Case(
       "prelude",
