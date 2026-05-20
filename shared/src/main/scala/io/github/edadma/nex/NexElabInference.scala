@@ -967,8 +967,17 @@ protected trait NexElabInference extends NexElabState:
       TCall(callee, List(arr, f), p, TyArray(elemT, 1))
 
     case _ =>
-      // Wrong arity for a known HOF — fall back to default inference and
-      // let the runtime / future arity-check report it.
+      // Wrong arity for a known HOF — surface a clear diagnostic at
+      // elaboration time. Spec §10.4 fixes the signatures: map / filter
+      // / flatMap are 2-arg; reduce is 3-arg (the 2-arg form is NOT in
+      // the spec). Silently emitting the TCall let the AOT no-op while
+      // the interpreter trapped at runtime — divergent and confusing.
+      val expected = name match
+        case "map" | "filter" | "flatMap" => 2
+        case "reduce"                     => 3
+        case _                            => -1
+      if expected > 0 then
+        err(s"$name expects $expected args, got ${args.size}", p)
       val aa = args.map(infExpr)
       TCall(callee, aa, p, TyUnknown)
 
@@ -1240,8 +1249,11 @@ protected trait NexElabInference extends NexElabState:
           case _               => TyUnknown
       case "min" | "max" =>
         (args.headOption.map(_.tpe), args.lift(1).map(_.tpe)) match
+          // Binary scalar form: min(a, b) / max(a, b).
           case (Some(TyInteger), Some(TyInteger)) => TyInteger
           case (Some(TyReal), _) | (_, Some(TyReal)) => TyReal
+          // Spec §10.4 unary array form: min(a: [T]): T.
+          case (Some(TyArray(elem, _)), None) => elem
           case _ => TyUnknown
       case "conj" =>
         args.headOption.map(_.tpe) match

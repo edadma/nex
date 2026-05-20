@@ -216,6 +216,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.sum_axis_msg     = private unnamed_addr constant [37 x i8] c"trap: sum_axis: axis must be 0 or 1\0A\00"
         |@.slice_assign_len_msg = private unnamed_addr constant [37 x i8] c"trap: slice-assign: length mismatch\0A\00"
         |@.slice_assign_shape_msg = private unnamed_addr constant [36 x i8] c"trap: slice-assign: shape mismatch\0A\00"
+        |@.minmax_empty_msg = private unnamed_addr constant [30 x i8] c"trap: min/max of empty array\0A\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:
