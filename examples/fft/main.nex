@@ -1,9 +1,10 @@
 // FFT — recursive radix-2 Cooley-Tukey, any power-of-2 N
 //
 // A general discrete Fourier transform exercising Nex's complex number
-// support, the prelude `fill(n, v)` array constructor, and the
-// chunk-9/-10/-11 codegen path end-to-end. Calls itself with N/2 at
-// each level until it bottoms out at the trivial one-point transform.
+// support, the prelude `fill(n, v)` array constructor, and slice
+// assignment to stitch the two output halves. Calls itself with N/2
+// at each level until it bottoms out at the trivial one-point
+// transform.
 //
 // Cooley-Tukey decomposition (Wikipedia, "Cooley-Tukey FFT algorithm"):
 //
@@ -24,7 +25,9 @@ def fft(x: [complex]): [complex] =
 
   // Split into even/odd-indexed sub-arrays. `fill(half, 0.0 + 0i)`
   // gives us a writable rank-1 complex buffer of the right size;
-  // we then drop the source samples into the right slots.
+  // we then drop the source samples into the right slots. Strided
+  // slice forms like `x[0..n by 2]` are deferred, so we walk the
+  // indices by hand.
   var even = fill(half, 0.0 + 0i)
   var odd  = fill(half, 0.0 + 0i)
   for k in 0..half do
@@ -34,15 +37,22 @@ def fft(x: [complex]): [complex] =
   val ef = fft(even)
   val of = fft(odd)
 
-  // Combine: for each k in [0, half), apply the twiddle and write the
-  // two output slots that this butterfly produces.
-  var y = fill(n, 0.0 + 0i)
+  // Compute the two output halves as separate vectors. The butterfly
+  // stays in scalar-complex form — one twiddle per element.
+  var top    = fill(half, 0.0 + 0i)
+  var bottom = fill(half, 0.0 + 0i)
   for k in 0..half do
     val angle = -2.0 * pi * to_real(k) / to_real(n)
     val w     = cos(angle) + sin(angle) * i
     val t     = w * of[k]
-    y[k]        = ef[k] + t
-    y[k + half] = ef[k] - t
+    top[k]    = ef[k] + t
+    bottom[k] = ef[k] - t
+
+  // Stitch the halves into y with two slice assignments — no
+  // per-index `y[k] = ...; y[k + half] = ...` shuffle.
+  var y = fill(n, 0.0 + 0i)
+  y[0..half] = top
+  y[half..n] = bottom
   y
 
 def main() =
