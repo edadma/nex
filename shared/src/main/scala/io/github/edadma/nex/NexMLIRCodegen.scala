@@ -450,6 +450,9 @@ class NexMLIRCodegen:
         case (aty, ity) =>
           notYet(s"rank-1 index on $aty with $ity")
 
+    case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
+      emitIfExpr(cond, thenB, elseB, MScalar(tpe))
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -578,6 +581,38 @@ class NexMLIRCodegen:
     * rules let region bodies reference parent-scope SSA values, so
     * any vals captured by the rhs continue to work.
     */
+  /** Scalar types the backend can carry through an `scf.if -> (T)`
+    * result slot. Tensor-returning `if` would need shape inference
+    * (both branches must materialise the same static tensor type)
+    * and isn't yet supported.
+    */
+  private def isMlirScalarType(t: Type): Boolean = t match
+    case TyInteger | TyReal | TyBool => true
+    case _                           => false
+
+  /** Lower an `if cond then thenB else elseB` expression with a
+    * scalar result. Models on [[emitShortCircuit]] — the cond is
+    * evaluated eagerly, then both branches live inside an
+    * `scf.if -> (T)` whose regions yield through `scf.yield`. The
+    * pass pipeline already runs `--convert-scf-to-cf`, so this
+    * lowers to plain branches before LLVM IR is emitted. Both
+    * branches recurse through [[emitExpr]] so nested blocks /
+    * arithmetic / calls / nested ifs are all handled by the same
+    * machinery — MLIR is whitespace-insensitive, so the textual
+    * indentation of region bodies doesn't have to match.
+    */
+  private def emitIfExpr(cond: TExpr, thenB: TExpr, elseB: TExpr, outTy: MlirType): MlirVal =
+    val cv = emitExpr(cond)
+    val r  = fresh("if")
+    out.append(s"  $r = scf.if ${cv.reg} -> (${outTy.text}) {\n")
+    val tv = emitExpr(thenB)
+    out.append(s"    scf.yield ${tv.reg} : ${outTy.text}\n")
+    out.append("  } else {\n")
+    val ev = emitExpr(elseB)
+    out.append(s"    scf.yield ${ev.reg} : ${outTy.text}\n")
+    out.append("  }\n")
+    MlirVal(r, outTy)
+
   private def emitShortCircuit(lhs: TExpr, rhs: TExpr, isAnd: Boolean): MlirVal =
     val lv = emitExpr(lhs)
     val r  = fresh(if isAnd then "and" else "or")

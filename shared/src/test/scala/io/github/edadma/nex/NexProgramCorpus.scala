@@ -338,6 +338,54 @@ object NexProgramCorpus:
         |  print(x)
       """.stripMargin,
       "1\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression printed directly",
+      """
+        |def main() =
+        |  val n = 7
+        |  print(if n > 5 then n * 2 else n)
+      """.stripMargin,
+      "14\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression yields a real-typed value",
+      """
+        |def main() =
+        |  val x = 1.5
+        |  print(if x > 1.0 then x * 2.0 else x)
+      """.stripMargin,
+      "3.0\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "if expression yields a bool",
+      """
+        |def main() =
+        |  val n = 5
+        |  print(if n > 0 then true else false)
+      """.stripMargin,
+      "true\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "nested if expression",
+      """
+        |def main() =
+        |  val x = 5
+        |  val y = if x > 0 then
+        |    if x > 10 then 100 else x
+        |  else 0
+        |  print(y)
+      """.stripMargin,
+      "5\n",
+      mlir = true,
     ),
     Case(
       "control flow",
