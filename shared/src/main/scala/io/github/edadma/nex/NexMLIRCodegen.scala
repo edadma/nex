@@ -488,8 +488,37 @@ class NexMLIRCodegen:
           val r = fresh("elt")
           out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
+        case (t @ MTensor(et, List(_, cols)), MScalar(TyInteger)) =>
+          // `m[i]` on a rank-2 receiver: return the i-th row as a fresh
+          // rank-1 tensor. The row axis collapses; the column axis is
+          // copied wholesale. `tensor.extract_slice`'s rank-reducing form
+          // handles the rank drop when a static size-1 axis is present.
+          val idxR = fresh("ridx")
+          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val outTy = MTensor(et, List(cols))
+          val r     = fresh("row")
+          out.append(
+            s"  $r = tensor.extract_slice ${av.reg}[$idxR, 0] [1, $cols] [1, 1] : ${t.text} to ${outTy.text}\n",
+          )
+          MlirVal(r, outTy)
         case (aty, ity) =>
-          notYet(s"rank-1 index on $aty with $ity")
+          notYet(s"single-index on $aty with $ity")
+
+    case TIndex(arr, List(rowIdx, colIdx), _, _) =>
+      val av = emitExpr(arr)
+      val rv = emitExpr(rowIdx)
+      val cv = emitExpr(colIdx)
+      (av.ty, rv.ty, cv.ty) match
+        case (t @ MTensor(et, List(_, _)), MScalar(TyInteger), MScalar(TyInteger)) =>
+          val rR = fresh("ridx")
+          out.append(s"  $rR = arith.index_cast ${rv.reg} : i64 to index\n")
+          val cR = fresh("cidx")
+          out.append(s"  $cR = arith.index_cast ${cv.reg} : i64 to index\n")
+          val r = fresh("elt")
+          out.append(s"  $r = tensor.extract ${av.reg}[$rR, $cR] : ${t.text}\n")
+          MlirVal(r, MScalar(et))
+        case (aty, rty, cty) =>
+          notYet(s"rank-2 index on $aty with $rty, $cty")
 
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
