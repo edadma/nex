@@ -45,6 +45,8 @@ protected trait NexLLVMLambdas extends NexLLVMState:
           val mode = if varBindings.contains(s.id) then CaptureMode.ByRef else CaptureMode.ByVal
           (s, t, mode)
         }
+        for (s, t, mode) <- captures do
+          if mode == CaptureMode.ByRef then boxedVarTypes(s.id) = t
         val envFieldTypes = captures.map {
           case (_, _, CaptureMode.ByRef) => "ptr"
           case (_, t, CaptureMode.ByVal) => llvmType(t)
@@ -214,13 +216,13 @@ protected trait NexLLVMLambdas extends NexLLVMState:
 
   /** A lambda needs a dedicated env-dtor function when its env owns
     * any refcounted shares — i.e., at least one ByVal capture of a
-    * refcounted type. ByRef captures store parent-owned pointers and
-    * must NOT be dec'd here.
+    * refcounted type, OR any ByRef capture (each ByRef slot now stores
+    * a refcount-headed box pointer that the env shares ownership of).
     */
   private def needsEnvDtor(info: LambdaInfo): Boolean =
     info.captures.exists {
       case (_, t, CaptureMode.ByVal) => isRefCountedType(t)
-      case _                         => false
+      case (_, _, CaptureMode.ByRef) => true
     }
 
   /** Operand for the `dtor` argument to `__nex_env_alloc`. Returns
@@ -233,7 +235,9 @@ protected trait NexLLVMLambdas extends NexLLVMState:
 
   /** Emit `void @__nex_lambda_<id>_env_dtor(ptr %env)` — walks each
     * refcounted ByVal capture and dec's it, then frees the header.
-    * ByRef captures are skipped (they store parent-owned pointers).
+    * ByRef captures store box pointers that the env shares ownership
+    * of; the dtor dec's each box (which itself frees when its refcount
+    * reaches zero — the parent binding holds the other share).
     * Closure-valued captures extract the env from the `{ fn, env }`
     * value before routing through the generic env_dec.
     */
@@ -266,6 +270,12 @@ protected trait NexLLVMLambdas extends NexLLVMState:
               requestAggHelper(t)
               sb.append(s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $v)\n")
             case _ => ()
+        case CaptureMode.ByRef =>
+          val slot = freshLocal()
+          sb.append(s"  $slot = getelementptr inbounds ${info.envTy}, ptr %env, i32 0, i32 $idx\n")
+          val bp = freshLocal()
+          sb.append(s"  $bp = load ptr, ptr $slot\n")
+          sb.append(s"  call void @__nex_env_dec(ptr $bp)\n")
         case _ => ()
     val hdr = freshLocal()
     sb.append(s"  $hdr = getelementptr inbounds i8, ptr %env, i64 -16\n")
@@ -280,6 +290,8 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     locals.clear()
     arrayLocalSlots.clear()
     blockArrayScopes = Nil
+    boxedFunctionSlots.clear()
+    blockBoxedScopes = Nil
     currentReturnType = info.retType
     currentIsMain     = false
 
@@ -422,24 +434,39 @@ protected trait NexLLVMLambdas extends NexLLVMState:
           case None =>
             notImpl(s"capture of unbound `${s.name}`")
 
-  /** Resolve a binding to a pointer for ByRef capture. Returns the
-    * alloca / global pointer where the binding's value lives, so the
-    * env can stash it.
+  /** Resolve a binding to a pointer for ByRef capture. Returns a pointer
+    * into long-lived storage for the binding's value so the env can
+    * stash it: a heap box for escape-captured vars, an outer env slot
+    * for nested-lambda re-capture, or a global for top-level bindings.
+    *
+    * Also inc's the heap box when the captured var is escape-boxed —
+    * the env now shares ownership of the box alongside the parent
+    * binding. The matching dec lives in the lambda's env dtor.
     */
   private def lvalueOfBinding(s: Symbol): String =
     lambdaCaptures.get(s.id) match
       case Some((idx, _, CaptureMode.ByRef)) =>
         // Re-capturing an already-ByRef'd var from a nested lambda:
-        // pull the pointer straight out of the outer env.
+        // pull the pointer straight out of the outer env. The pointer
+        // is to the heap box; inc it so the new env owns its share.
         val pslot = newReg()
         emitLine(s"  $pslot = getelementptr inbounds $lambdaEnvTy, ptr %env, i32 0, i32 $idx\n")
         val pp = newReg()
         emitLine(s"  $pp = load ptr, ptr $pslot\n")
+        emitLine(s"  call void @__nex_env_inc(ptr $pp)\n")
         pp
       case Some(_) =>
         notImpl(s"ByRef recapture of ByVal `${s.name}`")
       case None =>
         locals.get(s.id) match
+          case Some(slot) if boxedVarTypes.contains(s.id) =>
+            // Escape-captured var: the alloca holds a box pointer.
+            // Load it, inc it, and hand it off — the env now owns a
+            // share of the box alongside the parent.
+            val bp = newReg()
+            emitLine(s"  $bp = load ptr, ptr $slot\n")
+            emitLine(s"  call void @__nex_env_inc(ptr $bp)\n")
+            bp
           case Some(slot) => slot
           case None if globalBindings.contains(s.id) => s"@${s.name}"
           case None       => notImpl(s"ByRef capture of unbound `${s.name}`")

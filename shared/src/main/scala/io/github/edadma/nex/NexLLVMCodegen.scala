@@ -179,6 +179,8 @@ class NexLLVMCodegen
     locals.clear()
     arrayLocalSlots.clear()
     blockArrayScopes = Nil
+    boxedFunctionSlots.clear()
+    blockBoxedScopes = Nil
 
     val isMain  = f.sym.name == "main" && f.params.isEmpty
     val retLLT  = if isMain then "i32" else llvmType(f.returnType)
@@ -473,6 +475,15 @@ class NexLLVMCodegen
           // caller has its own owning share (per the spec §8.5 ARC model
           // documented above [[arrayLocalSlots]]). Scalars need no inc.
           locals.get(s.id) match
+            case Some(slot) if boxedVarTypes.contains(s.id) =>
+              // Escape-captured var lives in a heap box. Double-load:
+              // alloca → box-ptr, then box-ptr → value.
+              val bp = newReg()
+              emitLine(s"  $bp = load ptr, ptr $slot\n")
+              val reg = newReg()
+              emitLine(s"  $reg = load ${llvmType(t)}, ptr $bp\n")
+              emitArrInc(reg, t)
+              reg
             case Some(slot) =>
               val reg = newReg()
               emitLine(s"  $reg = load ${llvmType(t)}, ptr $slot\n")
@@ -1160,24 +1171,52 @@ class NexLLVMCodegen
   private def emitAssign(target: TExpr, value: TExpr): Unit =
     target match
       case TVarRef(s, _, t) =>
-        val rv = emitExpr(value)
-        // For array slots, the previous occupant owns a share — dec it
-        // before storing the new value so the old buffer can be freed if
-        // this was its last reference. Scalars need no such cleanup.
-        locals.get(s.id) match
-          case Some(slot) =>
-            if isRefCountedType(t) then
+        // Captured-by-ref var inside a lambda body: env stores a box
+        // pointer; load it and store through. Checked before `locals`
+        // since a captured var is not in the lambda's locals.
+        lambdaCaptures.get(s.id) match
+          case Some((idx, capT, CaptureMode.ByRef)) =>
+            val rv = emitExpr(value)
+            val pslot = newReg()
+            emitLine(s"  $pslot = getelementptr inbounds $lambdaEnvTy, ptr %env, i32 0, i32 $idx\n")
+            val bp = newReg()
+            emitLine(s"  $bp = load ptr, ptr $pslot\n")
+            if isRefCountedType(capT) then
               val old = newReg()
-              emitLine(s"  $old = load ${llvmType(t)}, ptr $slot\n")
-              emitArrDec(old, t)
-            emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
-          case None if globalBindings.contains(s.id) =>
-            if isRefCountedType(t) then
-              val old = newReg()
-              emitLine(s"  $old = load ${llvmType(t)}, ptr @${s.name}\n")
-              emitArrDec(old, t)
-            emitLine(s"  store ${llvmType(t)} $rv, ptr @${s.name}\n")
-          case None       => notYet(s"assign to non-local `${s.name}`")
+              emitLine(s"  $old = load ${llvmType(capT)}, ptr $bp\n")
+              emitArrDec(old, capT)
+            emitLine(s"  store ${llvmType(capT)} $rv, ptr $bp\n")
+          case Some(_) =>
+            notYet(s"assign to ByVal-captured `${s.name}`")
+          case None =>
+            val rv = emitExpr(value)
+            // For array slots, the previous occupant owns a share — dec it
+            // before storing the new value so the old buffer can be freed if
+            // this was its last reference. Scalars need no such cleanup.
+            locals.get(s.id) match
+              case Some(slot) if boxedVarTypes.contains(s.id) =>
+                // Boxed var: store goes through the box. If the var holds a
+                // refcounted value, dec the previous occupant via the box.
+                val bp = newReg()
+                emitLine(s"  $bp = load ptr, ptr $slot\n")
+                if isRefCountedType(t) then
+                  val old = newReg()
+                  emitLine(s"  $old = load ${llvmType(t)}, ptr $bp\n")
+                  emitArrDec(old, t)
+                emitLine(s"  store ${llvmType(t)} $rv, ptr $bp\n")
+              case Some(slot) =>
+                if isRefCountedType(t) then
+                  val old = newReg()
+                  emitLine(s"  $old = load ${llvmType(t)}, ptr $slot\n")
+                  emitArrDec(old, t)
+                emitLine(s"  store ${llvmType(t)} $rv, ptr $slot\n")
+              case None if globalBindings.contains(s.id) =>
+                if isRefCountedType(t) then
+                  val old = newReg()
+                  emitLine(s"  $old = load ${llvmType(t)}, ptr @${s.name}\n")
+                  emitArrDec(old, t)
+                emitLine(s"  store ${llvmType(t)} $rv, ptr @${s.name}\n")
+              case None       => notYet(s"assign to non-local `${s.name}`")
 
       case TIndex(arr, indices, _, _) =>
         // arr[i] = v / arr[i, j] = v.  Compute slot ptr via the runtime
@@ -1296,18 +1335,29 @@ class NexLLVMCodegen
         anchor.decAfter()
 
   private def emitLocalBinding(sym: Symbol, value: TExpr): Unit =
-    val rv   = emitExpr(value)
-    val ty   = llvmType(sym.tpe)
-    val slot = newReg()
-    emitLine(s"  $slot = alloca $ty\n")
-    if ty != "void" then emitLine(s"  store $ty $rv, ptr $slot\n")
-    locals(sym.id) = slot
-    // Register array-typed bindings into the innermost block scope (or
-    // function-level if not inside one) so they're dec'd at scope exit.
-    // The slot takes ownership of the stored ref; no extra inc needed —
-    // [[emitExpr]] already returned an owning value.
-    if isRefCountedType(sym.tpe) then
-      registerArraySlot(sym.id, slot, sym.tpe)
+    val rv = emitExpr(value)
+    val ty = llvmType(sym.tpe)
+    if boxedVarTypes.contains(sym.id) then
+      // Var is captured by a closure that may outlive this stack frame.
+      // Allocate a heap-backed single-cell box so the captured cell
+      // survives. The slot stores a pointer to the box; the box stores
+      // the value. Reads and writes go through one extra load.
+      val box  = newReg()
+      val size = boxSizeBytes(sym.tpe)
+      emitLine(s"  $box = call ptr @__nex_env_alloc(i64 $size, ptr null)\n")
+      if ty != "void" then emitLine(s"  store $ty $rv, ptr $box\n")
+      val slot = newReg()
+      emitLine(s"  $slot = alloca ptr\n")
+      emitLine(s"  store ptr $box, ptr $slot\n")
+      locals(sym.id) = slot
+      registerBoxedSlot(sym.id, slot, sym.tpe)
+    else
+      val slot = newReg()
+      emitLine(s"  $slot = alloca $ty\n")
+      if ty != "void" then emitLine(s"  store $ty $rv, ptr $slot\n")
+      locals(sym.id) = slot
+      if isRefCountedType(sym.tpe) then
+        registerArraySlot(sym.id, slot, sym.tpe)
 
   // ---------------------------------------------------------------------------
   // Complex (TyComplex) arithmetic helpers.

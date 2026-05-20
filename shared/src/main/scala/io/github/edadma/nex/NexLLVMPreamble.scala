@@ -1186,6 +1186,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
     locals.clear()
     arrayLocalSlots.clear()
     blockArrayScopes = Nil
+    boxedFunctionSlots.clear()
+    blockBoxedScopes = Nil
     currentReturnType = TyUnit
     currentIsMain     = false
 

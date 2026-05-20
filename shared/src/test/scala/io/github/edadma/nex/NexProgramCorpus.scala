@@ -1862,6 +1862,65 @@ object NexProgramCorpus:
     ),
 
     // ========================================================================
+    // closure escape (§4.11) — captured `var` outlives the parent frame
+    // ========================================================================
+
+    Case(
+      "closure escape (§4.11)",
+      "returned closure increments its captured var across calls",
+      """
+        |def make_counter(): () -> integer =
+        |  var n = 0
+        |  () ->
+        |    n = n + 1
+        |    n
+        |
+        |def main() =
+        |  val c = make_counter()
+        |  print(c())
+        |  print(c())
+        |  print(c())
+      """.stripMargin,
+      "1\n2\n3\n",
+    ),
+    Case(
+      "closure escape (§4.11)",
+      "two counters returned from separate calls keep independent state",
+      """
+        |def make_counter(): () -> integer =
+        |  var n = 0
+        |  () ->
+        |    n = n + 1
+        |    n
+        |
+        |def main() =
+        |  val a = make_counter()
+        |  val b = make_counter()
+        |  print(a())
+        |  print(a())
+        |  print(b())
+        |  print(a())
+        |  print(b())
+      """.stripMargin,
+      "1\n2\n1\n3\n2\n",
+    ),
+    Case(
+      "closure escape (§4.11)",
+      "returned closure reads captured var after parent returned",
+      """
+        |def make_reader(): () -> integer =
+        |  var x = 42
+        |  () -> x
+        |
+        |def main() =
+        |  val r = make_reader()
+        |  print(r())
+        |  print(r())
+      """.stripMargin,
+      "42\n42\n",
+    ),
+
+    // ========================================================================
     // top-level initialization
     // ========================================================================
 

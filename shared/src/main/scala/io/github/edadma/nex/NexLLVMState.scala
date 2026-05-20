@@ -144,6 +144,33 @@ protected trait NexLLVMState:
     */
   protected val varBindings = mutable.Set.empty[Int]
 
+  /** Symbol ids of `var` bindings that are captured by reference from
+    * any lambda. These vars live in a heap-allocated box (one i64/double/
+    * etc per box, refcount-headed via __nex_env_alloc) instead of on the
+    * parent stack — so a returned closure that holds a ByRef ref to the
+    * var continues to see live storage after the parent frame is gone.
+    *
+    * Populated in the lambda pre-pass before any function body is emitted.
+    * Consulted by [[emitLocalBinding]] (to allocate the box), the TVarRef
+    * read path (to double-load through the box), the TAssign write path
+    * (to store through the box), and `lvalueOfBinding` (to hand the env
+    * the box pointer instead of the dead alloca).
+    */
+  protected val boxedVarTypes = mutable.Map.empty[Int, Type]
+
+  /** Function-level boxed-var slots: symbol id → alloca register that
+    * stores the box pointer. Function exit dec's each box. Used for
+    * boxed vars that live in the function's top scope (not nested in
+    * a block).
+    */
+  protected val boxedFunctionSlots = mutable.LinkedHashMap.empty[Int, String]
+
+  /** Parallel stack to [[blockArrayScopes]] for boxed-var bindings inside
+    * a TBlock. Each scope holds id → alloca-register. Pushed / popped /
+    * dec'd in sync with the array scope at the same depth.
+    */
+  protected var blockBoxedScopes: List[mutable.LinkedHashMap[Int, String]] = Nil
+
   /** Symbol id → opId for every `@intrinsic` top-level function. These
     * functions have no LLVM wrapper definition emitted (a wrapper would
     * either collide with the libm symbol or recurse into itself). Instead
@@ -638,15 +665,19 @@ protected trait NexLLVMState:
     * current function — innermost block first, then the function-level
     * (param) slots last. Called right before each function-exit `ret`
     * (including early `return`s) so that nothing leaks regardless of
-    * how deeply nested the return site is.
+    * how deeply nested the return site is. Also walks every boxed-var
+    * scope so the heap box backing each escape-captured `var` is
+    * released when the parent function exits.
     */
   protected def decAllLocalArrays(): Unit =
     if currentBlock.isDefined then
       for scope <- blockArrayScopes do decBlockScope(scope)
+      for boxScope <- blockBoxedScopes do decBoxedScope(boxScope)
       for (id, (slot, t)) <- arrayLocalSlots do
         val v = newReg()
         emitLine(s"  $v = load ${llvmType(t)}, ptr $slot\n")
         emitArrDec(v, t)
+      for (_, slot) <- boxedFunctionSlots do decBoxedSlot(slot)
 
   /** Dec every refcounted slot recorded in a single block scope. Used at
     * block end (after popping) and as a building block for
@@ -660,17 +691,42 @@ protected trait NexLLVMState:
         emitLine(s"  $v = load ${llvmType(t)}, ptr $slot\n")
         emitArrDec(v, t)
 
-  /** Push a fresh block scope; subsequent array bindings emit into it. */
+  /** Dec every boxed-var slot in a block scope. Each slot's alloca holds
+    * a box pointer; loading it gives the heap address to release via
+    * `__nex_env_dec` (the box was allocated by `__nex_env_alloc`).
+    */
+  protected def decBoxedScope(scope: mutable.LinkedHashMap[Int, String]): Unit =
+    if currentBlock.isDefined then
+      for (_, slot) <- scope do decBoxedSlot(slot)
+
+  /** Dec a single boxed-var slot — load the box pointer from the alloca
+    * and release the heap allocation.
+    */
+  protected def decBoxedSlot(slot: String): Unit =
+    if currentBlock.isDefined then
+      val bp = newReg()
+      emitLine(s"  $bp = load ptr, ptr $slot\n")
+      emitLine(s"  call void @__nex_env_dec(ptr $bp)\n")
+
+  /** Push a fresh block scope; subsequent array bindings emit into it.
+    * Pushes a matching boxed-var scope so escape-captured vars declared
+    * inside the block are released at block exit.
+    */
   protected def pushBlockScope(): Unit =
     blockArrayScopes = mutable.LinkedHashMap.empty[Int, (String, Type)] :: blockArrayScopes
+    blockBoxedScopes = mutable.LinkedHashMap.empty[Int, String] :: blockBoxedScopes
 
   /** Pop the innermost block scope and return it so the caller can dec
-    * its entries at the block-exit position.
+    * its entries at the block-exit position. Also pops the parallel
+    * boxed-var scope and dec's each boxed slot before returning.
     */
   protected def popBlockScope(): mutable.LinkedHashMap[Int, (String, Type)] =
-    val top = blockArrayScopes.head
+    val topArr = blockArrayScopes.head
     blockArrayScopes = blockArrayScopes.tail
-    top
+    val topBox = blockBoxedScopes.head
+    blockBoxedScopes = blockBoxedScopes.tail
+    decBoxedScope(topBox)
+    topArr
 
   /** Register a refcounted (array or closure) binding's slot under the
     * appropriate scope: the innermost block if we're inside one,
@@ -682,6 +738,29 @@ protected trait NexLLVMState:
     blockArrayScopes match
       case head :: _ => head(id) = (slot, t)
       case Nil       => arrayLocalSlots(id) = (slot, t)
+
+  /** Register a boxed-var binding's alloca (which holds the box pointer)
+    * under the innermost block, or function-level when not inside a
+    * block. Mirrors [[registerArraySlot]] but uses the parallel
+    * box-tracking maps.
+    */
+  protected def registerBoxedSlot(id: Int, slot: String, t: Type): Unit =
+    boxedVarTypes(id) = t
+    blockBoxedScopes match
+      case head :: _ => head(id) = slot
+      case Nil       => boxedFunctionSlots(id) = slot
+
+  /** Size in bytes of the box backing a captured-by-ref var. Mirrors
+    * [[captureSlotSize]] in NexLLVMLambdas — kept consistent with how
+    * an env field would size the same value.
+    */
+  protected def boxSizeBytes(t: Type): Int = t match
+    case TyBool       => 1
+    case TyInteger    => 8
+    case TyReal       => 8
+    case TyString     => 8
+    case TyFunc(_, _) => 16
+    case _            => elemSize(t)
 
   /** Map a Nex binary operator + operand type to (LLVM instruction,
     * result LLVM type). Integer / real overloads are picked here.
