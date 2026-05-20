@@ -450,6 +450,21 @@ class NexMLIRCodegen:
         case t @ MTensor(_, List(rows, cols)) => emitTranspose(av.reg, t, rows, cols)
         case other                            => notYet(s"transpose on $other")
 
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "flatten" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_))           => emitFlatten1D(av)
+        case t @ MTensor(_, List(rows, cols))  => emitFlatten2D(av, t, rows, cols)
+        case other                             => notYet(s"flatten on $other")
+
+    case TCall(TVarRef(s, _, _), List(arr, TIntLit(rows, _, _), TIntLit(cols, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "reshape" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitReshape(av, t, rows.toInt, cols.toInt)
+        case other                   => notYet(s"reshape on $other")
+
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
@@ -1234,6 +1249,85 @@ class NexMLIRCodegen:
     val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
     out.append(s"      %s = $cmp $pred, $lhs, $rhs : $commonS\n")
     out.append(s"      linalg.yield %s : i1\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** `flatten(xs)` on a rank-1 array: identity, but materialise a fresh
+    * tensor to match the interpreter's "flatten always copies"
+    * semantics. A `linalg.copy`-style identity map does the job.
+    */
+  private def emitFlatten1D(av: MlirVal): MlirVal =
+    val ty    = av.ty.asInstanceOf[MTensor]
+    val elemT = ty.elem
+    val s     = scalarText(elemT)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val outR  = fresh("flat")
+    out.append(s"  $outR = linalg.map ins(${av.reg} : ${ty.text}) outs($initR : ${ty.text})\n")
+    out.append(s"    (%a: $s, %_o: $s) {\n")
+    out.append(s"      linalg.yield %a : $s\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
+
+  /** `flatten(m)` on a rank-2 array — Nex spec §10.4 says this is
+    * **column-major**: `flat[i + r*j] = m[i, j]` for an r×c matrix.
+    * We materialise a fresh rank-1 of length r·c via `linalg.map`
+    * whose body uses `linalg.index 0` plus a divmod against `r` to
+    * recover the source `(i, j)`, then `tensor.extract %m[i, j]`.
+    */
+  private def emitFlatten2D(av: MlirVal, srcTy: MTensor, rows: Int, cols: Int): MlirVal =
+    val elemT = srcTy.elem
+    val s     = scalarText(elemT)
+    val total = rows * cols
+    val outTy = MTensor(elemT, List(total))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("flat")
+    out.append(s"  $outR = linalg.map outs($initR : ${outTy.text})\n")
+    out.append(s"    (%_o: $s) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val rowsC = fresh("rows")
+    out.append(s"      $rowsC = arith.constant $rows : index\n")
+    val iR    = fresh("i")
+    out.append(s"      $iR = arith.remui $idxR, $rowsC : index\n")
+    val jR    = fresh("j")
+    out.append(s"      $jR = arith.divui $idxR, $rowsC : index\n")
+    val eltR  = fresh("elt")
+    out.append(s"      $eltR = tensor.extract ${av.reg}[$iR, $jR] : ${srcTy.text}\n")
+    out.append(s"      linalg.yield $eltR : $s\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** `reshape(flat, r, c)` — column-major inverse of `flatten`. The
+    * input is rank-1; the output is rank-2 with `m[i, j] = flat[i + r*j]`.
+    * Same shape as `emitFlatten2D` but iterates the (rows, cols) output
+    * grid via two `linalg.index` calls and computes the flat source
+    * index by hand. The elaborator rejects shape mismatches before
+    * we get here, so `length(flat)` is guaranteed to equal `r*c`.
+    */
+  private def emitReshape(av: MlirVal, srcTy: MTensor, rows: Int, cols: Int): MlirVal =
+    val elemT = srcTy.elem
+    val s     = scalarText(elemT)
+    val outTy = MTensor(elemT, List(rows, cols))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("rs")
+    out.append(s"  $outR = linalg.map outs($initR : ${outTy.text})\n")
+    out.append(s"    (%_o: $s) {\n")
+    val iR    = fresh("i")
+    out.append(s"      $iR = linalg.index 0 : index\n")
+    val jR    = fresh("j")
+    out.append(s"      $jR = linalg.index 1 : index\n")
+    val rowsC = fresh("rows")
+    out.append(s"      $rowsC = arith.constant $rows : index\n")
+    val mul   = fresh("mul")
+    out.append(s"      $mul = arith.muli $rowsC, $jR : index\n")
+    val flat  = fresh("flat")
+    out.append(s"      $flat = arith.addi $iR, $mul : index\n")
+    val eltR  = fresh("elt")
+    out.append(s"      $eltR = tensor.extract ${av.reg}[$flat] : ${srcTy.text}\n")
+    out.append(s"      linalg.yield $eltR : $s\n")
     out.append("    }\n")
     MlirVal(outR, outTy)
 
