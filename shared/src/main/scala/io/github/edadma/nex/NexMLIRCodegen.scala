@@ -465,6 +465,13 @@ class NexMLIRCodegen:
         case t @ MTensor(_, List(_)) => emitReshape(av, t, rows.toInt, cols.toInt)
         case other                   => notYet(s"reshape on $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, TIntLit(axis, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "sum_axis" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_, _)) => emitSumAxis(av, t, axis.toInt)
+        case other                      => notYet(s"sum_axis on $other")
+
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
@@ -1249,6 +1256,34 @@ class NexMLIRCodegen:
     val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
     out.append(s"      %s = $cmp $pred, $lhs, $rhs : $commonS\n")
     out.append(s"      linalg.yield %s : i1\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** `sum_axis(m, axis)` (spec §10.4): rank-2 reduction along one axis,
+    * producing a rank-1 result. axis=0 sums down each column (output
+    * shape = cols); axis=1 sums across each row (output shape = rows).
+    * Lowers to `linalg.reduce ... dimensions = [axis]` with a `+`
+    * accumulator body — same kernel as the all-dims `emitSumReduce`,
+    * just with a non-empty output shape.
+    */
+  private def emitSumAxis(av: MlirVal, srcTy: MTensor, axis: Int): MlirVal =
+    val elemT     = srcTy.elem
+    val scalar    = scalarText(elemT)
+    val outShape  = srcTy.shape.zipWithIndex.collect { case (d, i) if i != axis => d }
+    val outTy     = MTensor(elemT, outShape)
+    val initER    = fresh("init_e")
+    out.append(s"  $initER = arith.constant ${zeroLit(elemT)} : $scalar\n")
+    val initR     = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val filledR   = fresh("filled")
+    out.append(s"  $filledR = linalg.fill ins($initER : $scalar) outs($initR : ${outTy.text}) -> ${outTy.text}\n")
+    val outR      = fresh("axis")
+    out.append(
+      s"  $outR = linalg.reduce ins(${av.reg} : ${srcTy.text}) outs($filledR : ${outTy.text}) dimensions = [$axis]\n",
+    )
+    out.append(s"    (%in: $scalar, %acc: $scalar) {\n")
+    out.append(s"      %s = ${scalarBinop("+", elemT)} %in, %acc : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
     out.append("    }\n")
     MlirVal(outR, outTy)
 

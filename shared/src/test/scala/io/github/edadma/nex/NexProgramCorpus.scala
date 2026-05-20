@@ -1491,6 +1491,28 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "sum_axis(m, 0) collapses rows producing the column totals",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 0))
+      """.stripMargin,
+      "[5, 7, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "sum_axis(m, 1) collapses columns producing the row totals",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 1))
+      """.stripMargin,
+      "[6, 15]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
       "rank-1 slice with half-open range (spec §4.14)",
       """
         |def main() =
