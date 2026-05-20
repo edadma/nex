@@ -79,7 +79,7 @@ print(s"${z.re}")                       // 3.0
 val a = i                   // (0.0 + 1.0i)  — imaginary unit
 val b = 2i                  // (0.0 + 2.0i)  — juxtaposition: 2 * i
 val c = 3 + 4i              // (3.0 + 4.0i)
-val d = exp(2pi * i)        // ~ (-1.0 + 0.0i)  (Euler's identity)
+val d = exp(pi * i)         // ~ (-1.0 + 0.0i)  (Euler's identity)
 ```
 
 `i` is the prelude name; `for i in 0..n` shadows it normally. Pick a different index name (`j`, `k`, `n`, `m`) if you need both in the same scope.
