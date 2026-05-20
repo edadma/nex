@@ -292,7 +292,16 @@ class NexMonomorphize(symbols: SymbolTable):
           case other => other
         }
         TInterpStringLit(newParts, p, t)
-      case ti: TIntrinsic  => ti
+      case TIntrinsic(opId, refs, p, t) =>
+        // A generic intrinsic body carries trailing type-parameter refs
+        // (e.g. `@intrinsic("libm.sqrt", T)` → refs=List("T")). At
+        // specialization time we look up each ref in the substitution
+        // map, append its mangled type to the opId, and clear `refs`
+        // — the resulting opId is what backend dispatch tables key on.
+        if refs.isEmpty then TIntrinsic(opId, Nil, p, goT(t))
+        else
+          val suffix = refs.map(name => mangleType(substMap(name))).mkString("$")
+          TIntrinsic(s"$opId$$$suffix", Nil, p, goT(t))
 
       // -- References --------------------------------------------------
       case TVarRef(s, p, _) =>

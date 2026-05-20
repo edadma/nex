@@ -393,10 +393,29 @@ class NexElaborator
         case (Some(b), None)    => elabExpr(b)
         case (None, Some(attr)) =>
           attr.args match
-            case List(opId) => TIntrinsic(opId, Some(f.pos))
-            case _          =>
-              err("@intrinsic requires exactly one string argument (the opId)", f)
-              TIntrinsic("<error>", Some(f.pos))
+            case Nil =>
+              err("@intrinsic requires at least one argument (the opId)", f)
+              TIntrinsic("<error>", Nil, Some(f.pos))
+            case opId :: rest =>
+              // Identifier args are stored with a `@` prefix by the
+              // parser (see attributeArg). A bare string opId is the
+              // legacy form; trailing `@T`-style refs mark the opId as
+              // kind-specialized — monomorph will append a per-type
+              // mangling to the opId for each ref before backends see it.
+              if opId.startsWith("@") then
+                err("@intrinsic first argument must be the opId string, not a type-parameter reference", f)
+                TIntrinsic("<error>", Nil, Some(f.pos))
+              else
+                val typeRefNames = rest.map { arg =>
+                  if !arg.startsWith("@") then
+                    err(s"@intrinsic trailing arguments must be type-parameter references, got `$arg`", f)
+                    "<error>"
+                  else arg.drop(1)
+                }
+                for tn <- typeRefNames if tn != "<error>" do
+                  if !f.typeParams.exists(_.name == tn) then
+                    err(s"@intrinsic references type parameter `$tn` which is not declared on this function", f)
+                TIntrinsic(opId, typeRefNames, Some(f.pos))
         case (Some(b), Some(_)) =>
           err("@intrinsic declarations must not have a body", f)
           elabExpr(b)

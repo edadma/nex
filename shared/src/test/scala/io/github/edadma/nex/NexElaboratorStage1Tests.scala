@@ -540,7 +540,7 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
         |@intrinsic()
         |def foo(x: integer): integer
       """.stripMargin)
-      errs.exists(_.contains("exactly one string argument")) shouldBe true
+      errs.exists(_.contains("at least one argument")) shouldBe true
     }
   }
 
@@ -722,5 +722,59 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       callee.sym.name shouldBe "id$integer"
       // The specialized signature has no kind variables left.
       callee.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+  }
+
+  // ==========================================================================
+  // Stage 3-γ — kind-specialized intrinsics
+  // ==========================================================================
+  //
+  // `@intrinsic("libm.sqrt", T)` carries a trailing type-parameter
+  // reference. The elaborator records its name on the TIntrinsic node;
+  // monomorph appends a `$<mangled>` suffix per ref so each
+  // specialized clone bridges to the right libm symbol.
+
+  "kind-specialized intrinsics (Stage 3-γ)" should {
+
+    "elaborator records trailing type-param ref on TIntrinsic" in {
+      val tp = elab("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Float](x: T): T
+      """.stripMargin, runMonomorph = false)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      val ti = fn.body.asInstanceOf[TIntrinsic]
+      ti.opId shouldBe "libm.sqrt"
+      ti.typeRefs shouldBe List("T")
+    }
+
+    "reject @intrinsic with a type-param ref the def does not declare" in {
+      val errs = elabExpect("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt(x: real): real
+      """.stripMargin)
+      errs.exists(_.contains("type parameter `T`")) shouldBe true
+    }
+
+    "reject @intrinsic whose first arg is a type-param ref instead of an opId string" in {
+      val errs = elabExpect("""
+        |@intrinsic(T)
+        |def gsqrt[T: Float](x: T): T
+      """.stripMargin)
+      errs.exists(_.contains("first argument must be the opId string")) shouldBe true
+    }
+
+    "monomorph mangles opId to libm.sqrt$real for a Float-constrained clone" in {
+      val tp = elab("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Float](x: T): T
+        |def use(): real = gsqrt(2.0)
+      """.stripMargin)
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      // Generic template dropped; specialized clone present.
+      funDecls.exists(_.sym.name == "gsqrt") shouldBe false
+      val clone = funDecls.find(_.sym.name == "gsqrt$real").get
+      val ti    = clone.body.asInstanceOf[TIntrinsic]
+      ti.opId shouldBe "libm.sqrt$real"
+      ti.typeRefs shouldBe Nil
     }
   }

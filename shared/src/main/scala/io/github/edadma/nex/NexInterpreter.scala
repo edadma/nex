@@ -595,7 +595,7 @@ class NexInterpreter:
     case TStringLit(v, _, _)  => VString(v)
     case TUnitLit(_)          => VUnit
 
-    case TIntrinsic(opId, p, _) =>
+    case TIntrinsic(opId, _, p, _) =>
       // A TIntrinsic node should only ever appear as the *body* of a
       // VUserFunc and be dispatched by evalUserBody before evalExpr sees
       // it. Reaching this case means an intrinsic was placed somewhere
@@ -935,7 +935,7 @@ class NexInterpreter:
       p: Option[scala.util.parsing.input.Position],
   ): Value =
     body match
-      case TIntrinsic(opId, _, _) =>
+      case TIntrinsic(opId, _, _, _) =>
         NexIntrinsics.require(opId)
         val argVals = params.map { ps =>
           frame.lookup(ps.id).map(_.v).getOrElse(
@@ -980,6 +980,11 @@ class NexInterpreter:
           case List(VReal(y), VReal(x)) => VReal(math.atan2(y, x))
           case _ => trap(s"libm.atan2: expected (real, real), got ${args.map(formatValue).mkString(", ")}", p)
       },
+      // Stage 3-γ specialized intrinsics. The monomorphization pass
+      // emits one per concrete kind admitted by the source decl's
+      // constraint (Float → real today; widening to other constraints
+      // adds an entry per kind they admit).
+      "libm.sqrt$real" -> realUnary("libm.sqrt$real", math.sqrt),
     )
 
   /** Bridge a unary real → real libm function into the intrinsic

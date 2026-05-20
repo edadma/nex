@@ -90,7 +90,7 @@ class NexLLVMCodegen
     for d <- tp.allDecls do d match
       case f: TFunDecl =>
         f.body match
-          case TIntrinsic(opId, _, _) => intrinsicFunctionOpIds(f.sym.id) = opId
+          case TIntrinsic(opId, _, _, _) => intrinsicFunctionOpIds(f.sym.id) = opId
           case _                       => ()
       case _ => ()
 
@@ -189,7 +189,7 @@ class NexLLVMCodegen
       if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     f.body match
-      case TIntrinsic(opId, _, _) =>
+      case TIntrinsic(opId, _, _, _) =>
         emitIntrinsicBody(opId, f.params, f.returnType)
       case _ =>
         val result = emitExpr(f.body)
@@ -240,6 +240,18 @@ class NexLLVMCodegen
           throw new RuntimeException(s"libm.cbrt expects 1 param, got ${params.size}")
         val reg = newReg()
         emitLine(s"  $reg = call double @cbrt(double %arg0)\n")
+        emitTerminator(s"  ret double $reg\n")
+
+      // Stage 3-γ specialized intrinsics. The function-decl form: monomorph
+      // emits one TFunDecl per concrete kind, each carrying a `$<type>`-
+      // suffixed opId. The body is the same direct libm bridge as the
+      // legacy cbrt arm above — one libm call per param, return its
+      // result.
+      case "libm.sqrt$real" =>
+        if params.size != 1 then
+          throw new RuntimeException(s"libm.sqrt$$real expects 1 param, got ${params.size}")
+        val reg = newReg()
+        emitLine(s"  $reg = call double @sqrt(double %arg0)\n")
         emitTerminator(s"  ret double $reg\n")
 
       case other =>
@@ -320,6 +332,10 @@ class NexLLVMCodegen
     case "libm.tanh"  => "tanh"
     case "libm.log2"  => "log2"
     case "libm.log10" => "log10"
+    // Stage 3-γ specialized libm unaries. Each concrete kind that a
+    // `@intrinsic` decl admits gets its own entry — the `$<type>`
+    // suffix selects which libm symbol the call site bridges to.
+    case "libm.sqrt$real" => "sqrt"
 
   /** Same shape as NexLLVMPrelude.liftToReal but visible from
     * [[emitIntrinsicCall]]. The sibling helper is `private`; rather than
@@ -347,7 +363,7 @@ class NexLLVMCodegen
     case TBoolLit(v, _, _) => if v then "1" else "0"
     case TUnitLit(_)       => "void"
 
-    case TIntrinsic(opId, _, _) =>
+    case TIntrinsic(opId, _, _, _) =>
       // TIntrinsic only appears as a function body and is consumed by
       // emitIntrinsicBody directly; if we reach this case in value
       // position the elaborator placed it somewhere illegal.

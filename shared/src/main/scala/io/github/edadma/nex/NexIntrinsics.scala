@@ -36,6 +36,14 @@ object NexIntrinsics:
     "libm.sinh",  "libm.cosh", "libm.tanh",
     "libm.asinh", "libm.acosh","libm.atanh",
     "libm.log2",  "libm.log10",
+    // Per-type specialized intrinsic IDs minted by Stage 3-γ
+    // monomorphization. A kind-generic `def gsqrt[T: Float](x: T): T =
+    // @intrinsic("libm.sqrt", T)` becomes one specialized clone per
+    // concrete T, each carrying the `$<type>`-suffixed opId. Backends
+    // dispatch on the suffixed name directly — there is no "stem"
+    // lookup. Each kind a constraint admits requires its entry here
+    // and in every backend dispatch table.
+    "libm.sqrt$real",
   )
 
   /** Throw if `opId` is not a known intrinsic. Use this at the top of each

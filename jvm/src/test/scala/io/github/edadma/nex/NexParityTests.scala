@@ -896,6 +896,43 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  // ==========================================================================
+  // Stage 3-γ — kind-specialized intrinsics. A generic def whose body is
+  // `@intrinsic("libm.sqrt", T)` becomes one specialized TFunDecl per
+  // concrete kind, each carrying a `$<type>`-suffixed opId
+  // (`libm.sqrt$real`) that backend dispatch tables key on. Demonstrates
+  // the round-trip: elaborator → monomorph → per-backend dispatch.
+  // ==========================================================================
+
+  "kind-specialized intrinsics (Stage 3-γ)" should {
+    "Float-constrained sqrt specializes to libm.sqrt$real" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Float](x: T): T
+        |def main() = print(gsqrt(2.0))
+      """.stripMargin,
+      "1.4142135623730951\n",
+    )
+    "specialized sqrt called twice with the same kind reuses one clone" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Float](x: T): T
+        |def main() =
+        |  print(gsqrt(4.0))
+        |  print(gsqrt(9.0))
+      """.stripMargin,
+      "2.0\n3.0\n",
+    )
+    "specialized intrinsic composes with normal arithmetic" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Float](x: T): T
+        |def main() = print(gsqrt(2.0) * gsqrt(2.0))
+      """.stripMargin,
+      "2.0000000000000004\n",
+    )
+  }
+
   "rank-1 prelude reductions" should {
     "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
     "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")

@@ -289,8 +289,16 @@ case class TMethodCall(receiver: TExpr, name: String, args: List[TExpr], pos: Op
   * the interpreter maps it to a Scala closure, the LLVM backend to an
   * emit-function, etc. Decls bearing an `@intrinsic("opId")` attribute
   * are minted with this body in place of an ordinary `TExpr`.
+  *
+  * `typeRefs` carries the source-level type-parameter names from any
+  * trailing identifier arguments to `@intrinsic("libm.sqrt", T)` — they
+  * tell the monomorphization pass which type parameters specialize the
+  * opId. After monomorph the list is empty and `opId` is the fully
+  * mangled per-type name (e.g. `"libm.sqrt$real"`). A non-generic
+  * intrinsic decl (no trailing type-ref args) keeps `typeRefs = Nil`
+  * and its `opId` passes through monomorph unchanged.
   */
-case class TIntrinsic(opId: String, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
+case class TIntrinsic(opId: String, typeRefs: List[String] = Nil, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
 
 // -- Lambdas ---------------------------------------------------------------
 
