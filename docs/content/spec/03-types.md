@@ -1,6 +1,6 @@
 ---
 title: Type System
-summary: Primitive types, numeric promotion, arrays, tuples, structs, function types.
+summary: Primitive types, numeric promotion, arrays, tuples, structs, sum types, function types.
 weight: 30
 ---
 
@@ -104,7 +104,37 @@ val px = p.x
 val end_x = seg.finish.x
 ```
 
-## 3.6 Function types
+## 3.6 Sum types
+
+A sum type is declared with `enum`. Each line of the body declares a **variant** — either a bare name (a single value of the enum type) or a constructor that takes named, typed fields:
+
+```nex
+enum Color =
+  Red
+  Green
+  Blue
+
+enum Solver =
+  Converged(x: real)
+  Diverged
+  MaxIters(iters: integer, last: real)
+```
+
+A variant's field types are restricted to scalar types (`integer`, `real`, `bool`, `string`) in the current implementation. Aggregate fields (arrays, tuples, structs, complex, nested enums) are *deferred*.
+
+Variant references are values directly when the variant is bare (`Red`, `Diverged`), or callable constructors when the variant has fields (`Converged(3.14)`, `MaxIters(100, 0.5)`). Both forms yield a value whose static type is the enclosing enum:
+
+```nex
+val a: Color  = Green
+val b: Solver = Converged(2.5)
+val c: Solver = Diverged
+```
+
+Sum-type values are inspected with `match` (see [§7.5](/spec/07-control-flow/#75-match-expressions)). Printing a sum-type value renders bare variants as their name (`Red`) and fielded variants as `Name(f0, f1, ...)` (`Converged(3.14)`).
+
+Generic enums (`enum Option[T] = Some(T); None`) are *deferred* alongside user-defined generics.
+
+## 3.7 Function types
 
 A function type `(T1, T2, ..., Tn) -> R` denotes a function taking arguments of the given types and returning `R`. A single-argument function may be written without parentheses:
 
@@ -120,7 +150,7 @@ A function type may include parameter modes (see chapter 6):
 (mut [real]) -> unit
 ```
 
-## 3.7 Type expressions
+## 3.8 Type expressions
 
 Type expressions are used in declarations (function signatures, struct field types, explicit annotations on bindings). They consist of:
 
@@ -128,4 +158,4 @@ Type expressions are used in declarations (function signatures, struct field typ
 - Array type constructors (`[T]`)
 - Tuple type constructors (`(T1, ..., Tn)`)
 - Function type constructors (`(T1, ..., Tn) -> R`)
-- User-defined type names (referring to declared structs)
+- User-defined type names (referring to declared structs or enums)

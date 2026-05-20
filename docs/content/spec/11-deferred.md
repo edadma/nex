@@ -28,15 +28,13 @@ The features deferred from the current language are split into two tiers by scop
 - User-defined generics (`def foo[T](...)`)
 - Sized numeric variants (`integer8`, `integer32`, `real32`, `complex32`)
 - Higher-rank arrays (rank-3 and beyond) and a static-shape language (`[real; M, N]`)
-- Sum types / enums
-- Pattern matching beyond simple destructuring
+- Pattern matching beyond enums (literal patterns, guards, range patterns) — current `match` shape is defined in [§7.5](/spec/07-control-flow/#75-match-expressions)
 - Traits / type classes
 - Type aliases
 
 **Syntax / expressions:**
 - User-defined operators (with precedence inheritance)
 - Operator definitions on existing types
-- `match` expressions
 
 **Memory / runtime:**
 - RAII for `var` arrays (currently ARC)

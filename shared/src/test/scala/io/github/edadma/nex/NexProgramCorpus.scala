@@ -2802,4 +2802,74 @@ object NexProgramCorpus:
       """.stripMargin,
       "result=Converged(1.25)\n",
     ),
+    Case(
+      "docs/examples",
+      "13-sum-types: Newton-solver describe()",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def newton(f: real -> real, fp: real -> real, x0: real, tol: real, max_iters: integer): Solver =
+        |  var x = x0
+        |  for i in 0..max_iters do
+        |    val fx = f(x)
+        |    if abs(fx) < tol then return Converged(x)
+        |    val d = fp(x)
+        |    if abs(d) < 1.0e-15 then return Diverged
+        |    x = x - fx / d
+        |  end for
+        |  MaxIters(max_iters, x)
+        |
+        |def f(x: real) : real = x^2 - 2.0
+        |def fp(x: real): real = 2.0 * x
+        |
+        |def describe(s: Solver): string =
+        |  match s
+        |    case Converged(_)        => "converged"
+        |    case Diverged            => "diverged"
+        |    case MaxIters(iters, _)  => s"ran ${iters} iters"
+        |
+        |def main() =
+        |  print(describe(newton(f, fp, 1.0,    1.0e-12, 50)))
+        |  print(describe(newton(f, fp, 0.0,    1.0e-12, 50)))
+        |  print(describe(newton(f, fp, 1.0e9,  1.0e-12, 3)))
+      """.stripMargin,
+      "converged\ndiverged\nran 3 iters\n",
+    ),
+    Case(
+      "docs/examples",
+      "13-sum-types: root_or_zero extracts the converged value",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def newton(f: real -> real, fp: real -> real, x0: real, tol: real, max_iters: integer): Solver =
+        |  var x = x0
+        |  for i in 0..max_iters do
+        |    val fx = f(x)
+        |    if abs(fx) < tol then return Converged(x)
+        |    val d = fp(x)
+        |    if abs(d) < 1.0e-15 then return Diverged
+        |    x = x - fx / d
+        |  end for
+        |  MaxIters(max_iters, x)
+        |
+        |def f(x: real) : real = x^2 - 2.0
+        |def fp(x: real): real = 2.0 * x
+        |
+        |def root_or_zero(s: Solver): real =
+        |  match s
+        |    case Converged(x) => x
+        |    case _            => 0.0
+        |
+        |def main() =
+        |  print(root_or_zero(newton(f, fp, 1.0, 1.0e-12, 50)))
+        |  print(root_or_zero(newton(f, fp, 0.0, 1.0e-12, 50)))
+      """.stripMargin,
+      "1.4142135623730951\n0.0\n",
+    ),
   )
