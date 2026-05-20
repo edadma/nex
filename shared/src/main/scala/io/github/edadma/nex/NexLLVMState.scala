@@ -806,6 +806,8 @@ protected trait NexLLVMState:
       case ("<=", TyReal) => ("fcmp ole", "i1")
       case (">",  TyReal) => ("fcmp ogt", "i1")
       case (">=", TyReal) => ("fcmp oge", "i1")
+      case ("==", TyBool) => ("icmp eq", "i1") // bool eq/ne — spec §4.6 allows only these on bool
+      case ("!=", TyBool) => ("icmp ne", "i1")
       case _                => notYet(s"binop `$op` on `$opT`"); ("add", "i64")
 
 /** Surfaces an unsupported codegen path from `notImpl`. Caught by the

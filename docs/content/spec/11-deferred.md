@@ -1,17 +1,15 @@
 ---
 title: Deferred
-summary: Features intentionally excluded from the current language version, split into v0.1+ (small additions) and v1.0+ (major work).
+summary: Features intentionally excluded from the current language, split into near-term additions and long-term work.
 weight: 110
 ---
 
-The features deferred from the current language version are split into two tiers:
+The features deferred from the current language are split into two tiers by scope:
 
-- **v0.1+** — small, additive, non-breaking additions. Planned as natural follow-ups without redesigning anything in the core.
-- **v1.0+** — major features, possibly breaking, requiring substantive design and implementation work.
+- **Near-term additions** — small, additive, non-breaking. Planned as natural follow-ups without redesigning anything in the core.
+- **Long-term work** — major features, possibly breaking, requiring substantive design and implementation effort.
 
-Note that *language* version and *compiler* version are tracked independently. A given compiler release notes which language version(s) it implements; the two version numbers do not march in lockstep.
-
-## 11.1 Deferred to v0.1+
+## 11.1 Near-term additions
 
 **Syntax / expressions:**
 - Literate programming via `.lnex` files (Markdown wrapper: column-0 prose, indented code, supports inline math, tables, and non-Nex code blocks)
@@ -24,7 +22,7 @@ Note that *language* version and *compiler* version are tracked independently. A
 - Formatted output: positional `{}` substitution in `format()`, plus precision / padding / hex specifiers (`f"..."` literals and `format()` directives)
 - Array and complex overloads of `assert_approx` — currently the scalar `assert_approx(real, real, real)` is the only form; element-wise array forms and the complex-valued form are useful for testing numeric code at higher rank
 
-## 11.2 Deferred to v1.0+
+## 11.2 Long-term work
 
 **Type system:**
 - User-defined generics (`def foo[T](...)`)

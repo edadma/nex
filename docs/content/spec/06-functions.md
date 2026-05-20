@@ -41,7 +41,7 @@ def factorial(n: integer): integer =
 
 ## 6.3 Parameters
 
-Each parameter is declared with `name: type`. Default values are *deferred to v1+*. Named arguments at call sites are *deferred to v1+*.
+Each parameter is declared with `name: type`. Default values are *deferred*. Named arguments at call sites are *deferred*.
 
 ## 6.4 Parameter modes
 

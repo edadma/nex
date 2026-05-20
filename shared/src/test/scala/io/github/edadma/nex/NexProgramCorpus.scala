@@ -315,6 +315,116 @@ object NexProgramCorpus:
       mlir = true,
     ),
 
+    Case(
+      "comparison + logical",
+      "bool == bool (spec §4.6: only `==` / `!=` allowed on bool)",
+      """
+        |def main() =
+        |  print(true == true)
+        |  print(true == false)
+        |  print(false != true)
+        |  print(false != false)
+      """.stripMargin,
+      "true\nfalse\ntrue\nfalse\n",
+    ),
+
+    // ========================================================================
+    // chained comparison (§4.6)
+    // ========================================================================
+
+    Case(
+      "chained comparison",
+      "3-way `<` chain returns true when in range",
+      """
+        |def main() =
+        |  val x = 5
+        |  print(0 < x < 10)
+      """.stripMargin,
+      "true\n",
+    ),
+    Case(
+      "chained comparison",
+      "3-way `<` chain returns false when out of range",
+      """
+        |def main() =
+        |  val x = 11
+        |  print(0 < x < 10)
+      """.stripMargin,
+      "false\n",
+    ),
+    Case(
+      "chained comparison",
+      "mixed operators: `0 <= x < 10 <= 100`",
+      """
+        |def main() =
+        |  val x = 5
+        |  print(0 <= x < 10 <= 100)
+      """.stripMargin,
+      "true\n",
+    ),
+    Case(
+      "chained comparison",
+      "agrees with the equivalent explicit `and` form",
+      """
+        |def main() =
+        |  for x in -2..=12 do
+        |    val chained  = 0 <= x < 10
+        |    val explicit = 0 <= x and x < 10
+        |    print(chained == explicit)
+      """.stripMargin,
+      "true\n" * 15,
+    ),
+    Case(
+      "chained comparison",
+      "inner operand is evaluated exactly once (side-effecting call)",
+      """
+        |var count = 0
+        |def bumped(): integer =
+        |  count = count + 1
+        |  5
+        |
+        |def main() =
+        |  val ok = 0 < bumped() < 10
+        |  print(ok)
+        |  print(count)
+      """.stripMargin,
+      "true\n1\n",
+    ),
+    Case(
+      "chained comparison",
+      "4-way chain with all distinct comparison operators",
+      """
+        |def main() =
+        |  val a = 1
+        |  val b = 2
+        |  val c = 3
+        |  val d = 3
+        |  print(a < b < c <= d)
+      """.stripMargin,
+      "true\n",
+    ),
+    Case(
+      "chained comparison",
+      "short-circuit: side-effecting inner operand skipped when earlier cmp fails",
+      """
+        |var inner_calls = 0
+        |var rhs_calls   = 0
+        |def inner(): integer =
+        |  inner_calls = inner_calls + 1
+        |  100
+        |def rhs(): integer =
+        |  rhs_calls = rhs_calls + 1
+        |  100
+        |
+        |def main() =
+        |  val x = -1
+        |  print(0 < x < inner() < rhs())
+        |  print(inner_calls)
+        |  print(rhs_calls)
+      """.stripMargin,
+      "false\n0\n0\n",
+    ),
+
     // ========================================================================
     // control flow
     // ========================================================================

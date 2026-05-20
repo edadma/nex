@@ -42,7 +42,7 @@ def main() =
   print(c)                          // [0.6, 0.8]
 
   // 3) Slice assignment: replace the first two elements in place.
-  //    This is the v0 idiom for partial in-place updates on a var array.
+  //    This is the idiom for partial in-place updates on a var array.
   var d = [9.0, 9.0, 9.0, 9.0]
   d[0..2] = [0.6, 0.8]
   print(d)                          // [0.6, 0.8, 9.0, 9.0]

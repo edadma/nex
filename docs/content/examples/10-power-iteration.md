@@ -10,9 +10,9 @@ weight: 100
 def power_iteration(A: [[real]], iters: integer) =
   val n = rows(A)
   var v = fill(n, 1.0)               // initial guess — real-typed so subsequent
-                                     // reassignments stay [real]; in v0 `ones(n)`
-                                     // would give [integer] and the rebind would
-                                     // trip the type check.
+                                     // reassignments stay [real]; `ones(n)` would
+                                     // give [integer] and the rebind would trip
+                                     // the type check.
   var lambda = 0.0
 
   for k in 0..iters do

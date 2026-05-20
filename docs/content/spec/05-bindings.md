@@ -71,7 +71,7 @@ A *constant expression* is one of:
 - A reference to a prelude constant (`pi`, `e`, `inf`, `nan`, `i`)
 - Unary `-` of a constant expression
 
-Function calls in `const` expressions are *deferred to v1+* (compile-time evaluation of pure functions). For runtime-computed module-level values, use `val`:
+Function calls in `const` expressions are *deferred* (compile-time evaluation of pure functions). For runtime-computed module-level values, use `val`:
 
 ```nex
 val SQRT_2 = sqrt(2.0)              // function call → must be val

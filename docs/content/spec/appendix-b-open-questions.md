@@ -1,10 +1,10 @@
 ---
 title: "Appendix B: Open Design Questions"
-summary: Small items not yet pinned to a single answer in the reference. Most original v0.1 questions have been settled and removed.
+summary: Small items not yet pinned to a single answer in the reference.
 weight: 210
 ---
 
-The original v0.1 question list has been mostly settled during implementation. Items that remain open:
+The original draft's question list has been mostly settled during implementation. Items that remain open:
 
 - Exact `format` substitution rules for edge cases (escaped braces, mismatched arg counts, unknown specifiers in future format-string work).
 - Whether unused `val` bindings produce a warning (currently silent — the compiler does not warn).
