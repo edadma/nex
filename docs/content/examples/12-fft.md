@@ -1,10 +1,10 @@
 ---
 title: FFT
-summary: Cooley-Tukey radix-2 recursive FFT for any power-of-2 N — complex numbers, the `fill` constructor, per-element array-literal coercion.
+summary: Cooley-Tukey radix-2 recursive FFT for any power-of-2 N — complex numbers, the `fill` constructor, per-element array-literal coercion, and slice assignment to stitch the two output halves.
 weight: 120
 ---
 
-A recursive discrete Fourier transform that showcases Nex's complex number support, the prelude `fill(n, v)` array constructor, and per-element array-literal coercion. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
+A recursive discrete Fourier transform that showcases Nex's complex number support, the prelude `fill(n, v)` array constructor, per-element array-literal coercion, and slice assignment to write the two output halves in one statement each. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
 
 ```nex
 def fft(x: [complex]): [complex] =
@@ -15,6 +15,8 @@ def fft(x: [complex]): [complex] =
 
   // Split into even/odd-indexed sub-arrays. `fill(half, 0.0 + 0i)`
   // gives us a writable rank-1 complex buffer of the right size.
+  // (Strided slice forms like `x[0..n by 2]` are deferred, so we
+  // walk the indices by hand here.)
   var even = fill(half, 0.0 + 0i)
   var odd  = fill(half, 0.0 + 0i)
   for k in 0..half do
@@ -24,15 +26,21 @@ def fft(x: [complex]): [complex] =
   val ef = fft(even)
   val of = fft(odd)
 
-  // Cooley-Tukey butterfly: Y[k]      = E[k] + W^k · O[k]
-  //                        Y[k+N/2]   = E[k] - W^k · O[k]   for k ∈ [0, N/2)
-  var y = fill(n, 0.0 + 0i)
+  // Cooley-Tukey butterfly: Y[k]     = E[k] + W^k · O[k]
+  //                        Y[k+N/2] = E[k] - W^k · O[k]   for k ∈ [0, N/2)
+  //
+  // Build the twiddled odd half as a vector first — t[k] = W^k · O[k].
+  var t = fill(half, 0.0 + 0i)
   for k in 0..half do
     val angle = -2.0 * pi * to_real(k) / to_real(n)
-    val w     = cos(angle) + sin(angle) * i
-    val t     = w * of[k]
-    y[k]        = ef[k] + t
-    y[k + half] = ef[k] - t
+    t[k] = (cos(angle) + sin(angle) * i) * of[k]
+
+  // Stitch the two output halves into `y` with element-wise array ops
+  // (`ef + t`, `ef - t` on `[complex]`) plus a slice assignment per
+  // half — no per-index `y[k] = ...; y[k + half] = ...` shuffle.
+  var y = fill(n, 0.0 + 0i)
+  y[0..half] = ef + t
+  y[half..n] = ef - t
   y
 
 def main() =

@@ -508,6 +508,7 @@ object NexProgramCorpus:
         |    i = i + 1
       """.stripMargin,
       "0\n1\n2\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -518,6 +519,30 @@ object NexProgramCorpus:
         |    print(x)
       """.stripMargin,
       "10\n20\n30\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over val-bound array",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  for x in xs do
+        |    print(x * x)
+      """.stripMargin,
+      "1\n4\n9\n16\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over array produced by range()",
+      """
+        |def main() =
+        |  for x in range(0, 4) do
+        |    print(x + 100)
+      """.stripMargin,
+      "100\n101\n102\n103\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -552,6 +577,7 @@ object NexProgramCorpus:
         |  print(s)
       """.stripMargin,
       "15\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -1156,6 +1182,7 @@ object NexProgramCorpus:
         |  print(a - 1)
       """.stripMargin,
       "[2.0, 4.0, 6.0]\n[2.0, 4.0, 6.0]\n[3.0, 4.0, 5.0]\n[0.0, 1.0, 2.0]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1188,6 +1215,57 @@ object NexProgramCorpus:
         |  print(b + a)
       """.stripMargin,
       "[11.0, 22.0, 33.0]\n[11.0, 22.0, 33.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "elementwise [complex] + - * / via componentwise lowering",
+      // Regression: `emitScalarBinOp` used to route TyComplex through
+      // the generic `binOpInst` path and emit `add { double, double }`
+      // (invalid IR; clang rejects). Element-wise + broadcast over
+      // `[complex]` now route through `emitComplexArith`, the same
+      // helper the scalar TBinOp path already uses.
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  val b: [complex] = [10.0 + 20i, 30.0 + 40i]
+        |  print(a + b)
+        |  print(a - b)
+        |  print(a * b)
+        |  print(b / a)
+      """.stripMargin,
+      "[11.0+22.0i, 33.0+44.0i]\n[-9.0-18.0i, -27.0-36.0i]\n[-30.0+40.0i, -70.0+240.0i]\n[10.0+0.0i, 10.0+0.0i]\n",
+    ),
+    Case(
+      "arrays",
+      "elementwise [complex] == / != via componentwise compare + and/or",
+      // Same fix path for comparisons: complex equality folds
+      // `(re == re) and (im == im)`, `!=` folds the unordered-or-
+      // not-equal variant via `or`. Result is `[bool]`.
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  val b: [complex] = [1.0 + 2i, 0.0 + 0i]
+        |  print(a == b)
+        |  print(a != b)
+      """.stripMargin,
+      "[true, false]\n[false, true]\n",
+    ),
+    Case(
+      "arrays",
+      "scalar-complex * [complex] broadcast",
+      // Broadcast routes through the same `emitScalarBinOp` so it gets
+      // the same complex fix. Real and integer scalars promote up the
+      // numeric lattice to complex inside the loop body via
+      // `liftScalarTo` (broadcast already does this for arithmetic).
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  print((1.0 + 1i) * a)
+        |  print(2.0 * a)
+        |  print(a + (10.0 + 0i))
+      """.stripMargin,
+      "[-1.0+3.0i, -1.0+7.0i]\n[2.0+4.0i, 6.0+8.0i]\n[11.0+2.0i, 13.0+4.0i]\n",
     ),
     Case(
       "arrays",
@@ -1281,6 +1359,7 @@ object NexProgramCorpus:
         |  print(a[1..3])
       """.stripMargin,
       "[10, 20]\n[20, 30]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1292,6 +1371,7 @@ object NexProgramCorpus:
         |  print(a[1..=2])
       """.stripMargin,
       "[10, 20, 30, 40, 50]\n[20, 30]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1302,6 +1382,7 @@ object NexProgramCorpus:
         |  print(a[1..1])
       """.stripMargin,
       "[]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1337,6 +1418,7 @@ object NexProgramCorpus:
         |  print(m[:, 1])
       """.stripMargin,
       "[2, 5]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1347,6 +1429,7 @@ object NexProgramCorpus:
         |  print(m[0, 0..2])
       """.stripMargin,
       "[1, 2]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1357,6 +1440,7 @@ object NexProgramCorpus:
         |  print(m[0..2, :])
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1367,6 +1451,7 @@ object NexProgramCorpus:
         |  print(m[0..2, 1..3])
       """.stripMargin,
       "[[2, 3], [5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1390,6 +1475,7 @@ object NexProgramCorpus:
         |  print(m[:, 0..=2])
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2645,13 +2731,13 @@ object NexProgramCorpus:
         |    odd[k]  = x[2 * k + 1]
         |  val ef = fft(even)
         |  val of = fft(odd)
-        |  var y = fill(n, 0.0 + 0i)
+        |  var t = fill(half, 0.0 + 0i)
         |  for k in 0..half do
         |    val angle = -2.0 * pi * to_real(k) / to_real(n)
-        |    val w     = cos(angle) + sin(angle) * i
-        |    val t     = w * of[k]
-        |    y[k]        = ef[k] + t
-        |    y[k + half] = ef[k] - t
+        |    t[k] = (cos(angle) + sin(angle) * i) * of[k]
+        |  var y = fill(n, 0.0 + 0i)
+        |  y[0..half] = ef + t
+        |  y[half..n] = ef - t
         |  y
         |
         |def main() =

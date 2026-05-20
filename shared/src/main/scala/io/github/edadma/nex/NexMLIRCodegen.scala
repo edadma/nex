@@ -49,6 +49,14 @@ class NexMLIRCodegen:
   private val out             = new StringBuilder
   private var nextReg         = 0
   private val env             = mutable.Map.empty[Int, MlirVal]
+  /** `var` scalar bindings live in stack memrefs so that
+    * load-modify-store patterns and loop-mutated counters compile to
+    * the obvious code. Keyed by symbol id; the value carries the
+    * memref SSA name and the element type. Registered when a
+    * `var x = init` binding is emitted; consulted by both `TVarRef`
+    * (which loads) and `TAssign` (which stores).
+    */
+  private val varSlots        = mutable.Map.empty[Int, (String, MScalar)]
   /** Per-program registry of `@intrinsic("libm.X")` function symbols.
     * Populated at the start of [[compile]] by scanning every
     * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
@@ -143,6 +151,9 @@ class NexMLIRCodegen:
       emitPrintCall(arg)
     case TBlock(items, TUnitLit(_), _, _) =>
       items.foreach(emitBlockItem)
+    case TBlock(items, last, _, _) if last.tpe == TyUnit =>
+      items.foreach(emitBlockItem)
+      emitBlockItem(TBlockExpr(last))
     case other if other.tpe == TyUnit =>
       emitBlockItem(TBlockExpr(other))
     case other =>
@@ -316,6 +327,9 @@ class NexMLIRCodegen:
       out.append(s"  $r = arith.constant 0x7FF0000000000000 : f64\n")
       MlirVal(r, MScalar(TyReal))
 
+    case TVarRef(sym, _, _) if varSlots.contains(sym.id) =>
+      emitVarLoad(sym.id)
+
     case TVarRef(sym, _, _) =>
       env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))
 
@@ -338,6 +352,8 @@ class NexMLIRCodegen:
       (lv.ty, rv.ty) match
         case (lt: MTensor, rt: MTensor) if lt == rt =>
           emitElementWiseBinop(op, lv, rv, lt)
+        case (lt: MTensor, rt: MTensor) if lt.shape == rt.shape =>
+          emitElementWiseMixed(op, lv, rv, lt, rt)
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
 
@@ -356,6 +372,8 @@ class NexMLIRCodegen:
       (sv.ty, av.ty) match
         case (MScalar(st), t @ MTensor(et, _)) if st == et =>
           emitBroadcast(op, sv, av, t, scalarFirst)
+        case (MScalar(st), t @ MTensor(et, _)) =>
+          emitBroadcastMixed(op, sv, av, t, scalarFirst, st, et)
         case (sty, aty) =>
           notYet(s"broadcast $op on $sty and $aty")
 
@@ -476,6 +494,26 @@ class NexMLIRCodegen:
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
 
+    case TSlice(arr, TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) =>
+          val end      = if inclusive then hi.toInt + 1 else hi.toInt
+          val sliceLen = math.max(0, end - lo.toInt)
+          emitRank1Slice(av, t, lo.toInt, sliceLen)
+        case other =>
+          notYet(s"rank-1 slice on $other")
+
+    case TSlice2(arr, rowAx, colAx, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(rows, cols)) =>
+          val rowSpec = axisToSlice(rowAx, rows)
+          val colSpec = axisToSlice(colAx, cols)
+          emitRank2Slice(av, t, rowSpec, colSpec)
+        case other =>
+          notYet(s"rank-2 slice on $other")
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -485,6 +523,11 @@ class NexMLIRCodegen:
   private def emitBlockItem(it: TBlockItem): Unit = it match
     case TBlockBinding(sym, BindingKind.Val, value) =>
       env(sym.id) = emitExpr(value)
+    case TBlockBinding(sym, BindingKind.Var, value) =>
+      val v = emitExpr(value)
+      v.ty match
+        case s: MScalar => allocVarSlot(sym, v.reg, s)
+        case other      => notYet(s"var binding for ${sym.name} of type $other (only scalars supported)")
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
@@ -493,6 +536,15 @@ class NexMLIRCodegen:
       emitForRange(loopVars, lo, hi, inclusive = false, body)
     case TBlockExpr(TFor(loopVars, TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
       emitForRange(loopVars, lo, hi, inclusive = true, body)
+    case TBlockExpr(TFor(loopVars, iter, body, _, _)) =>
+      val av = emitExpr(iter)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitForArray(loopVars, av, t, body)
+        case other                   => notYet(s"for over $other")
+    case TBlockExpr(TWhile(cond, body, _, _)) =>
+      emitWhile(cond, body)
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varSlots.contains(sym.id) =>
+      emitVarStore(sym.id, emitExpr(value))
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 
@@ -527,6 +579,149 @@ class NexMLIRCodegen:
     out.append(s"    $ivI64 = arith.index_castui $ivName : index to i64\n")
     val prev    = env.get(loopVar.id)
     env(loopVar.id) = MlirVal(ivI64, MScalar(TyInteger))
+    emitForBody(body)
+    prev match
+      case Some(v) => env(loopVar.id) = v
+      case None    => env.remove(loopVar.id)
+    out.append("  }\n")
+
+  /** Resolved spec for one axis of a rank-2 slice. `offset` and `size`
+    * are the corresponding entries in the `tensor.extract_slice`
+    * offsets/sizes lists; `collapsed` is true when this axis was a
+    * single integer index (in which case the result tensor drops one
+    * rank — MLIR's `extract_slice` handles this via its
+    * rank-reducing form when the static size is 1).
+    */
+  private case class AxisSlice(offset: Int, size: Int, collapsed: Boolean)
+
+  /** Resolve a `TAxisSpec` to its concrete (offset, size, collapsed)
+    * triple given the corresponding source dimension extent. Only
+    * literal-bound axes are accepted — anything else surfaces as
+    * `notYet`.
+    */
+  private def axisToSlice(spec: TAxisSpec, dim: Int): AxisSlice = spec match
+    case TAxisAll =>
+      AxisSlice(offset = 0, size = dim, collapsed = false)
+    case TAxisIndex(TIntLit(v, _, _)) =>
+      AxisSlice(offset = v.toInt, size = 1, collapsed = true)
+    case TAxisRange(TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive) =>
+      val end = if inclusive then hi.toInt + 1 else hi.toInt
+      AxisSlice(offset = lo.toInt, size = math.max(0, end - lo.toInt), collapsed = false)
+    case other =>
+      notYet(s"rank-2 slice axis spec: ${other.getClass.getSimpleName} with non-literal bound")
+
+  /** Rank-2 `tensor.extract_slice` with literal offset/size on both
+    * axes. Output rank is `2 - (number of collapsed axes)`. When
+    * both axes are collapsed the result is a scalar — but that
+    * shape isn't reachable here because the elaborator emits a
+    * `TIndex` (not a `TSlice2`) for the two-integer-index form.
+    */
+  private def emitRank2Slice(av: MlirVal, srcTy: MTensor, rowSpec: AxisSlice, colSpec: AxisSlice): MlirVal =
+    val outShape = List(rowSpec, colSpec).collect {
+      case s if !s.collapsed => s.size
+    }
+    val outTy = MTensor(srcTy.elem, outShape)
+    if outShape.contains(0) then
+      val r = fresh("emp")
+      out.append(s"  $r = tensor.empty() : ${outTy.text}\n")
+      return MlirVal(r, outTy)
+    val r = fresh("sl2")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}[${rowSpec.offset}, ${colSpec.offset}] [${rowSpec.size}, ${colSpec.size}] [1, 1] : ${srcTy.text} to ${outTy.text}\n",
+    )
+    MlirVal(r, outTy)
+
+  /** Rank-1 slice `a[lo..hi]` / `a[lo..=hi]` with literal bounds.
+    * Lowers to `tensor.extract_slice` with a static offset / size /
+    * unit stride, which produces a freshly-allocated tensor of the
+    * sliced length. Empty slices (computed length <= 0) collapse to
+    * `tensor.empty() : tensor<0xT>` — printing walks zero elements
+    * and emits `[]\n`.
+    */
+  private def emitRank1Slice(av: MlirVal, srcTy: MTensor, offset: Int, len: Int): MlirVal =
+    val outTy = MTensor(srcTy.elem, List(len))
+    if len == 0 then
+      val r = fresh("emp")
+      out.append(s"  $r = tensor.empty() : ${outTy.text}\n")
+      return MlirVal(r, outTy)
+    val r = fresh("sl")
+    out.append(s"  $r = tensor.extract_slice ${av.reg}[$offset] [$len] [1] : ${srcTy.text} to ${outTy.text}\n")
+    MlirVal(r, outTy)
+
+  /** Allocate a stack slot for a `var <sym>` scalar binding and store
+    * the initial value. The slot lives in `varSlots` keyed by symbol
+    * id so later reads/writes can find it. Uses `memref.alloca` for
+    * stack-local lifetime — the kernel-stack region is large enough
+    * for any plausible number of var counters, and the slot is
+    * automatically reclaimed on function exit.
+    */
+  private def allocVarSlot(sym: Symbol, initReg: String, sty: MScalar): Unit =
+    val mrefT = s"memref<${sty.text}>"
+    val slot  = fresh(s"var_${sym.name}")
+    out.append(s"  $slot = memref.alloca() : $mrefT\n")
+    out.append(s"  memref.store $initReg, $slot[] : $mrefT\n")
+    varSlots(sym.id) = (slot, sty)
+
+  /** Read a `var` slot. Mirrors the existing `env`-lookup MlirVal
+    * shape so the rest of the visitor doesn't have to know that
+    * vars are different from vals.
+    */
+  private def emitVarLoad(symId: Int): MlirVal =
+    val (slot, sty) = varSlots(symId)
+    val r           = fresh("vr")
+    out.append(s"  $r = memref.load $slot[] : memref<${sty.text}>\n")
+    MlirVal(r, sty)
+
+  /** Store a new value into a `var` slot. The value's type must match
+    * the slot's element type — Nex's type system already guarantees
+    * this at TAssign sites, so no promotion is needed here.
+    */
+  private def emitVarStore(symId: Int, v: MlirVal): Unit =
+    val (slot, sty) = varSlots(symId)
+    out.append(s"  memref.store ${v.reg}, $slot[] : memref<${sty.text}>\n")
+
+  /** Statement-form `while cond do body` via `scf.while` with no
+    * iter_args. The cond region computes the predicate and yields
+    * it through `scf.condition`; the body region runs (reading and
+    * writing var slots as needed) and ends with a bare `scf.yield`.
+    * Mutable counters live in `var` memref slots — the load/store
+    * pattern makes the SSA story trivial since the data isn't
+    * threaded through region results.
+    */
+  private def emitWhile(cond: TExpr, body: TExpr): Unit =
+    out.append("  scf.while : () -> () {\n")
+    val cv = emitExpr(cond)
+    out.append(s"    scf.condition(${cv.reg})\n")
+    out.append("  } do {\n")
+    emitForBody(body)
+    out.append("    scf.yield\n")
+    out.append("  }\n")
+
+  /** Statement-form `for x in arr do body` over a rank-1 array. The
+    * array's length is static (recorded in the `MTensor` shape), so
+    * we walk `0..length` via `scf.for` and `tensor.extract` each
+    * element into the loop var slot. The same body-emission path as
+    * range-based `for` is reused — `emitForBody` handles `TBlock`s
+    * and bare statements identically.
+    */
+  private def emitForArray(loopVars: List[Symbol], av: MlirVal, ty: MTensor, body: TExpr): Unit =
+    if loopVars.size != 1 then
+      notYet(s"for over array with ${loopVars.size}-way destructuring")
+      return
+    val loopVar = loopVars.head
+    val len     = ty.shape.head
+    val loC     = fresh("flo")
+    out.append(s"  $loC = arith.constant 0 : index\n")
+    val hiC     = fresh("fhi")
+    out.append(s"  $hiC = arith.constant $len : index\n")
+    val stepC   = fresh("fst")
+    out.append(s"  $stepC = arith.constant 1 : index\n")
+    val ivName  = fresh("iv")
+    out.append(s"  scf.for $ivName = $loC to $hiC step $stepC {\n")
+    val eltR    = fresh("elt")
+    out.append(s"    $eltR = tensor.extract ${av.reg}[$ivName] : ${ty.text}\n")
+    val prev    = env.get(loopVar.id)
+    env(loopVar.id) = MlirVal(eltR, MScalar(ty.elem))
     emitForBody(body)
     prev match
       case Some(v) => env(loopVar.id) = v
@@ -871,6 +1066,75 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : $scalar\n")
     out.append("    }\n")
     MlirVal(outR, ty)
+
+  /** Element-wise arithmetic on tensors of matching shape but mismatched
+    * element types (e.g. `[int] + [real]`). The wider numeric type is
+    * the result element type; each loaded element is promoted to that
+    * type via `arith.sitofp` inside the region body before the binop
+    * runs. Mirrors `emitElementWiseComparison` but yields a numeric
+    * tensor rather than a bool tensor.
+    */
+  private def emitElementWiseMixed(op: String, lv: MlirVal, rv: MlirVal, lt: MTensor, rt: MTensor): MlirVal =
+    val lElem    = lt.elem
+    val rElem    = rt.elem
+    val commonT  = if lElem == TyReal || rElem == TyReal then TyReal else TyInteger
+    val commonS  = scalarText(commonT)
+    val outTy    = MTensor(commonT, lt.shape)
+    val opName   = scalarBinop(op, commonT)
+    val initR    = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("ewm")
+    out.append(
+      s"  $outR = linalg.map ins(${lv.reg}, ${rv.reg} : ${lt.text}, ${rt.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(lElem)}, %b: ${scalarText(rElem)}, %_o: $commonS) {\n")
+    val aName = promoteInRegion("%a", lElem, commonT)
+    val bName = promoteInRegion("%b", rElem, commonT)
+    out.append(s"      %s = $opName $aName, $bName : $commonS\n")
+    out.append(s"      linalg.yield %s : $commonS\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** Scalar-against-tensor arithmetic broadcast when the scalar's
+    * element type doesn't match the tensor's (e.g. `2 + [1.0, 2.0]`).
+    * The scalar is promoted once outside the map body if needed; the
+    * per-element promotion of the loaded tensor element happens
+    * inside the region body. Output element type is the wider common
+    * type. `scalarFirst` controls operand order for non-commutative
+    * ops.
+    */
+  private def emitBroadcastMixed(
+      op: String,
+      sv: MlirVal,
+      av: MlirVal,
+      ty: MTensor,
+      scalarFirst: Boolean,
+      scalarElem: Type,
+      arrElem: Type,
+  ): MlirVal =
+    val commonT = if scalarElem == TyReal || arrElem == TyReal then TyReal else TyInteger
+    val commonS = scalarText(commonT)
+    val opName  = scalarBinop(op, commonT)
+    val svPromoted =
+      if scalarElem == commonT then sv.reg
+      else
+        val r = fresh("ps")
+        out.append(s"  $r = arith.sitofp ${sv.reg} : ${scalarText(scalarElem)} to $commonS\n")
+        r
+    val outTy = MTensor(commonT, ty.shape)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("bcm")
+    out.append(
+      s"  $outR = linalg.map ins(${av.reg} : ${ty.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(arrElem)}, %_o: $commonS) {\n")
+    val elemName = promoteInRegion("%a", arrElem, commonT)
+    val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
+    out.append(s"      %s = $opName $lhs, $rhs : $commonS\n")
+    out.append(s"      linalg.yield %s : $commonS\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
 
   /** Element-wise comparison: `xs < ys`, `xs == ys`, etc. Output element
     * type is always `i1`. Mixed-element-type inputs (`[int] < [real]`)

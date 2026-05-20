@@ -120,6 +120,7 @@ object MlirBackend extends Backend:
     "--one-shot-bufferize=bufferize-function-boundaries",
     "--convert-linalg-to-loops",
     "--convert-scf-to-cf",
+    "--expand-strided-metadata",
     "--finalize-memref-to-llvm",
     "--convert-arith-to-llvm",
     "--convert-func-to-llvm",
@@ -155,7 +156,8 @@ object MlirBackend extends Backend:
 
       shellOrFail(
         Seq(tool("clang"), "-O1", "-o", binFile.toPlatformString,
-            llFile.toPlatformString, rtFile.toPlatformString),
+            llFile.toPlatformString, rtFile.toPlatformString,
+            s"-L$llvmHome/lib", s"-Wl,-rpath,$llvmHome/lib", "-lmlir_c_runner_utils"),
         ctx = s"clang failed on:\n$src",
       )
 

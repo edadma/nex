@@ -225,6 +225,7 @@ object Cli:
       "--one-shot-bufferize=bufferize-function-boundaries",
       "--convert-linalg-to-loops",
       "--convert-scf-to-cf",
+      "--expand-strided-metadata",
       "--finalize-memref-to-llvm",
       "--convert-arith-to-llvm",
       "--convert-func-to-llvm",
@@ -240,7 +241,8 @@ object Cli:
       case 0 => ()
       case rc => return rc
     runProcess(s"clang -> $binPath",
-      Seq(tool("clang"), "-O1", "-o", binPath, llPath, runtimePath)) match
+      Seq(tool("clang"), "-O1", "-o", binPath, llPath, runtimePath,
+          s"-L$llvmHome/lib", s"-Wl,-rpath,$llvmHome/lib", "-lmlir_c_runner_utils")) match
       case 0 => println(s"nex: wrote $binPath"); 0
       case rc => rc
 

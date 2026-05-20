@@ -73,7 +73,7 @@ Real literals have type `real`.
 i                           // imaginary unit: (0.0 + 1.0i)
 2.0i                        // (0.0 + 2.0i)  — juxtaposition: 2.0 * i
 3.0 + 4.5i                  // (3.0 + 4.5i)
-exp(2pi * i)                // (-1.0 + 0.0i) — Euler's identity
+exp(pi * i)                 // (-1.0 + 0.0i) — Euler's identity
 ```
 
 Complex values have type `complex` (chapter 3). Nex does not provide a dedicated complex-literal token — `2i`, `3 + 4i`, etc. are ordinary expressions parsed under the rules in chapter 4.

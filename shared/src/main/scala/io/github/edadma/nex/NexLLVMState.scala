@@ -267,6 +267,25 @@ protected trait NexLLVMState:
   protected def collectVarBindings(tp: TProgram): Unit
   protected def collectLambdas(tp: TProgram): Unit
 
+  /** Decompose a numeric value `v` of type `t` into its (re, im)
+    * complex components. TyComplex extracts the two fields; TyReal /
+    * TyInteger promote up the lattice with an imaginary part of 0.0.
+    * Concrete impl lives in [[NexLLVMCodegen]]; declared here so the
+    * element-wise / broadcast lowerings in `NexLLVMArrays` can route
+    * complex-typed elements through `emitComplexArith` without
+    * duplicating the helper. */
+  protected def toComplex(v: String, t: Type): (String, String)
+
+  /** Pack a `(re, im)` pair into a `{ double, double }` aggregate
+    * value. Mirror of [[toComplex]]; concrete impl in [[NexLLVMCodegen]]. */
+  protected def packComplex(re: String, im: String): String
+
+  /** Per-component complex arithmetic for `+ - * /`. Caller has split
+    * both operands into (re, im) pairs via [[toComplex]]. Concrete impl
+    * in [[NexLLVMCodegen]]; exposed here so element-wise / broadcast
+    * call sites in `NexLLVMArrays` can reuse the same lowering. */
+  protected def emitComplexArith(op: String, lre: String, lim: String, rre: String, rim: String): String
+
   protected def emitArrayLit(elems: List[TExpr], t: Type): String
   protected def emitIndex(arr: TExpr, indices: List[TExpr], resultT: Type): String
   protected def emitElementWise(op: String, lhs: TExpr, rhs: TExpr, resultT: Type): String
