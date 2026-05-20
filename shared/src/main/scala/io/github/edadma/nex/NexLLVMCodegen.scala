@@ -90,8 +90,30 @@ class NexLLVMCodegen
     for d <- tp.allDecls do d match
       case f: TFunDecl =>
         f.body match
-          case TIntrinsic(opId, _, _, _) => intrinsicFunctionOpIds(f.sym.id) = opId
+          case TIntrinsic(opId, _, _) => intrinsicFunctionOpIds(f.sym.id) = opId
           case _                       => ()
+      case _ => ()
+
+    // Overload-set name mangling. LLVM's symbol namespace is flat —
+    // when two source `def`s share a name (function overloads), only
+    // one can use the bare name in the emitted module. The libm-bridge
+    // overload doesn't emit a body (skipped below); other overloads
+    // get `<name>$<param-type-mangle>` so they coexist with the libm
+    // declare and with each other. Singleton bindings keep their bare
+    // names unchanged. See `mangleParamTypes` for the suffix shape.
+    val nameCounts = scala.collection.mutable.Map.empty[String, Int]
+    for d <- tp.allDecls do d match
+      case f: TFunDecl => nameCounts(f.sym.name) = nameCounts.getOrElse(f.sym.name, 0) + 1
+      case _           => ()
+    for d <- tp.allDecls do d match
+      case f: TFunDecl if nameCounts.getOrElse(f.sym.name, 0) > 1 =>
+        // Intrinsic overloads in an overloaded set don't emit a body
+        // (line 99 skip), so they don't need a mangled name — they
+        // own the bare name via libm's `declare`. Non-intrinsic
+        // members must mangle to avoid colliding.
+        if !intrinsicFunctionOpIds.contains(f.sym.id) then
+          val suffix = mangleParamTypes(f.params.map(_.tpe))
+          llvmFuncNames(f.sym.id) = s"${f.sym.name}$$$suffix"
       case _ => ()
 
     for d <- tp.allDecls do d match
@@ -156,7 +178,7 @@ class NexLLVMCodegen
 
     val isMain  = f.sym.name == "main" && f.params.isEmpty
     val retLLT  = if isMain then "i32" else llvmType(f.returnType)
-    val funcId  = f.sym.name
+    val funcId  = llvmFuncNameOf(f.sym)
 
     currentReturnType = f.returnType
     currentIsMain     = isMain
@@ -211,7 +233,7 @@ class NexLLVMCodegen
           if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     f.body match
-      case TIntrinsic(opId, _, _, _) =>
+      case TIntrinsic(opId, _, _) =>
         emitIntrinsicBody(opId, f.params, f.returnType)
       case _ =>
         val result = emitExpr(f.body)
@@ -264,25 +286,6 @@ class NexLLVMCodegen
         emitLine(s"  $reg = call double @cbrt(double %arg0)\n")
         emitTerminator(s"  ret double $reg\n")
 
-      // Stage 3-γ specialized intrinsics. The function-decl form: monomorph
-      // emits one TFunDecl per concrete kind, each carrying a `$<type>`-
-      // suffixed opId. The body is the same direct libm bridge as the
-      // legacy cbrt arm above — one libm call per param, return its
-      // result.
-      case "libm.sqrt$real" =>
-        if params.size != 1 then
-          throw new RuntimeException(s"libm.sqrt$$real expects 1 param, got ${params.size}")
-        val reg = newReg()
-        emitLine(s"  $reg = call double @sqrt(double %arg0)\n")
-        emitTerminator(s"  ret double $reg\n")
-
-      case "libm.sqrt$complex" =>
-        if params.size != 1 then
-          throw new RuntimeException(s"libm.sqrt$$complex expects 1 param, got ${params.size}")
-        val reg = newReg()
-        emitLine(s"  $reg = call { double, double } @__nex_csqrt({ double, double } %arg0)\n")
-        emitTerminator(s"  ret { double, double } $reg\n")
-
       case other =>
         throw new RuntimeException(
           s"intrinsic `$other` has no LLVM implementation — register one in NexLLVMCodegen.emitIntrinsicBody",
@@ -313,17 +316,18 @@ class NexLLVMCodegen
         emitLine(s"  $reg = call double @${libmUnaryName(opId)}(double $xv)\n")
         reg
 
-      case _ if cmplxHelperName.isDefinedAt(opId) =>
-        val zv  = emitExpr(args.head)
-        val reg = newReg()
-        emitLine(s"  $reg = call { double, double } @${cmplxHelperName(opId)}({ double, double } $zv)\n")
-        reg
-
       case "libm.atan2" =>
         val yv = liftToRealForIntrinsic(args.head)
         val xv = liftToRealForIntrinsic(args(1))
         val reg = newReg()
         emitLine(s"  $reg = call double @atan2(double $yv, double $xv)\n")
+        reg
+
+      case "libm.hypot" =>
+        val xv = liftToRealForIntrinsic(args.head)
+        val yv = liftToRealForIntrinsic(args(1))
+        val reg = newReg()
+        emitLine(s"  $reg = call double @hypot(double $xv, double $yv)\n")
         reg
 
       case "libm.asinh" =>
@@ -355,6 +359,14 @@ class NexLLVMCodegen
     */
   private val libmUnaryName: PartialFunction[String, String] =
     case "libm.cbrt"  => "cbrt"
+    case "libm.sqrt"  => "sqrt"
+    case "libm.exp"   => "exp"
+    case "libm.log"   => "log"
+    case "libm.log2"  => "log2"
+    case "libm.log10" => "log10"
+    case "libm.sin"   => "sin"
+    case "libm.cos"   => "cos"
+    case "libm.tan"   => "tan"
     case "libm.floor" => "floor"
     case "libm.ceil"  => "ceil"
     case "libm.round" => "round"
@@ -365,34 +377,6 @@ class NexLLVMCodegen
     case "libm.sinh"  => "sinh"
     case "libm.cosh"  => "cosh"
     case "libm.tanh"  => "tanh"
-    case "libm.log2"  => "log2"
-    case "libm.log10" => "log10"
-    // Stage 3-γ / 3-δ specialized libm unaries. Each concrete kind that
-    // a `@intrinsic` decl admits gets its own entry — the `$<type>`
-    // suffix selects which libm symbol the call site bridges to.
-    case "libm.sqrt$real"   => "sqrt"
-    case "libm.exp$real"    => "exp"
-    case "libm.log$real"    => "log"
-    case "libm.log2$real"   => "log2"
-    case "libm.log10$real"  => "log10"
-    case "libm.sin$real"    => "sin"
-    case "libm.cos$real"    => "cos"
-    case "libm.tan$real"    => "tan"
-
-  /** Mapping from a `$complex`-suffixed opId to the runtime helper that
-    * computes its analytic extension. Each helper takes and returns a
-    * `{ double, double }` aggregate matching Nex's complex value layout
-    * — see NexLLVMPreamble for the formulas.
-    */
-  private val cmplxHelperName: PartialFunction[String, String] =
-    case "libm.sqrt$complex"  => "__nex_csqrt"
-    case "libm.exp$complex"   => "__nex_cexp"
-    case "libm.log$complex"   => "__nex_clog"
-    case "libm.log2$complex"  => "__nex_clog2"
-    case "libm.log10$complex" => "__nex_clog10"
-    case "libm.sin$complex"   => "__nex_csin"
-    case "libm.cos$complex"   => "__nex_ccos"
-    case "libm.tan$complex"   => "__nex_ctan"
 
   /** Same shape as NexLLVMPrelude.liftToReal but visible from
     * [[emitIntrinsicCall]]. The sibling helper is `private`; rather than
@@ -420,7 +404,7 @@ class NexLLVMCodegen
     case TBoolLit(v, _, _) => if v then "1" else "0"
     case TUnitLit(_)       => "void"
 
-    case TIntrinsic(opId, _, _, _) =>
+    case TIntrinsic(opId, _, _) =>
       // TIntrinsic only appears as a function body and is consumed by
       // emitIntrinsicBody directly; if we reach this case in value
       // position the elaborator placed it somewhere illegal.
@@ -1488,13 +1472,14 @@ class NexLLVMCodegen
         case TyFunc(_, r) => r
         case _            => TyUnknown
 
+    val fnName = llvmFuncNameOf(callee)
     retT match
       case TyUnit =>
-        emitLine(s"  call void @${callee.name}($argList)\n")
+        emitLine(s"  call void @$fnName($argList)\n")
         "void"
       case other =>
         val reg = newReg()
-        emitLine(s"  $reg = call ${llvmType(other)} @${callee.name}($argList)\n")
+        emitLine(s"  $reg = call ${llvmType(other)} @$fnName($argList)\n")
         reg
 
   // ---------------------------------------------------------------------------

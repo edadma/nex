@@ -39,19 +39,54 @@ protected trait NexElabState:
   // Scopes
   // ==========================================================================
 
-  /** A scope is a flat map from name → Symbol. Scopes are stacked via the
-    * `outer` pointer; lookup walks the chain. Same-block redeclaration is
-    * caught at insertion time by checking the local map.
+  /** A scope is a flat map from name → list of Symbols. Most names bind a
+    * single Symbol; multiple Symbols are only valid when ALL of them are
+    * `def`s (function overloading). Scopes stack via the `outer` pointer
+    * and `lookup` walks the chain.
+    *
+    * Overloading rules at definition time:
+    *   - `val x = 1; val x = 2`              — error (redeclaration)
+    *   - `def f(x: real); val f = 1`         — error (mixed kinds)
+    *   - `def f(x: real); def f(z: complex)` — accepted (overload set)
+    *
+    * Signature-disjointness of an overload set is checked at the end of
+    * Pass B, when each def's TyFunc is known (Pass A only sees names).
     */
   protected class Scope(val outer: Option[Scope]):
-    val bindings: mutable.LinkedHashMap[String, Symbol] = mutable.LinkedHashMap.empty
+    val bindings: mutable.LinkedHashMap[String, List[Symbol]] = mutable.LinkedHashMap.empty
 
+    /** Return the primary Symbol bound to `name` — the first entry in the
+      * overload list, or whatever the singleton binding holds. Most call
+      * sites don't care about overloading; the call-resolution path uses
+      * `lookupAll` to enumerate every candidate.
+      */
     def lookup(name: String): Option[Symbol] =
-      bindings.get(name).orElse(outer.flatMap(_.lookup(name)))
+      lookupAll(name).headOption
 
+    /** Return every Symbol bound to `name` in this scope chain. Singleton
+      * bindings come back as a one-element list; overload sets come back
+      * with all peers, in declaration order. Walks outer scopes only when
+      * the local scope has no binding for `name` — local overload sets
+      * SHADOW outer bindings rather than merging across scopes.
+      */
+    def lookupAll(name: String): List[Symbol] =
+      bindings.get(name) match
+        case Some(syms) => syms
+        case None       => outer.map(_.lookupAll(name)).getOrElse(Nil)
+
+    /** Insert `sym` under `name`. Allows appending to an existing overload
+      * set when both the existing entries and `sym` are `SymKind.Function`;
+      * otherwise treats any name collision as a redeclaration. Returns
+      * `true` on success, `false` if the new binding clashes.
+      */
     def define(name: String, sym: Symbol): Boolean =
-      if bindings.contains(name) then false
-      else { bindings(name) = sym; true }
+      bindings.get(name) match
+        case None => bindings(name) = List(sym); true
+        case Some(existing) =>
+          if sym.kind == SymKind.Function && existing.forall(_.kind == SymKind.Function) then
+            bindings(name) = existing :+ sym
+            true
+          else false
 
   protected var current: Scope = new Scope(None)
 
@@ -129,16 +164,17 @@ protected trait NexElabState:
     defineNoError("i",   SymKind.Prelude, TyComplex)
 
     val preludeFuncs = List(
-      // §10.2 scalar math — overloaded names that still need compiler
-      // name-based dispatch (sqrt/log/exp/sin/cos/tan accept complex
-      // arguments; abs/sign/min/max change return type by arg type).
-      // The unambiguous real-only entries (cbrt, floor, ceil, round,
+      // §10.2 scalar math — only names that vary their return type by
+      // argument type still need compiler name-based dispatch:
+      //   abs(int) → int / abs(real) → real / abs(complex) → real
+      //   sign / min / max similarly.
+      // The transcendentals sqrt/exp/log/log2/log10/sin/cos/tan plus
+      // the unambiguous real-only entries (cbrt, floor, ceil, round,
       // trunc, asin, acos, atan, atan2, sinh, cosh, tanh, asinh,
-      // acosh, atanh, log2, log10) live in `prelude/scalar.nex` and
-      // come in via the source-prelude auto-import.
-      "sqrt", "abs", "sign",
-      "exp", "log",
-      "sin", "cos", "tan",
+      // acosh, atanh, hypot) live in `prelude/scalar.nex` and come in
+      // via the source-prelude auto-import. The complex variants are
+      // overloaded Nex source defs that compose the real bridges.
+      "abs", "sign",
       "min", "max",
       // §10.3 complex
       "conj", "arg",

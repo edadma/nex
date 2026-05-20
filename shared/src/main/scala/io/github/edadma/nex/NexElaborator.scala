@@ -115,9 +115,11 @@ class NexElaborator
     // Root scope holds the prelude; modules nest inside it.
     val rootScope = current
 
-    // module path → name → exported Symbol. Populated as each module
-    // finishes Pass A so dependent modules' imports can resolve.
-    val exports = mutable.Map.empty[List[String], mutable.LinkedHashMap[String, Symbol]]
+    // module path → name → exported Symbol(s). A name with multiple
+    // entries is an overloaded `def` set; non-function names always
+    // have a singleton list. Populated as each module finishes Pass A
+    // so dependent modules' imports can resolve.
+    val exports = mutable.Map.empty[List[String], mutable.LinkedHashMap[String, List[Symbol]]]
 
     val allLowered = mutable.ListBuffer.empty[TDecl]
     // Decls coming from `module prelude` source files. Separated from
@@ -137,7 +139,10 @@ class NexElaborator
       // The bound name is `alias.getOrElse(name)`; the bound Symbol is the
       // exporter's actual symbol so refs resolve cross-module by identity.
       val mergedDecls = module.files.flatMap(_.ast.decls)
-      val moduleExports = mutable.LinkedHashMap.empty[String, Symbol]
+      val moduleExports = mutable.LinkedHashMap.empty[String, List[Symbol]]
+
+      def addExport(name: String, sym: Symbol): Unit =
+        moduleExports(name) = moduleExports.getOrElse(name, Nil) :+ sym
 
       // Auto-import the source prelude into every non-prelude module. The
       // synthetic `import prelude.*` is processed by the same path as a
@@ -161,21 +166,26 @@ class NexElaborator
               // name they reference simply isn't exported).
               if i.isWildcard then
                 // Wildcard: bind every public export under its declared name.
-                // Name clashes (`import a.*` then `import b.*` with overlap)
+                // Overloaded `def` names (multi-symbol export lists) bind
+                // each overload into the importing scope so call-site
+                // overload resolution sees the full candidate set. Name
+                // clashes (`import a.*` then `import b.*` with overlap)
                 // surface as the usual "clashes with an existing binding"
                 // error, same as a selective import would.
-                for (name, sym) <- modExports do
-                  if !current.define(name, sym) then
-                    err(s"import `$name` from `${i.path.mkString(".")}.*` clashes with an existing binding in this module", i)
+                for (name, syms) <- modExports do
+                  for sym <- syms do
+                    if !current.define(name, sym) then
+                      err(s"import `$name` from `${i.path.mkString(".")}.*` clashes with an existing binding in this module", i)
               else
                 for sel <- i.selectors do
                   modExports.get(sel.name) match
-                    case None =>
+                    case None | Some(Nil) =>
                       err(s"import `${i.path.mkString(".")}` has no public member `${sel.name}`", i)
-                    case Some(sym) =>
+                    case Some(syms) =>
                       val effective = sel.alias.getOrElse(sel.name)
-                      if !current.define(effective, sym) then
-                        err(s"import `$effective` clashes with an existing binding in this module", i)
+                      for sym <- syms do
+                        if !current.define(effective, sym) then
+                          err(s"import `$effective` clashes with an existing binding in this module", i)
             case None =>
               // Unresolved import path: in single-file mode (where the
               // loader didn't discover any module by that path) we fall
@@ -197,11 +207,11 @@ class NexElaborator
         case f: FunDeclAST =>
           val s = define(f.name, SymKind.Function, TyUnknown, f)
           topSyms(d) = List(s)
-          if !f.isPrivate then moduleExports(f.name) = s
+          if !f.isPrivate then addExport(f.name, s)
         case s: StructDeclAST =>
           val sym = define(s.name, SymKind.TypeName, TyStruct(s.name, Nil), s)
           topSyms(d) = List(sym)
-          if !s.isPrivate then moduleExports(s.name) = sym
+          if !s.isPrivate then addExport(s.name, sym)
         case v: ValDeclAST =>
           val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
           topSyms(d) = ss
@@ -209,17 +219,17 @@ class NexElaborator
           // synthetic `$tuple` temps from destructuring are also excluded
           // by name. Other named bindings are public per spec §9.4.
           if !v.isPrivate then
-            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+            ss.foreach(s => if !s.name.startsWith("$") then addExport(s.name, s))
         case v: VarDeclAST =>
           val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
           topSyms(d) = ss
           if !v.isPrivate then
-            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+            ss.foreach(s => if !s.name.startsWith("$") then addExport(s.name, s))
         case c: ConstDeclAST =>
           val ss = topBindingSyms(c.pat, SymKind.TopLevel, c)
           topSyms(d) = ss
           if !c.isPrivate then
-            ss.foreach(s => if !s.name.startsWith("$") then moduleExports(s.name) = s)
+            ss.foreach(s => if !s.name.startsWith("$") then addExport(s.name, s))
         case _: ImportDeclAST | _: ModuleDeclAST =>
           ()
 
@@ -249,6 +259,13 @@ class NexElaborator
       // module's bindings are in scope.
       val perModule         = TProgram(module.path, elabDecls.toList, symbols)
       val perModuleInferred = inferProgram(perModule)
+
+      // Overload sets must have pairwise-distinct signatures (different
+      // arity or different param types). A `def f(real)` + `def f(complex)`
+      // pair is a valid overload set; two `def f(real)` decls aren't.
+      // Runs after Stage 2 so each function symbol has its concrete
+      // TyFunc — Pass A only sees TyUnknown placeholders.
+      validateOverloadSet(elabDecls.toList)
 
       // -- Stage 3: sugar lowering + mode validation (per-module) -----
       // Lowering also uses `current.lookup(...)` (lowerMethodCall) for
@@ -364,6 +381,25 @@ class NexElaborator
     }
     TImportDecl(i.path, sels, Some(i.pos))
 
+  /** Walk the module's top-level decls and report any overload set whose
+    * members have identical signatures. By the time we run, Stage 2 has
+    * filled in each function's TyFunc, so we compare param-list shapes
+    * directly. An overload "signature" for matching purposes is just the
+    * tuple of parameter types — return type does not participate.
+    */
+  private def validateOverloadSet(decls: List[TDecl]): Unit =
+    val byName = mutable.LinkedHashMap.empty[String, mutable.ListBuffer[TFunDecl]]
+    for d <- decls do d match
+      case f: TFunDecl => byName.getOrElseUpdate(f.sym.name, mutable.ListBuffer.empty) += f
+      case _           => ()
+    for (name, fns) <- byName if fns.size >= 2 do
+      val seen = mutable.LinkedHashMap.empty[List[Type], TFunDecl]
+      for f <- fns do
+        val key = f.params.map(_.tpe)
+        seen.get(key) match
+          case Some(_) => err(s"redeclaration of `$name` in the same scope: overload signatures must differ", f.pos)
+          case None    => seen(key) = f
+
   private def elabFun(f: FunDeclAST, sym: Symbol): TFunDecl =
     var paramSyms: List[Symbol] = Nil
     var retTy: Type             = TyUnknown
@@ -395,27 +431,21 @@ class NexElaborator
           attr.args match
             case Nil =>
               err("@intrinsic requires at least one argument (the opId)", f)
-              TIntrinsic("<error>", Nil, Some(f.pos))
+              TIntrinsic("<error>", Some(f.pos))
             case opId :: rest =>
-              // Identifier args are stored with a `@` prefix by the
-              // parser (see attributeArg). A bare string opId is the
-              // legacy form; trailing `@T`-style refs mark the opId as
-              // kind-specialized — monomorph will append a per-type
-              // mangling to the opId for each ref before backends see it.
+              // Identifier args (stored with a `@` prefix by the parser)
+              // marked an intrinsic as kind-specialized in the Stage 3-γ
+              // design. Stage 3-ε retired that path in favor of
+              // overload-by-signature in Nex source. The elaborator
+              // accepts only a single string opId now.
               if opId.startsWith("@") then
                 err("@intrinsic first argument must be the opId string, not a type-parameter reference", f)
-                TIntrinsic("<error>", Nil, Some(f.pos))
+                TIntrinsic("<error>", Some(f.pos))
+              else if rest.nonEmpty then
+                err("@intrinsic takes one argument (the opId string); kind-specialized intrinsics retired in Stage 3-ε — use overloaded source defs instead", f)
+                TIntrinsic(opId, Some(f.pos))
               else
-                val typeRefNames = rest.map { arg =>
-                  if !arg.startsWith("@") then
-                    err(s"@intrinsic trailing arguments must be type-parameter references, got `$arg`", f)
-                    "<error>"
-                  else arg.drop(1)
-                }
-                for tn <- typeRefNames if tn != "<error>" do
-                  if !f.typeParams.exists(_.name == tn) then
-                    err(s"@intrinsic references type parameter `$tn` which is not declared on this function", f)
-                TIntrinsic(opId, typeRefNames, Some(f.pos))
+                TIntrinsic(opId, Some(f.pos))
         case (Some(b), Some(_)) =>
           err("@intrinsic declarations must not have a body", f)
           elabExpr(b)
@@ -597,9 +627,8 @@ class NexElaborator
       case Some("Real")     => KindConstraint.Real
       case Some("Float")    => KindConstraint.Float
       case Some("Complex")  => KindConstraint.Complex
-      case Some("Inexact")  => KindConstraint.Inexact
       case Some(other)      =>
-        err(s"unknown kind constraint `$other` — supported: Any, Numeric, Real, Float, Complex, Inexact", where)
+        err(s"unknown kind constraint `$other` — supported: Any, Numeric, Real, Float, Complex", where)
         KindConstraint.Any
 
   // ==========================================================================

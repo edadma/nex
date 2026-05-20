@@ -554,7 +554,7 @@ class NexInterpreter:
     case TStringLit(v, _, _)  => VString(v)
     case TUnitLit(_)          => VUnit
 
-    case TIntrinsic(opId, _, p, _) =>
+    case TIntrinsic(opId, p, _) =>
       // A TIntrinsic node should only ever appear as the *body* of a
       // VUserFunc and be dispatched by evalUserBody before evalExpr sees
       // it. Reaching this case means an intrinsic was placed somewhere
@@ -900,7 +900,7 @@ class NexInterpreter:
       p: Option[scala.util.parsing.input.Position],
   ): Value =
     body match
-      case TIntrinsic(opId, _, _, _) =>
+      case TIntrinsic(opId, _, _) =>
         NexIntrinsics.require(opId)
         val argVals = params.map { ps =>
           frame.lookup(ps.id).map(_.v).getOrElse(
@@ -945,26 +945,17 @@ class NexInterpreter:
           case List(VReal(y), VReal(x)) => VReal(math.atan2(y, x))
           case _ => trap(s"libm.atan2: expected (real, real), got ${args.map(formatValue).mkString(", ")}", p)
       },
-      // Stage 3-γ specialized intrinsics. The monomorphization pass
-      // emits one per concrete kind admitted by the source decl's
-      // constraint (Float → real today; widening to other constraints
-      // adds an entry per kind they admit).
-      "libm.sqrt$real"    -> realUnary("libm.sqrt$real", math.sqrt),
-      "libm.sqrt$complex" -> complexUnary("libm.sqrt$complex", sqrtComplexPair),
-      "libm.exp$real"     -> realUnary("libm.exp$real",  math.exp),
-      "libm.exp$complex"  -> complexUnary("libm.exp$complex", expComplexPair),
-      "libm.log$real"     -> realUnary("libm.log$real",  math.log),
-      "libm.log$complex"  -> complexUnary("libm.log$complex", logComplexPair),
-      "libm.log2$real"    -> realUnary("libm.log2$real", x => math.log(x) / math.log(2.0)),
-      "libm.log2$complex" -> complexUnary("libm.log2$complex", log2ComplexPair),
-      "libm.log10$real"   -> realUnary("libm.log10$real", math.log10),
-      "libm.log10$complex" -> complexUnary("libm.log10$complex", log10ComplexPair),
-      "libm.sin$real"     -> realUnary("libm.sin$real",  math.sin),
-      "libm.sin$complex"  -> complexUnary("libm.sin$complex", sinComplexPair),
-      "libm.cos$real"     -> realUnary("libm.cos$real",  math.cos),
-      "libm.cos$complex"  -> complexUnary("libm.cos$complex", cosComplexPair),
-      "libm.tan$real"     -> realUnary("libm.tan$real",  math.tan),
-      "libm.tan$complex"  -> complexUnary("libm.tan$complex", tanComplexPair),
+      "libm.hypot" -> { (args, p) =>
+        args match
+          case List(VReal(x), VReal(y)) => VReal(math.hypot(x, y))
+          case _ => trap(s"libm.hypot: expected (real, real), got ${args.map(formatValue).mkString(", ")}", p)
+      },
+      "libm.sqrt"  -> realUnary("libm.sqrt", math.sqrt),
+      "libm.exp"   -> realUnary("libm.exp",  math.exp),
+      "libm.log"   -> realUnary("libm.log",  math.log),
+      "libm.sin"   -> realUnary("libm.sin",  math.sin),
+      "libm.cos"   -> realUnary("libm.cos",  math.cos),
+      "libm.tan"   -> realUnary("libm.tan",  math.tan),
     )
 
   /** Bridge a unary real → real libm function into the intrinsic
@@ -981,76 +972,6 @@ class NexInterpreter:
         case List(VReal(x)) => VReal(f(x))
         case _              =>
           trap(s"$opId: expected real argument, got ${args.map(formatValue).mkString(", ")}", p)
-
-  /** Bridge a unary complex → complex function into the intrinsic
-    * dispatch table. The kernel receives the value's (re, im) pair and
-    * returns the result as another (re, im) pair. Used by Stage 3-δ
-    * complex-kinded specialized intrinsics (`libm.sqrt$complex`, etc.).
-    */
-  private def complexUnary(
-      opId: String,
-      f:    (Double, Double) => (Double, Double),
-  ): (List[Value], Option[scala.util.parsing.input.Position]) => Value =
-    (args, p) =>
-      args match
-        case List(VComplex(re, im)) =>
-          val (ro, io) = f(re, im)
-          VComplex(ro, io)
-        case _ =>
-          trap(s"$opId: expected complex argument, got ${args.map(formatValue).mkString(", ")}", p)
-
-  /** Principal-branch complex square root in (re, im) form. Branch cut
-    * along the negative real axis. The LLVM helper `__nex_csqrt` uses
-    * the same formula; both backends share this implementation by
-    * construction so parity tests don't surface formula drift.
-    */
-  private def sqrtComplexPair(re: Double, im: Double): (Double, Double) =
-    val mag  = math.hypot(re, im)
-    val rOut = math.sqrt((mag + re) / 2)
-    val iOut =
-      if im == 0 && re < 0 then math.sqrt(-re)
-      else math.signum(im) * math.sqrt((mag - re) / 2)
-    (rOut, iOut)
-
-  /** Complex exponential. exp(re + im·i) = exp(re) · (cos(im) + sin(im)·i). */
-  private def expComplexPair(re: Double, im: Double): (Double, Double) =
-    val s = math.exp(re)
-    (s * math.cos(im), s * math.sin(im))
-
-  /** Principal-branch complex natural log: log(z) = ln|z| + i·arg(z),
-    * computed as (log(hypot(re,im)), atan2(im, re)).
-    */
-  private def logComplexPair(re: Double, im: Double): (Double, Double) =
-    (math.log(math.hypot(re, im)), math.atan2(im, re))
-
-  /** Complex log base 2 — both components of the natural log scaled by
-    * 1/ln(2). One multiplication per component, cheaper than dividing.
-    */
-  private def log2ComplexPair(re: Double, im: Double): (Double, Double) =
-    val inv = 1.0 / math.log(2.0)
-    val (lr, li) = logComplexPair(re, im)
-    (lr * inv, li * inv)
-
-  /** Complex log base 10 — natural log scaled by 1/ln(10). */
-  private def log10ComplexPair(re: Double, im: Double): (Double, Double) =
-    val inv = 1.0 / math.log(10.0)
-    val (lr, li) = logComplexPair(re, im)
-    (lr * inv, li * inv)
-
-  /** Complex sin: sin(re + im·i) = sin(re)·cosh(im) + cos(re)·sinh(im)·i. */
-  private def sinComplexPair(re: Double, im: Double): (Double, Double) =
-    (math.sin(re) * math.cosh(im), math.cos(re) * math.sinh(im))
-
-  /** Complex cos: cos(re + im·i) = cos(re)·cosh(im) − sin(re)·sinh(im)·i. */
-  private def cosComplexPair(re: Double, im: Double): (Double, Double) =
-    (math.cos(re) * math.cosh(im), -math.sin(re) * math.sinh(im))
-
-  /** Complex tan via sin(z)/cos(z) expanded for stability across small |im|. */
-  private def tanComplexPair(re: Double, im: Double): (Double, Double) =
-    val sr = math.sin(re);  val cr = math.cos(re)
-    val sh = math.sinh(im); val ch = math.cosh(im)
-    val denom = cr * cr * ch * ch + sr * sr * sh * sh
-    ((sr * cr) / denom, (sh * ch) / denom)
 
   /** Mode-aware user-function call. For each `mut` parameter whose
     * call-site argument is a [[TVarRef]] (or projection thereof) the

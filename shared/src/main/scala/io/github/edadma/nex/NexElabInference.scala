@@ -1040,12 +1040,7 @@ protected trait NexElabInference extends NexElabState:
             if c.admits(t) then
               subs(name) = t
               UnifyOk
-            else promoteForConstraint(t, c) match
-              case Some(p) =>
-                subs(name) = p
-                UnifyOk
-              case None =>
-                UnifyConstraintViolation(name, c, t)
+            else UnifyConstraintViolation(name, c, t)
           case Some(prev) =>
             if prev == t then UnifyOk
             else if isNumeric(prev) && isNumeric(t) then
@@ -1054,15 +1049,7 @@ protected trait NexElabInference extends NexElabState:
                   subs(name) = joined
                   UnifyOk
                 case _ => UnifyInconsistent(name, prev, t)
-            else promoteForConstraint(t, c) match
-              case Some(p) if p == prev   => UnifyOk
-              case Some(p) if isNumeric(prev) =>
-                promote(prev, p) match
-                  case Some(joined) if c.admits(joined) =>
-                    subs(name) = joined
-                    UnifyOk
-                  case _ => UnifyInconsistent(name, prev, t)
-              case _ => UnifyInconsistent(name, prev, t)
+            else UnifyInconsistent(name, prev, t)
       case (TyArray(e1, r1), TyArray(e2, r2)) if r1 == r2 =>
         unifyKindVars(e1, e2, subs)
       case (TyTuple(es1), TyTuple(es2)) if es1.size == es2.size =>
@@ -1086,20 +1073,6 @@ protected trait NexElabInference extends NexElabState:
         UnifyOk
       case (a, b) => UnifyShapeMismatch(a, b)
 
-  /** If `t` is a narrower numeric type the constraint promotes upward,
-    * return the widened type. Lets `sqrt(8)` against a `[T: Inexact]`
-    * parameter pick `T = real` and route through the int→real coercion
-    * already in `coerceTo`. Promotion is opt-in per constraint:
-    * `Inexact` widens integer to real because elementary functions are
-    * naturally defined on the reals; strict constraints like `Float`
-    * stay strict so user code that asks for `[T: Float]` still gets a
-    * compile-time error for an integer argument.
-    */
-  protected def promoteForConstraint(t: Type, c: KindConstraint): Option[Type] =
-    (t, c) match
-      case (TyInteger, KindConstraint.Inexact) => Some(TyReal)
-      case _ => None
-
   /** Render a `KindConstraint` for a user-facing diagnostic. */
   protected def constraintLabel(c: KindConstraint): String = c match
     case KindConstraint.Any     => "Any"
@@ -1107,33 +1080,109 @@ protected trait NexElabInference extends NexElabState:
     case KindConstraint.Real    => "Real"
     case KindConstraint.Float   => "Float"
     case KindConstraint.Complex => "Complex"
-    case KindConstraint.Inexact => "Inexact"
+
+  /** Pick the best-matching overload from a candidate set, scoring each
+    * by the total numeric-promotion distance from the actual arg types to
+    * the formal param types. Minimum-cost overload wins; tie at the
+    * minimum is an ambiguity error. Returns `None` (after emitting an
+    * error) when no candidate accepts the given arg types.
+    *
+    * Scoring rule: per (formal, actual) pair, 0 for an exact type match,
+    * `rank(formal) - rank(actual)` for an admissible numeric promotion
+    * (integer → real → complex), `None` otherwise.
+    */
+  protected def resolveOverload(
+      cands: List[Symbol],
+      args:  List[TExpr],
+      pos:   Option[Position],
+  ): Option[Symbol] =
+    val scored = cands.flatMap { c =>
+      currentType(c) match
+        case TyFunc(params, _) if params.size == args.size =>
+          scoreCall(params.map(_._1), args.map(_.tpe)).map(cost => (c, cost))
+        case _ => None
+    }
+    if scored.isEmpty then
+      val name = cands.headOption.map(_.name).getOrElse("<unknown>")
+      val argT = args.map(_.tpe).mkString(", ")
+      err(s"no overload of `$name` matches argument types ($argT)", pos)
+      None
+    else
+      val minCost = scored.map(_._2).min
+      val best    = scored.filter(_._2 == minCost).map(_._1)
+      if best.size > 1 then
+        val name = cands.head.name
+        err(s"ambiguous call to `$name`: multiple overloads accept these arguments", pos)
+        None
+      else Some(best.head)
+
+  /** Score an argument list against a formal param list. Returns the
+    * total promotion cost, or `None` if any pair isn't assignable.
+    * Numeric rank: integer=0, real=1, complex=2. Non-numeric types must
+    * match exactly.
+    */
+  private def scoreCall(formals: List[Type], actuals: List[Type]): Option[Int] =
+    var total = 0
+    val it = formals.iterator.zip(actuals.iterator)
+    while it.hasNext do
+      val (f, a) = it.next()
+      if f == a then ()
+      else if isNumeric(f) && isNumeric(a) && promote(a, f).contains(f) then
+        total += numericRank(f) - numericRank(a)
+      else return None
+    Some(total)
+
+  private def numericRank(t: Type): Int = t match
+    case TyInteger => 0
+    case TyReal    => 1
+    case TyComplex => 2
+    case _         => -1
 
   protected def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr =
-    callee match
+    // Overload resolution: if the callee is a TVarRef to a Function and
+    // the same name binds multiple overloads in scope, score each one
+    // against the actual arg types and pick the best. The chosen Symbol
+    // replaces the callee's; from there the normal TyFunc path coerces
+    // each argument to the matching formal type via `coerceTo`.
+    val resolvedCallee = callee match
+      case TVarRef(s, refPos, _) if s.kind == SymKind.Function =>
+        val cands = current.lookupAll(s.name).filter(_.kind == SymKind.Function)
+        if cands.size > 1 then
+          // Use the post-update Symbol type via `currentType` so resolveOverload
+          // sees the TyFunc Stage 2 registered (Pass A only saw TyUnknown).
+          // The chosen Symbol stored on the new TVarRef is refreshed from the
+          // SymbolTable so downstream readers of `.sym.tpe` see the fresh type.
+          resolveOverload(cands, args, p) match
+            case Some(chosen) =>
+              val fresh = refreshSym(chosen)
+              TVarRef(fresh, refPos, fresh.tpe)
+            case None => callee
+        else callee
+      case _ => callee
+    resolvedCallee match
       case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
         // Struct construction.
         currentType(s) match
           case TyStruct(_, fs) =>
             if fs.size != args.size then
               err(s"struct `${s.name}` expects ${fs.size} args, got ${args.size}", p)
-              TCall(callee, args, p, currentType(s))
+              TCall(resolvedCallee, args, p, currentType(s))
             else
               val coercedArgs = fs.zip(args).map { case ((_, ft), a) => coerceTo(a, ft) }
-              TCall(callee, coercedArgs, p, currentType(s))
-          case _ => TCall(callee, args, p, TyUnknown)
+              TCall(resolvedCallee, coercedArgs, p, currentType(s))
+          case _ => TCall(resolvedCallee, args, p, TyUnknown)
 
       case _ =>
-        callee.tpe match
+        resolvedCallee.tpe match
           case TyFunc(params, ret) =>
             if params.size != args.size then
               err(s"function call expects ${params.size} args, got ${args.size}", p)
-              TCall(callee, args, p, ret)
+              TCall(resolvedCallee, args, p, ret)
             else if params.exists((pt, _) => hasKindVar(pt)) || hasKindVar(ret) then
-              inferGenericCall(callee, params, ret, args, p)
+              inferGenericCall(resolvedCallee, params, ret, args, p)
             else
               val coercedArgs = params.zip(args).map { case ((pt, _), a) => coerceTo(a, pt) }
-              TCall(callee, coercedArgs, p, ret)
+              TCall(resolvedCallee, coercedArgs, p, ret)
           case _ =>
             // Fallback for prelude functions whose signatures aren't in
             // [[TyFunc]] form yet. We don't refine the param types here
@@ -1141,11 +1190,11 @@ protected trait NexElabInference extends NexElabState:
             // return type where we know one — so a containing function's
             // inferred return type isn't poisoned by TyUnknown bubbling
             // up from `print` / `assert` / etc.
-            val ret = callee match
+            val ret = resolvedCallee match
               case TVarRef(s, _, _) if s.kind == SymKind.Prelude =>
                 preludeReturnTypeFor(s.name, args)
               case _ => TyUnknown
-            TCall(callee, args, p, ret)
+            TCall(resolvedCallee, args, p, ret)
 
   /** Generic-call path. The callee's `TyFunc` mentions one or more
     * `TyKindVar`s. We unify each formal parameter against the actual

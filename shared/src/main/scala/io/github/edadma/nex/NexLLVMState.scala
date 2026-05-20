@@ -152,6 +152,43 @@ protected trait NexLLVMState:
     */
   protected val intrinsicFunctionOpIds = mutable.Map.empty[Int, String]
 
+  /** Symbol-id → emitted LLVM function name. Populated at codegen init
+    * for any function that participates in an overload set whose name
+    * would otherwise collide in the flat LLVM symbol namespace. The
+    * fallback is the symbol's plain name; only overload-set members
+    * (with a libm bridge or another overload sharing the name) get a
+    * mangled `<name>$<param-mangle>` entry here.
+    */
+  protected val llvmFuncNames = mutable.Map.empty[Int, String]
+
+  /** Convert a list of param types into a stable, ASCII-only suffix for
+    * use in overload-disambiguating LLVM function names. Mirrors the
+    * shape NexMonomorphize already uses for kind-specialized clones.
+    */
+  protected def mangleParamTypes(ts: List[Type]): String =
+    ts.map(mangleTypeForLLVM).mkString("_")
+
+  protected def mangleTypeForLLVM(t: Type): String = t match
+    case TyInteger       => "integer"
+    case TyReal          => "real"
+    case TyComplex       => "complex"
+    case TyBool          => "bool"
+    case TyString        => "string"
+    case TyUnit          => "unit"
+    case TyArray(e, 1)   => s"array_${mangleTypeForLLVM(e)}"
+    case TyArray(e, r)   => s"array${r}_${mangleTypeForLLVM(e)}"
+    case TyTuple(es)     => es.map(mangleTypeForLLVM).mkString("tup_", "_", "")
+    case TyStruct(n, _)  => n
+    case TyFunc(ps, r)   => ps.map((pt, _) => mangleTypeForLLVM(pt)).mkString("fn_", "_", s"_to_${mangleTypeForLLVM(r)}")
+    case TyKindVar(n, _) => n
+    case TyUnknown       => "unknown"
+
+  /** Resolved LLVM function name for `sym` — mangled when sym is part of
+    * an overload set, plain otherwise.
+    */
+  protected def llvmFuncNameOf(sym: Symbol): String =
+    llvmFuncNames.getOrElse(sym.id, sym.name)
+
   // ---------------------------------------------------------------------------
   // Cross-trait abstract methods. Concrete definitions live in
   // [[NexLLVMCodegen]] (compile / emitExpr / control flow / tuples / structs)

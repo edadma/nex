@@ -235,7 +235,7 @@ class NexMLIRCodegen:
         if s.kind == SymKind.Prelude && s.name == "matmul" =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
-    case TIntrinsic(opId, _, _, _) =>
+    case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
     case other =>

@@ -60,19 +60,12 @@ enum KindConstraint:
   case Real
   case Float
   case Complex
-  case Inexact
 
   /** The concrete types this constraint admits, in the current v0 type
     * world. `real`/`real64` are the same physical type until split-precision
     * types (real32, real128) land; the constraint set anticipates that
     * future widening by being expressed as a membership predicate rather
     * than tied to a single canonical type.
-    *
-    * `Inexact` covers the IEEE-754 continuous-number types — real and
-    * complex — without admitting integer. Used by the elementary functions
-    * sqrt/log/exp/sin/cos/tan that the spec extends to both. Integer
-    * arguments at the call site promote to real before the unifier sees
-    * them; see `unifyKindVars`.
     */
   def admits(t: Type): Boolean = (this, t) match
     case (Any,     _)         => true
@@ -83,8 +76,6 @@ enum KindConstraint:
     case (Real,    TyReal)    => true
     case (Float,   TyReal)    => true
     case (Complex, TyComplex) => true
-    case (Inexact, TyReal)    => true
-    case (Inexact, TyComplex) => true
     case _                    => false
 
 // ============================================================================
@@ -301,15 +292,14 @@ case class TMethodCall(receiver: TExpr, name: String, args: List[TExpr], pos: Op
   * emit-function, etc. Decls bearing an `@intrinsic("opId")` attribute
   * are minted with this body in place of an ordinary `TExpr`.
   *
-  * `typeRefs` carries the source-level type-parameter names from any
-  * trailing identifier arguments to `@intrinsic("libm.sqrt", T)` — they
-  * tell the monomorphization pass which type parameters specialize the
-  * opId. After monomorph the list is empty and `opId` is the fully
-  * mangled per-type name (e.g. `"libm.sqrt$real"`). A non-generic
-  * intrinsic decl (no trailing type-ref args) keeps `typeRefs = Nil`
-  * and its `opId` passes through monomorph unchanged.
+  * Higher-level operations that compose intrinsics — for example
+  * complex transcendentals built from real-libm primitives — should
+  * live in Nex source (`prelude/scalar.nex`) as overloaded source
+  * defs, not as kind-specialized intrinsics. Stage 3-ε retired the
+  * type-parameter-ref shape `@intrinsic("X", T)`; only single-string
+  * opIds are supported here.
   */
-case class TIntrinsic(opId: String, typeRefs: List[String] = Nil, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
+case class TIntrinsic(opId: String, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
 
 // -- Lambdas ---------------------------------------------------------------
 

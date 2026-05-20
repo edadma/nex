@@ -15,12 +15,13 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """call double @sqrt\(double 0x4030000000000000\)"""
     }
 
-    "integer arg to sqrt promotes to real via the kind-generic call path" in {
-      // `sqrt: [T: Inexact]` does not admit integer directly; the
-      // elaborator promotes the int literal to a real before unifying T,
-      // and synthCoerce folds `TIntLit(4)` to `TRealLit(4.0)` at compile
-      // time — so the IR carries the hex literal directly instead of a
-      // runtime sitofp + load.
+    "integer arg to sqrt promotes to real via overload resolution" in {
+      // `sqrt(real)` and `sqrt(complex)` overloads both live in
+      // prelude/scalar.nex. The integer literal 4 has no matching
+      // integer overload, so the elaborator picks `sqrt(real)` (cheaper
+      // promotion path than `sqrt(complex)`) and synthCoerce folds
+      // `TIntLit(4)` → `TRealLit(4.0)` at compile time, so the IR
+      // carries the hex literal directly instead of a runtime sitofp.
       val ir = compile("def main() = print(sqrt(4))")
       ir should include regex """call double @sqrt\(double 0x4010000000000000\)"""
       ir should not include "sitofp i64 4 to double"
@@ -508,27 +509,29 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("call double @cosh(double")
     }
 
-    "cos(complex) routes the call site through the __nex_ccos helper" in {
-      // The Stage 3-δ pipeline emits a single `__nex_ccos` call at the
-      // user's call site; the formula
+    "cos(complex) routes the call site to the source-body complex overload" in {
+      // Stage 3-ε: cos(complex) is now an overloaded Nex source def in
+      // prelude/scalar.nex; LLVM emits it as `define @cos$complex(...)`
+      // and the call site dispatches through that mangled name. The
+      // formula
       //   cos(re + im·i) = cos(re)·cosh(im) − sin(re)·sinh(im)·i
-      // lives in the preamble's helper body, where the libm bridges
-      // appear verbatim. Both checks together prove the call routes
-      // through the helper AND that the helper still bridges to libm.
+      // lives in the function body where it calls the real libm
+      // bridges by name.
       val ir = compile("def main() = print(cos(0.5 + 0.5 * i))")
-      ir should include regex """call \{ double, double \} @__nex_ccos\(\{ double, double \}"""
+      ir should include regex """call \{ double, double \} @cos\$complex\(\{ double, double \}"""
       ir should include("call double @sin(double")
       ir should include("call double @cos(double")
       ir should include("call double @sinh(double")
       ir should include("call double @cosh(double")
     }
 
-    "sqrt(complex) routes the call site through __nex_csqrt" in {
+    "sqrt(complex) routes the call site to the source-body complex overload" in {
       // Principal-branch complex sqrt: branch cut at the negative real
-      // axis. The helper body uses hypot for magnitude and selects for
-      // the branch-cut special case; both are in the preamble.
+      // axis. The formula (hypot + sign-of-im) lives in the Nex source
+      // body of `def sqrt(z: complex): complex` in prelude/scalar.nex
+      // and LLVM emits it as `@sqrt$complex(...)`.
       val ir = compile("def main() = print(sqrt(-1.0 + 0.0 * i))")
-      ir should include regex """call \{ double, double \} @__nex_csqrt\(\{ double, double \}"""
+      ir should include regex """call \{ double, double \} @sqrt\$complex\(\{ double, double \}"""
       ir should include("call double @hypot(double")
       ir should include("call double @sqrt(double")
     }

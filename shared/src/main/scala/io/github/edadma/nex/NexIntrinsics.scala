@@ -10,11 +10,15 @@ package io.github.edadma.nex
   *
   *   1. Add its key to [[Ids]] below.
   *   2. Register an implementation in each backend's dispatch table.
-  *   3. (Eventually) replace the matching compiler-internal prelude entry.
   *
   * The opId format is `"<group>.<name>"`. Group conventions:
   *   - `libm.*`     — IEEE-754 scalar math reachable via the host's libm.
   *   - `test.*`     — test-only intrinsics; never ship in a release prelude.
+  *
+  * Every entry here corresponds to a *primitive* — something the language
+  * cannot express in itself. Higher-level operations (complex transcendentals,
+  * numeric utilities) are written in `prelude/scalar.nex` as ordinary Nex
+  * source that composes these primitives.
   */
 object NexIntrinsics:
 
@@ -23,34 +27,19 @@ object NexIntrinsics:
     */
   val Ids: Set[String] = Set(
     "test.identity",
-    // §10.2 real-only scalar math that the source prelude carries via
-    // bodyless `@intrinsic` declarations. Each id names a libm function
-    // the backend bridges to directly. Adding a new entry here requires
-    // a registration in every backend's dispatch table — interpreter
-    // (NexInterpreter.intrinsicDispatch) and LLVM (emitIntrinsicCall),
-    // plus an explicit notYet in MLIR until that backend grows libm
-    // wiring.
-    "libm.cbrt",
-    "libm.floor", "libm.ceil", "libm.round", "libm.trunc",
-    "libm.asin",  "libm.acos", "libm.atan",  "libm.atan2",
-    "libm.sinh",  "libm.cosh", "libm.tanh",
-    "libm.asinh", "libm.acosh","libm.atanh",
-    "libm.log2",  "libm.log10",
-    // Per-type specialized intrinsic IDs minted by Stage 3-γ
-    // monomorphization. A kind-generic `def gsqrt[T: Float](x: T): T =
-    // @intrinsic("libm.sqrt", T)` becomes one specialized clone per
-    // concrete T, each carrying the `$<type>`-suffixed opId. Backends
-    // dispatch on the suffixed name directly — there is no "stem"
-    // lookup. Each kind a constraint admits requires its entry here
-    // and in every backend dispatch table.
-    "libm.sqrt$real",   "libm.sqrt$complex",
-    "libm.exp$real",    "libm.exp$complex",
-    "libm.log$real",    "libm.log$complex",
-    "libm.log2$real",   "libm.log2$complex",
-    "libm.log10$real",  "libm.log10$complex",
-    "libm.sin$real",    "libm.sin$complex",
-    "libm.cos$real",    "libm.cos$complex",
-    "libm.tan$real",    "libm.tan$complex",
+    // §10.2 scalar math — direct libm bridges. Each id names a libm
+    // function the backend lowers to without a wrapper. Complex versions
+    // of sqrt/exp/log/sin/cos/tan are Nex source defs in
+    // `prelude/scalar.nex`; no `$complex` opId exists because the
+    // implementation isn't an intrinsic.
+    "libm.sqrt",  "libm.cbrt",
+    "libm.exp",   "libm.log",   "libm.log2",   "libm.log10",
+    "libm.sin",   "libm.cos",   "libm.tan",
+    "libm.asin",  "libm.acos",  "libm.atan",   "libm.atan2",
+    "libm.sinh",  "libm.cosh",  "libm.tanh",
+    "libm.asinh", "libm.acosh", "libm.atanh",
+    "libm.floor", "libm.ceil",  "libm.round",  "libm.trunc",
+    "libm.hypot",
   )
 
   /** Throw if `opId` is not a known intrinsic. Use this at the top of each

@@ -726,33 +726,21 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
   }
 
   // ==========================================================================
-  // Stage 3-γ — kind-specialized intrinsics
+  // Stage 3-ε — kind-specialized `@intrinsic` was retired in favor of
+  // overloaded source defs. The elaborator now rejects type-parameter
+  // refs on `@intrinsic`; the parser still admits the syntactic shape
+  // so existing fixtures parse and the rejection diagnostic surfaces
+  // at elaboration time with a clear message.
   // ==========================================================================
-  //
-  // `@intrinsic("libm.sqrt", T)` carries a trailing type-parameter
-  // reference. The elaborator records its name on the TIntrinsic node;
-  // monomorph appends a `$<mangled>` suffix per ref so each
-  // specialized clone bridges to the right libm symbol.
 
-  "kind-specialized intrinsics (Stage 3-γ)" should {
+  "kind-specialized @intrinsic (retired in Stage 3-ε)" should {
 
-    "elaborator records trailing type-param ref on TIntrinsic" in {
-      val tp = elab("""
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Float](x: T): T
-      """.stripMargin, runMonomorph = false)
-      val fn = tp.decls.head.asInstanceOf[TFunDecl]
-      val ti = fn.body.asInstanceOf[TIntrinsic]
-      ti.opId shouldBe "libm.sqrt"
-      ti.typeRefs shouldBe List("T")
-    }
-
-    "reject @intrinsic with a type-param ref the def does not declare" in {
+    "reject @intrinsic carrying any trailing type-param ref" in {
       val errs = elabExpect("""
         |@intrinsic("libm.sqrt", T)
-        |def gsqrt(x: real): real
+        |def gsqrt[T: Float](x: T): T
       """.stripMargin)
-      errs.exists(_.contains("type parameter `T`")) shouldBe true
+      errs.exists(e => e.contains("retired in Stage 3-ε") || e.contains("overloaded source defs")) shouldBe true
     }
 
     "reject @intrinsic whose first arg is a type-param ref instead of an opId string" in {
@@ -763,96 +751,97 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("first argument must be the opId string")) shouldBe true
     }
 
-    "monomorph mangles opId to libm.sqrt$real for a Float-constrained clone" in {
+  }
+
+  // ==========================================================================
+  // Stage 3-ε — function overload resolution. Two `def f(...)` decls
+  // with disjoint parameter signatures form an overload set; the
+  // elaborator picks the matching overload at each call site by scoring
+  // argument types (exact match wins; numeric promotion ranks integer
+  // → real → complex with smaller distance preferred). Ambiguous calls
+  // error; no-match calls error.
+  // ==========================================================================
+
+  "overload resolution (Stage 3-ε)" should {
+
+    "two defs with disjoint param types form an overload set" in {
       val tp = elab("""
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Float](x: T): T
-        |def use(): real = gsqrt(2.0)
-      """.stripMargin)
+        |def f(x: real): real = x
+        |def f(z: complex): complex = z
+        |def use() = print(f(1.0))
+      """.stripMargin, runMonomorph = false)
       val funDecls = tp.decls.collect { case f: TFunDecl => f }
-      // Generic template dropped; specialized clone present.
-      funDecls.exists(_.sym.name == "gsqrt") shouldBe false
-      val clone = funDecls.find(_.sym.name == "gsqrt$real").get
-      val ti    = clone.body.asInstanceOf[TIntrinsic]
-      ti.opId shouldBe "libm.sqrt$real"
-      ti.typeRefs shouldBe Nil
+      funDecls.count(_.sym.name == "f") shouldBe 2
     }
 
-    "parser accepts [T: Complex] and elaborator binds KindConstraint.Complex" in {
-      val tp = elab("def f[T: Complex](x: T): T = x", runMonomorph = false)
-      val fn = tp.decls.head.asInstanceOf[TFunDecl]
-      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Complex)
-      fn.returnType shouldBe TyKindVar("T", KindConstraint.Complex)
-    }
-
-    "Complex-constrained type param rejects real arg" in {
+    "two defs with identical signatures are a redeclaration error" in {
       val errs = elabExpect("""
-        |def csq[T: Complex](x: T): T = x
-        |def use(): real = csq(2.0)
+        |def f(x: real): real = x
+        |def f(y: real): real = y
       """.stripMargin)
-      errs.exists(e => e.contains("`T`") && e.contains("Complex")) shouldBe true
+      errs.exists(e => e.contains("redeclaration of `f`") && e.contains("overload signatures must differ")) shouldBe true
     }
 
-    "monomorph mangles opId to libm.sqrt$complex for a Complex-constrained clone" in {
-      val tp = elab("""
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Complex](x: T): T
-        |def use(): complex = gsqrt(1.0 + 0i)
-      """.stripMargin)
-      val funDecls = tp.decls.collect { case f: TFunDecl => f }
-      funDecls.exists(_.sym.name == "gsqrt") shouldBe false
-      val clone = funDecls.find(_.sym.name == "gsqrt$complex").get
-      val ti    = clone.body.asInstanceOf[TIntrinsic]
-      ti.opId shouldBe "libm.sqrt$complex"
-      ti.typeRefs shouldBe Nil
-    }
-
-    // Stage 3-δ piece 2 — `Inexact` constraint covers IEEE-754
-    // continuous numbers (real + complex). Integer arguments promote
-    // to real at the call site so existing `sqrt(8)`-shape code
-    // continues to type-check.
-    "parser accepts [T: Inexact] and elaborator binds KindConstraint.Inexact" in {
-      val tp = elab("def f[T: Inexact](x: T): T = x", runMonomorph = false)
-      val fn = tp.decls.head.asInstanceOf[TFunDecl]
-      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Inexact)
-      fn.returnType shouldBe TyKindVar("T", KindConstraint.Inexact)
-    }
-
-    "Inexact admits real and complex; integer is promoted, not directly admitted" in {
-      KindConstraint.Inexact.admits(TyReal)    shouldBe true
-      KindConstraint.Inexact.admits(TyComplex) shouldBe true
-      KindConstraint.Inexact.admits(TyInteger) shouldBe false
-    }
-
-    "Inexact-constrained call with integer arg specializes as $real (via int→real promote)" in {
-      val tp = elab("""
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Inexact](x: T): T
-        |def use(): real = gsqrt(8)
-      """.stripMargin)
-      val funDecls = tp.decls.collect { case f: TFunDecl => f }
-      // Generic template dropped; integer arg specialized as if real.
-      funDecls.exists(_.sym.name == "gsqrt")          shouldBe false
-      funDecls.exists(_.sym.name == "gsqrt$real")     shouldBe true
-      funDecls.exists(_.sym.name == "gsqrt$integer")  shouldBe false
-    }
-
-    "Inexact-constrained call with complex arg specializes as $complex" in {
-      val tp = elab("""
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Inexact](x: T): T
-        |def use(): complex = gsqrt(1.0 + 0i)
-      """.stripMargin)
-      val funDecls = tp.decls.collect { case f: TFunDecl => f }
-      val clone    = funDecls.find(_.sym.name == "gsqrt$complex").get
-      clone.body.asInstanceOf[TIntrinsic].opId shouldBe "libm.sqrt$complex"
-    }
-
-    "Float still rejects integer (no promotion for strict-real constraints)" in {
+    "mixed kinds at the same name (def + val) are an error" in {
       val errs = elabExpect("""
-        |def sq[T: Float](x: T): T = x
-        |def use() = print(sq(2))
+        |def f(x: real): real = x
+        |val f = 1
       """.stripMargin)
-      errs.exists(e => e.contains("`T`") && e.contains("Float")) shouldBe true
+      errs.exists(_.contains("redeclaration of `f`")) shouldBe true
     }
+
+    "call with exact-match arg type picks the real overload" in {
+      val tp = elab("""
+        |def f(x: real): real = x
+        |def f(z: complex): complex = z
+        |def use(): real = f(1.0)
+      """.stripMargin)
+      val use   = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "use" => d }.get
+      val call  = use.body.asInstanceOf[TCall]
+      val cTpe  = call.callee.asInstanceOf[TVarRef].sym.tpe
+      cTpe match
+        case TyFunc(List((TyReal, _)), TyReal) => succeed
+        case other => fail(s"expected real overload, got $other")
+    }
+
+    "call with complex arg picks the complex overload" in {
+      val tp = elab("""
+        |def f(x: real): real = x
+        |def f(z: complex): complex = z
+        |def use(): complex = f(1.0 + 0i)
+      """.stripMargin)
+      val use   = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "use" => d }.get
+      val call  = use.body.asInstanceOf[TCall]
+      val cTpe  = call.callee.asInstanceOf[TVarRef].sym.tpe
+      cTpe match
+        case TyFunc(List((TyComplex, _)), TyComplex) => succeed
+        case other => fail(s"expected complex overload, got $other")
+    }
+
+    "integer arg picks the real overload via one-step promotion" in {
+      // Cost: int→real = 1, int→complex = 2. The real overload wins by
+      // smaller promotion distance.
+      val tp = elab("""
+        |def f(x: real): real = x
+        |def f(z: complex): complex = z
+        |def use(): real = f(8)
+      """.stripMargin)
+      val use  = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "use" => d }.get
+      val call = use.body.asInstanceOf[TCall]
+      val cTpe = call.callee.asInstanceOf[TVarRef].sym.tpe
+      cTpe match
+        case TyFunc(List((TyReal, _)), TyReal) => succeed
+        case other => fail(s"expected real overload, got $other")
+    }
+
+    "no-match call surfaces a clear error" in {
+      val errs = elabExpect("""
+        |def f(x: real): real = x
+        |def use() = print(f("hello"))
+      """.stripMargin)
+      // Single-overload path goes through the existing TyFunc check,
+      // which reports a type-assignment error (string into real).
+      errs.exists(e => e.contains("cannot assign") || e.contains("string")) shouldBe true
+    }
+
   }

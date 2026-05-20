@@ -897,95 +897,28 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
   }
 
   // ==========================================================================
-  // Stage 3-γ — kind-specialized intrinsics. A generic def whose body is
-  // `@intrinsic("libm.sqrt", T)` becomes one specialized TFunDecl per
-  // concrete kind, each carrying a `$<type>`-suffixed opId
-  // (`libm.sqrt$real`) that backend dispatch tables key on. Demonstrates
-  // the round-trip: elaborator → monomorph → per-backend dispatch.
+  // Stage 3-ε — sqrt / exp / log / log2 / log10 / sin / cos / tan as
+  // overloaded source-prelude defs in `prelude/scalar.nex`. The real
+  // overload is an `@intrinsic("libm.X")` libm bridge; the complex
+  // overload is a Nex source body that composes the real bridges via
+  // the standard analytic-extension formula. Overload resolution at
+  // each call site picks the matching arm by argument type.
   // ==========================================================================
 
-  "kind-specialized intrinsics (Stage 3-γ)" should {
-    "Float-constrained sqrt specializes to libm.sqrt$real" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Float](x: T): T
-        |def main() = print(gsqrt(2.0))
-      """.stripMargin,
-      "1.4142135623730951\n",
-    )
-    "specialized sqrt called twice with the same kind reuses one clone" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Float](x: T): T
-        |def main() =
-        |  print(gsqrt(4.0))
-        |  print(gsqrt(9.0))
-      """.stripMargin,
-      "2.0\n3.0\n",
-    )
-    "specialized intrinsic composes with normal arithmetic" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Float](x: T): T
-        |def main() = print(gsqrt(2.0) * gsqrt(2.0))
-      """.stripMargin,
-      "2.0000000000000004\n",
-    )
-
-    // Stage 3-δ piece 1 — Complex constraint extends the per-kind
-    // dispatch from γ. `[T: Complex]` admits only TyComplex; the
-    // monomorph clone carries opId `libm.sqrt$complex` and bridges to
-    // a complex-aware kernel (interpreter: complexUnary + sqrtComplexPair;
-    // LLVM: __nex_csqrt aggregate-returning runtime helper).
-    "Complex-constrained sqrt: real-positive in, exact real out" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Complex](x: T): T
-        |def main() = print(gsqrt(1.0 + 0i))
-      """.stripMargin,
-      "1.0+0.0i\n",
-    )
-    "Complex-constrained sqrt: branch cut at the negative real axis" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Complex](x: T): T
-        |def main() = print(gsqrt(-1.0 + 0i))
-      """.stripMargin,
-      "0.0+1.0i\n",
-    )
-    "Complex-constrained sqrt: principal sqrt of pure-imaginary" in parityCheck(
-      """
-        |@intrinsic("libm.sqrt", T)
-        |def gsqrt[T: Complex](x: T): T
-        |def main() = print(gsqrt(0.0 + 2i))
-      """.stripMargin,
-      "1.0+1.0i\n",
-    )
-  }
-
-  // ==========================================================================
-  // Stage 3-δ piece 2 — sqrt / exp / log / log2 / log10 / sin / cos / tan
-  // are bodyless `[T: Inexact]` decls in `prelude/scalar.nex`. The decl
-  // monomorph clones each into a `$real` and a `$complex` variant; the
-  // call site picks whichever the argument type admits. Integer args
-  // promote to real at the unifier so `sqrt(8)` still type-checks under
-  // the new pipeline.
-  // ==========================================================================
-
-  "Inexact-kind source-prelude scalars (Stage 3-δ piece 2)" should {
-    "sqrt(real) bridges to libm.sqrt$real" in parityCheck(
+  "overloaded source-prelude scalars (Stage 3-ε)" should {
+    "sqrt(real) routes to the libm bridge" in parityCheck(
       "def main() = print(sqrt(4.0))",
       "2.0\n",
     )
-    "sqrt(integer) promotes to real before the call" in parityCheck(
+    "sqrt(integer) promotes to real before resolving the overload" in parityCheck(
       "def main() = print(sqrt(9))",
       "3.0\n",
     )
-    "sqrt(complex) takes the complex arm" in parityCheck(
+    "sqrt(complex) takes the source-body complex overload" in parityCheck(
       "def main() = print(sqrt(0.0 + 4i))",
       "1.4142135623730951+1.4142135623730951i\n",
     )
-    "exp(real) uses libm.exp$real" in parityCheck(
+    "exp(real) routes to libm @exp" in parityCheck(
       "def main() = print(exp(0.0))",
       "1.0\n",
     )
@@ -993,7 +926,7 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "def main() = print(exp(0.0 + 0i))",
       "1.0+0.0i\n",
     )
-    "log(real positive) uses libm.log$real" in parityCheck(
+    "log(real positive) routes to libm @log" in parityCheck(
       "def main() = print(log(1.0))",
       "0.0\n",
     )
@@ -1028,6 +961,51 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     "cos(complex 0+0i) is 1+0i" in parityCheck(
       "def main() = print(cos(0.0 + 0i))",
       "1.0+0.0i\n",
+    )
+  }
+
+  // ==========================================================================
+  // Stage 3-ε — user-defined function overload resolution. Same
+  // mechanism the prelude uses; proves overloading isn't a prelude
+  // special case. Real and complex overloads coexist; the call site
+  // picks by argument type at compile time.
+  // ==========================================================================
+
+  "user-defined overload resolution (Stage 3-ε)" should {
+    "real overload picked when arg is real" in parityCheck(
+      """
+        |def f(x: real): real = x * 2.0
+        |def f(z: complex): complex = z * 3.0
+        |def main() = print(f(1.5))
+      """.stripMargin,
+      "3.0\n",
+    )
+    "complex overload picked when arg is complex" in parityCheck(
+      """
+        |def f(x: real): real = x * 2.0
+        |def f(z: complex): complex = z * 3.0
+        |def main() = print(f(1.0 + 0i))
+      """.stripMargin,
+      "3.0+0.0i\n",
+    )
+    "integer arg picks the real overload via promotion" in parityCheck(
+      """
+        |def f(x: real): real = x * 2.0
+        |def f(z: complex): complex = z * 3.0
+        |def main() = print(f(5))
+      """.stripMargin,
+      "10.0\n",
+    )
+    "overloaded def calls another function by name within its body" in parityCheck(
+      """
+        |def double(x: real): real = x + x
+        |def f(x: real): real = double(x)
+        |def f(z: complex): complex = z * (2.0 + 0i)
+        |def main() =
+        |  print(f(3.0))
+        |  print(f(1.0 + 2.0 * i))
+      """.stripMargin,
+      "6.0\n2.0+4.0i\n",
     )
   }
 

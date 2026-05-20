@@ -1,52 +1,55 @@
 module prelude
 
-// Scalar math intrinsics bridged to the host's libm via the
-// `@intrinsic("libm.<name>", T)` attribute. Each declaration is
-// bodyless; the elaborator stamps a TIntrinsic body and every backend
-// dispatches by opId.
+// Scalar math. Every entry is one of two shapes:
 //
-// Two shapes appear below:
-//
-//   - **Real-only declarations** (cbrt, floor, ceil, ..., asinh, acosh,
-//     atanh) take a `real` argument and return `real`. Integer arguments
+//   - **libm bridges** — bodyless `@intrinsic("libm.<name>")` decls
+//     that lower to a direct call to the host's libm primitive. Each
+//     takes a real (or two) and returns a real. Integer arguments
 //     promote via the standard scalar widening lattice.
 //
-//   - **Inexact-kind declarations** (sqrt, exp, log, log2, log10, sin,
-//     cos, tan) accept either `real` or `complex` and return the same
-//     type. The `Inexact` constraint admits both. Integer arguments
-//     promote to `real` at the call site so `sqrt(8)` still type-checks.
-//     Monomorphization clones each decl once per concrete kind reached,
-//     and the per-kind clones carry `$real` / `$complex` opIds that
-//     backend dispatch tables key on (libm wrappers for `$real`,
-//     analytic complex extensions for `$complex`).
+//   - **complex extensions** — Nex source-body `def`s for `sqrt`,
+//     `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan` on complex
+//     inputs. The body of each is the standard analytic extension,
+//     written in terms of *real* libm primitives — no compiler-side
+//     formula tables, no `__nex_c<fn>` runtime helpers. Each complex
+//     overload coexists with the matching real overload through
+//     function-overload resolution: the elaborator picks the matching
+//     overload by argument type at the call site.
 //
 // Entries that vary their return type by argument type (abs / sign /
-// min / max / conj) still live in the compiler's `registerPrelude`
-// pending a richer type-driven dispatch mechanism.
+// min / max / conj) live in the compiler's `registerPrelude` because
+// `def f(integer): integer` + `def f(real): real` + `def f(complex):
+// real` requires return-type-dependent dispatch the current overload-
+// resolution machinery doesn't model. They'll join this file once the
+// rule is generalized.
 
-@intrinsic("libm.sqrt", T)
-def sqrt[T: Inexact](x: T): T
+// ---------------------------------------------------------------------
+// Real-libm bridges
+// ---------------------------------------------------------------------
 
-@intrinsic("libm.exp", T)
-def exp[T: Inexact](x: T): T
+@intrinsic("libm.sqrt")
+def sqrt(x: real): real
 
-@intrinsic("libm.log", T)
-def log[T: Inexact](x: T): T
+@intrinsic("libm.exp")
+def exp(x: real): real
 
-@intrinsic("libm.log2", T)
-def log2[T: Inexact](x: T): T
+@intrinsic("libm.log")
+def log(x: real): real
 
-@intrinsic("libm.log10", T)
-def log10[T: Inexact](x: T): T
+@intrinsic("libm.log2")
+def log2(x: real): real
 
-@intrinsic("libm.sin", T)
-def sin[T: Inexact](x: T): T
+@intrinsic("libm.log10")
+def log10(x: real): real
 
-@intrinsic("libm.cos", T)
-def cos[T: Inexact](x: T): T
+@intrinsic("libm.sin")
+def sin(x: real): real
 
-@intrinsic("libm.tan", T)
-def tan[T: Inexact](x: T): T
+@intrinsic("libm.cos")
+def cos(x: real): real
+
+@intrinsic("libm.tan")
+def tan(x: real): real
 
 @intrinsic("libm.cbrt")
 def cbrt(x: real): real
@@ -92,3 +95,70 @@ def acosh(x: real): real
 
 @intrinsic("libm.atanh")
 def atanh(x: real): real
+
+@intrinsic("libm.hypot")
+def hypot(x: real, y: real): real
+
+// ---------------------------------------------------------------------
+// Complex extensions — Nex source bodies that compose the real-libm
+// primitives above. The same `sqrt`/`exp`/etc. name resolves to the
+// real or complex overload by argument type at each call site.
+// ---------------------------------------------------------------------
+
+// sqrt(z) — principal branch with cut along the negative real axis.
+// Formula:
+//   |z|      = hypot(re, im)
+//   real(√z) = √((|z| + re) / 2)
+//   imag(√z) = sign(im) · √((|z| − re) / 2)            (im ≠ 0)
+//              √(−re)                                  (im = 0, re < 0)
+def sqrt(z: complex): complex =
+  val mag  = hypot(z.re, z.im)
+  val real_part = sqrt((mag + z.re) / 2.0)
+  val imag_part =
+    if z.im == 0.0 and z.re < 0.0 then sqrt(-z.re)
+    else sign(z.im) * sqrt((mag - z.re) / 2.0)
+  real_part + imag_part * i
+
+// exp(z) = e^re · (cos(im) + sin(im)·i) — Euler's identity.
+def exp(z: complex): complex =
+  val s = exp(z.re)
+  s * cos(z.im) + s * sin(z.im) * i
+
+// log(z) = log|z| + arg(z)·i — principal branch via atan2.
+def log(z: complex): complex =
+  log(hypot(z.re, z.im)) + atan2(z.im, z.re) * i
+
+// log2(z) = log(z) / ln(2). Inline ln(2) so neither component needs a
+// division at run-time.
+def log2(z: complex): complex =
+  val inv = 1.0 / log(2.0)
+  val lr  = log(hypot(z.re, z.im))
+  val li  = atan2(z.im, z.re)
+  (lr * inv) + (li * inv) * i
+
+// log10(z) = log(z) / ln(10).
+def log10(z: complex): complex =
+  val inv = 1.0 / log(10.0)
+  val lr  = log(hypot(z.re, z.im))
+  val li  = atan2(z.im, z.re)
+  (lr * inv) + (li * inv) * i
+
+// sin(z) = sin(re)·cosh(im) + cos(re)·sinh(im)·i
+def sin(z: complex): complex =
+  sin(z.re) * cosh(z.im) + cos(z.re) * sinh(z.im) * i
+
+// cos(z) = cos(re)·cosh(im) − sin(re)·sinh(im)·i
+def cos(z: complex): complex =
+  cos(z.re) * cosh(z.im) - sin(z.re) * sinh(z.im) * i
+
+// tan(z) = sin(z)/cos(z) — expanded for numerical stability across
+// small |im|. Closed form:
+//   denom = cos²(re)·cosh²(im) + sin²(re)·sinh²(im)
+//   tan z = (sin(re)·cos(re) + sinh(im)·cosh(im)·i) / denom
+def tan(z: complex): complex =
+  val sr = sin(z.re)
+  val cr = cos(z.re)
+  val sh = sinh(z.im)
+  val ch = cosh(z.im)
+  val denom = cr * cr * ch * ch + sr * sr * sh * sh
+  ((sr * cr) / denom) + ((sh * ch) / denom) * i
