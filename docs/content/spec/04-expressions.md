@@ -299,7 +299,9 @@ Arrays may also be constructed from ranges via the `range` function (rank-1) and
 
 ## 4.14 Indexing and slicing
 
-Array indexing is **0-based**. Out-of-bounds indexing traps. Negative indices are *not* supported (no Python-style `a[-1]`).
+Array indexing is **0-based**. Out-of-bounds indexing traps.
+
+**Negative indices** count from the end of the axis: `a[-1]` is the last element, `a[-2]` is the second-to-last, and so on. The wrap is `i + length` for `i < 0`; the bounds check then runs against the wrapped value, so `a[-10]` on a 3-element array still traps. Negative indices apply to both axes of a rank-2 index (`m[-1, -1]` is the bottom-right element) and to the single-index row form (`m[-1]` is the last row). Negative indices in *slice bounds* (`a[-3..]`) are not yet supported.
 
 **Rank-1 indexing** with a single integer:
 
@@ -307,6 +309,8 @@ Array indexing is **0-based**. Out-of-bounds indexing traps. Negative indices ar
 val a = [10.0, 20.0, 30.0]
 a[0]    // 10.0
 a[2]    // 30.0
+a[-1]   // 30.0
+a[-3]   // 10.0
 ```
 
 **Rank-1 slicing** with a range expression returns a freshly owned array (copying elements):

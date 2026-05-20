@@ -1476,31 +1476,48 @@ class NexInterpreter:
   private def indexGet(arr: Value, idx: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     (arr, idx) match
       case (VArray1(b), List(VInt(i))) =>
-        if i < 0 || i >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
-        b(i.toInt)
+        val k = wrapNeg(i, b.size)
+        if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
+        b(k.toInt)
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
-        if i < 0 || i >= r || j < 0 || j >= c then trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        b(i.toInt * c + j.toInt)
+        val ki = wrapNeg(i, r)
+        val kj = wrapNeg(j, c)
+        if ki < 0 || ki >= r || kj < 0 || kj >= c then
+          trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
+        b(ki.toInt * c + kj.toInt)
       case (VArray2(b, r, c), List(VInt(i))) =>
-        if i < 0 || i >= r then trap(s"index out of bounds: $i (rows=$r)", p)
+        val ki = wrapNeg(i, r)
+        if ki < 0 || ki >= r then trap(s"index out of bounds: $i (rows=$r)", p)
         val row = mutable.ArrayBuffer.empty[Value]
         var k   = 0
-        while k < c do { row += b(i.toInt * c + k); k += 1 }
+        while k < c do { row += b(ki.toInt * c + k); k += 1 }
         VArray1(row)
       case (VString(s), List(VInt(i))) =>
-        if i < 0 || i >= s.length then trap(s"string index out of bounds: $i", p)
-        VString(s.charAt(i.toInt).toString)
+        val k = wrapNeg(i, s.length)
+        if k < 0 || k >= s.length then trap(s"string index out of bounds: $i", p)
+        VString(s.charAt(k.toInt).toString)
       case _ => trap(s"cannot index ${formatValue(arr)} with ${idx.map(formatValue).mkString(", ")}", p)
 
   private def indexSet(arr: Value, idx: List[Value], rhs: Value, p: Option[scala.util.parsing.input.Position]): Unit =
     (arr, idx) match
       case (VArray1(b), List(VInt(i))) =>
-        if i < 0 || i >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
-        b(i.toInt) = rhs
+        val k = wrapNeg(i, b.size)
+        if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
+        b(k.toInt) = rhs
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
-        if i < 0 || i >= r || j < 0 || j >= c then trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        b(i.toInt * c + j.toInt) = rhs
+        val ki = wrapNeg(i, r)
+        val kj = wrapNeg(j, c)
+        if ki < 0 || ki >= r || kj < 0 || kj >= c then
+          trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
+        b(ki.toInt * c + kj.toInt) = rhs
       case _ => trap(s"cannot index-assign ${formatValue(arr)}", p)
+
+  /** Negative-index wrap: `i < 0` → `i + len`; otherwise return `i`
+    * unchanged. Mirrors the AOT `__nex_arr*_slot` helpers so byte-exact
+    * parity holds for negative-index trap messages and successful lookups.
+    */
+  private def wrapNeg(i: Long, len: Int): Long =
+    if i < 0 then i + len.toLong else i
 
   // --------------------------------------------------------------------------
   // Field access

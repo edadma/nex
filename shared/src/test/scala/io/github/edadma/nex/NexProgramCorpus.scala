@@ -959,6 +959,55 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "negative index counts from the end (rank-1)",
+      """
+        |def main() =
+        |  val xs = [10, 20, 30, 40, 50]
+        |  print(xs[-1])
+        |  print(xs[-2])
+        |  print(xs[-5])
+      """.stripMargin,
+      "50\n40\n10\n",
+    ),
+    Case(
+      "arrays",
+      "negative index on rank-2 element and row",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[-1, -1])
+        |  print(m[-1, 0])
+        |  print(m[0, -1])
+        |  print(m[-1])
+      """.stripMargin,
+      "9\n7\n3\n[7, 8, 9]\n",
+    ),
+    Case(
+      "arrays",
+      "negative index in slice-assign target",
+      """
+        |def main() =
+        |  var xs = [10, 20, 30]
+        |  xs[-1] = 999
+        |  xs[-3] = 111
+        |  print(xs)
+      """.stripMargin,
+      "[111, 20, 999]\n",
+    ),
+    Case(
+      "arrays",
+      "negative out-of-range index traps",
+      """
+        |def main() =
+        |  val xs = [10, 20, 30]
+        |  assert_traps(() -> print(xs[-4]), "out of bounds")
+        |  assert_traps(() -> print(xs[3]),  "out of bounds")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))

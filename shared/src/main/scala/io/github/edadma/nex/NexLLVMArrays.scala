@@ -100,14 +100,17 @@ protected trait NexLLVMArrays extends NexLLVMState:
         loadElem(stT, slot, llvmType(elem))
       case (2, List(i)) =>
         // Spec §4.14: `m[i]` on a rank-2 array returns row `i` as a
-        // freshly-owned rank-1 array. Mirrors the interpreter's
-        // `VArray1(b.slice(i*c, (i+1)*c))`. Bounds-checked against
-        // rows; out-of-range routes through the OOB trap.
+        // freshly-owned rank-1 array. Negative indices wrap from the end
+        // (matching the rank-1 / rank-2 element-slot helpers). Bounds-
+        // checked after wrap; out-of-range routes through the OOB trap.
         val iv      = emitExpr(i)
         val rows    = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
         val cols    = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
-        val negI    = newReg(); emitLine(s"  $negI = icmp slt i64 $iv, 0\n")
-        val geRows  = newReg(); emitLine(s"  $geRows = icmp sge i64 $iv, $rows\n")
+        val isNeg   = newReg(); emitLine(s"  $isNeg = icmp slt i64 $iv, 0\n")
+        val wrapped = newReg(); emitLine(s"  $wrapped = add i64 $iv, $rows\n")
+        val ii      = newReg(); emitLine(s"  $ii = select i1 $isNeg, i64 $wrapped, i64 $iv\n")
+        val negI    = newReg(); emitLine(s"  $negI = icmp slt i64 $ii, 0\n")
+        val geRows  = newReg(); emitLine(s"  $geRows = icmp sge i64 $ii, $rows\n")
         val bad     = newReg(); emitLine(s"  $bad = or i1 $negI, $geRows\n")
         val okL     = freshLabel("row.ok")
         val flL     = freshLabel("row.fail")
@@ -121,7 +124,7 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $cols, i64 $esz)\n")
         val srcBuf = bufPtr(arrV, arr.tpe)
         val dstBuf = bufPtr(desc, resultT)
-        val flat   = newReg(); emitLine(s"  $flat = mul i64 $iv, $cols\n")
+        val flat   = newReg(); emitLine(s"  $flat = mul i64 $ii, $cols\n")
         val srcRow = newReg()
         emitLine(s"  $srcRow = getelementptr inbounds $stT, ptr $srcBuf, i64 $flat\n")
         val bytes  = newReg(); emitLine(s"  $bytes = mul i64 $cols, $esz\n")

@@ -530,14 +530,19 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |}
         |
         |; Returns a ptr to the i-th element slot for a rank-1 array of element
-        |; size `elem_size` bytes. Bounds-checks against the array's length and
-        |; aborts via @abort on overflow (after writing a trap message).
+        |; size `elem_size` bytes. Negative indices wrap from the end: idx = -1
+        |; → len-1, idx = -2 → len-2, etc. (matches Python / NumPy). Bounds-
+        |; checked AFTER wrap so an out-of-range negative (e.g. idx = -10 on
+        |; a 3-element array → wrapped to -7) still traps.
         |define ptr @__nex_arr1_slot(ptr %a, i64 %idx, i64 %elem_size) {
         |entry:
         |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
         |  %len = load i64, ptr %lp
-        |  %lt  = icmp slt i64 %idx, 0
-        |  %ge  = icmp sge i64 %idx, %len
+        |  %is_neg  = icmp slt i64 %idx, 0
+        |  %wrapped = add i64 %idx, %len
+        |  %i       = select i1 %is_neg, i64 %wrapped, i64 %idx
+        |  %lt  = icmp slt i64 %i, 0
+        |  %ge  = icmp sge i64 %i, %len
         |  %bad = or i1 %lt, %ge
         |  br i1 %bad, label %trap, label %ok
         |trap:
@@ -546,7 +551,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |ok:
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
         |  %buf  = load ptr, ptr %dp
-        |  %byte_off = mul i64 %idx, %elem_size
+        |  %byte_off = mul i64 %i, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
         |}
@@ -852,17 +857,27 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret i64 %t
         |}
         |
+        |; Returns a ptr to the (i, j) element slot for a rank-2 array.
+        |; Both axes support negative indexing: -1 → last row / col, -2 →
+        |; second-to-last, etc. Bounds-checked AFTER wrap, mirroring the
+        |; rank-1 helper.
         |define ptr @__nex_arr2_slot(ptr %a, i64 %i, i64 %j, i64 %elem_size) {
         |entry:
         |  %rp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
         |  %r  = load i64, ptr %rp
         |  %cp = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
         |  %c  = load i64, ptr %cp
-        |  %ilt = icmp slt i64 %i, 0
-        |  %ige = icmp sge i64 %i, %r
+        |  %i_neg  = icmp slt i64 %i, 0
+        |  %i_wrap = add i64 %i, %r
+        |  %ii     = select i1 %i_neg, i64 %i_wrap, i64 %i
+        |  %j_neg  = icmp slt i64 %j, 0
+        |  %j_wrap = add i64 %j, %c
+        |  %jj     = select i1 %j_neg, i64 %j_wrap, i64 %j
+        |  %ilt = icmp slt i64 %ii, 0
+        |  %ige = icmp sge i64 %ii, %r
         |  %ibad = or i1 %ilt, %ige
-        |  %jlt = icmp slt i64 %j, 0
-        |  %jge = icmp sge i64 %j, %c
+        |  %jlt = icmp slt i64 %jj, 0
+        |  %jge = icmp sge i64 %jj, %c
         |  %jbad = or i1 %jlt, %jge
         |  %bad = or i1 %ibad, %jbad
         |  br i1 %bad, label %trap, label %ok
@@ -870,8 +885,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  call void @__nex_trap_with(ptr @.oob_msg)
         |  unreachable
         |ok:
-        |  %flat = mul i64 %i, %c
-        |  %idx  = add i64 %flat, %j
+        |  %flat = mul i64 %ii, %c
+        |  %idx  = add i64 %flat, %jj
         |  %dp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
         |  %buf  = load ptr, ptr %dp
         |  %byte_off = mul i64 %idx, %elem_size
