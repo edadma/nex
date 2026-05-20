@@ -697,6 +697,7 @@ object NexProgramCorpus:
         |  print(xs.length())
       """.stripMargin,
       "3\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -707,6 +708,7 @@ object NexProgramCorpus:
         |  print(xs[1])
       """.stripMargin,
       "20\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -861,6 +863,7 @@ object NexProgramCorpus:
         |  print(a @ b)
       """.stripMargin,
       "[3, 5]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -869,6 +872,7 @@ object NexProgramCorpus:
         |def main() = print([1, 2, 3] @ [4, 5, 6])
       """.stripMargin,
       "32\n",
+      mlir = true,
     ),
     Case(
       "arrays",

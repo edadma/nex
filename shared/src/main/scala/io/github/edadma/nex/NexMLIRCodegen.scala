@@ -397,6 +397,37 @@ class NexMLIRCodegen:
         if s.kind == SymKind.Prelude && s.name == "matmul" =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "length" =>
+      // `arr.length()` desugars to `length(arr)` in elaboration.
+      // Result is the size of the outermost dimension — for rank-1
+      // that's the element count, for rank-2 the row count. The
+      // shape is statically known at codegen, so this lowers to a
+      // single integer constant. The receiver is still evaluated
+      // for side-effect parity; clang's DCE removes the unused
+      // tensor at -O1.
+      val av = emitExpr(arr)
+      av.ty match
+        case MTensor(_, shape) if shape.nonEmpty =>
+          val r = fresh("len")
+          out.append(s"  $r = arith.constant ${shape.head} : i64\n")
+          MlirVal(r, MScalar(TyInteger))
+        case other =>
+          notYet(s"length on $other")
+
+    case TIndex(arr, List(idx), _, _) =>
+      val av = emitExpr(arr)
+      val iv = emitExpr(idx)
+      (av.ty, iv.ty) match
+        case (t @ MTensor(et, List(_)), MScalar(TyInteger)) =>
+          val idxR = fresh("idx")
+          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val r = fresh("elt")
+          out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
+          MlirVal(r, MScalar(et))
+        case (aty, ity) =>
+          notYet(s"rank-1 index on $aty with $ity")
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -594,33 +625,62 @@ class NexMLIRCodegen:
         out.append(s"  $r = func.call @pow(${lf.reg}, ${rf.reg}) : (f64, f64) -> f64\n")
         MlirVal(r, MScalar(TyReal))
 
-  /** Matrix multiply via `linalg.matmul`. Both operands must already
-    * be rank-2 tensors with matching element type and inner K dim
-    * (`lhs : NxK`, `rhs : KxM` → result `NxM`). The init operand is a
-    * zero-filled `tensor.empty()` produced with `linalg.fill`, since
-    * `linalg.matmul` accumulates into its output.
+  /** Generalised `@` operator covering the three rank combinations
+    * `NexInterpreter` recognises:
+    *
+    *   - rank-2 × rank-2: `linalg.matmul` → rank-2 result
+    *   - rank-2 × rank-1: `linalg.matvec` → rank-1 result
+    *   - rank-1 × rank-1: `linalg.dot`    → 0-d result, then extract
+    *
+    * Element types must match and the contracted dimension must agree.
+    * Every variant uses the same zero-fill init pattern since the
+    * linalg op accumulates into its output.
     */
   private def emitMatMul(lv: MlirVal, rv: MlirVal): MlirVal =
     (lv.ty, rv.ty) match
       case (MTensor(elemL, List(n, k)), MTensor(elemR, List(k2, m))) if elemL == elemR && k == k2 =>
-        val elemT  = elemL
-        val scalar = scalarText(elemT)
-        val outTy  = MTensor(elemT, List(n, m))
-        val zeroR  = fresh("zero")
-        out.append(s"  $zeroR = arith.constant ${zeroLit(elemT)} : $scalar\n")
-        val emptyR = fresh("empty")
-        out.append(s"  $emptyR = tensor.empty() : ${outTy.text}\n")
-        val initR = fresh("init")
-        out.append(
-          s"  $initR = linalg.fill ins($zeroR : $scalar) outs($emptyR : ${outTy.text}) -> ${outTy.text}\n",
-        )
-        val mmR = fresh("mm")
+        val outTy = MTensor(elemL, List(n, m))
+        val initR = emitZeroInit(outTy)
+        val mmR   = fresh("mm")
         out.append(
           s"  $mmR = linalg.matmul ins(${lv.reg}, ${rv.reg} : ${lv.ty.text}, ${rv.ty.text}) outs($initR : ${outTy.text}) -> ${outTy.text}\n",
         )
         MlirVal(mmR, outTy)
+      case (MTensor(elemL, List(n, k)), MTensor(elemR, List(k2))) if elemL == elemR && k == k2 =>
+        val outTy = MTensor(elemL, List(n))
+        val initR = emitZeroInit(outTy)
+        val mvR   = fresh("mv")
+        out.append(
+          s"  $mvR = linalg.matvec ins(${lv.reg}, ${rv.reg} : ${lv.ty.text}, ${rv.ty.text}) outs($initR : ${outTy.text}) -> ${outTy.text}\n",
+        )
+        MlirVal(mvR, outTy)
+      case (MTensor(elemL, List(k)), MTensor(elemR, List(k2))) if elemL == elemR && k == k2 =>
+        val outTy = MTensor(elemL, Nil)
+        val initR = emitZeroInit(outTy)
+        val dotR  = fresh("dot")
+        out.append(
+          s"  $dotR = linalg.dot ins(${lv.reg}, ${rv.reg} : ${lv.ty.text}, ${rv.ty.text}) outs($initR : ${outTy.text}) -> ${outTy.text}\n",
+        )
+        val scalarR = fresh("dot_s")
+        out.append(s"  $scalarR = tensor.extract $dotR[] : ${outTy.text}\n")
+        MlirVal(scalarR, MScalar(elemL))
       case (lt, rt) =>
         notYet(s"matmul shape: $lt @ $rt")
+
+  /** Zero-filled output tensor for the linalg.{matmul, matvec, dot}
+    * family. `linalg.fill` over a `tensor.empty()` is the canonical
+    * way to materialise the accumulator they reduce into.
+    */
+  private def emitZeroInit(ty: MTensor): String =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val zeroR  = fresh("zero")
+    out.append(s"  $zeroR = arith.constant ${zeroLit(elemT)} : $scalar\n")
+    val emptyR = fresh("empty")
+    out.append(s"  $emptyR = tensor.empty() : ${ty.text}\n")
+    val initR  = fresh("init")
+    out.append(s"  $initR = linalg.fill ins($zeroR : $scalar) outs($emptyR : ${ty.text}) -> ${ty.text}\n")
+    initR
 
   /** Sum-reduce a tensor of any rank to a 0-d tensor, then extract
     * the scalar. Matches `NexInterpreter`'s rule that `sum` walks
