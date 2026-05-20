@@ -17,6 +17,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare i32 @printf(ptr, ...)
         |declare i32 @snprintf(ptr, i64, ptr, ...)
         |declare ptr @malloc(i64)
+        |declare ptr @realloc(ptr, i64)
         |declare void @free(ptr)
         |declare void @abort()
         |declare i64 @strlen(ptr)

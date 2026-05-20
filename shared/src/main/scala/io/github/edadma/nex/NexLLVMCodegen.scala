@@ -944,10 +944,19 @@ class NexLLVMCodegen
     // Compute the array ptr once, stash in a slot so the cond-block can
     // reload it (we don't have phi over array ptrs yet). The length is
     // also stashed so we don't re-call the helper each iteration.
+    //
+    // Open a fresh block scope around the entire loop and register the
+    // iter alloca in it — this way an early `return` from inside the
+    // body participates in `decAllLocalArrays`, and the normal exit
+    // dec's the iter via `popBlockScope`. Without this the iter share
+    // taken by `emitExpr(iter)` would leak on early return.
+    pushBlockScope()
     val arrV  = emitExpr(iter)
     val arrSlot = newReg()
     emitLine(s"  $arrSlot = alloca ptr\n")
     emitLine(s"  store ptr $arrV, ptr $arrSlot\n")
+    val iterScopeId = -regCounter // synthetic id; can't collide with user symbols
+    registerArraySlot(iterScopeId, arrSlot, iter.tpe)
 
     val lenReg = newReg()
     rank match
@@ -1021,13 +1030,11 @@ class NexLLVMCodegen
       emitTerminator(s"  br label %$condL\n")
 
     startBlock(exitL)
-    // Release the owning share we took on the iter expression. (An early
-    // `return` inside the body would skip this — a known leak for chunk
-    // 6; the larger fix is to register the synthetic iter alloca with
-    // `arrayLocalSlots` so it participates in decAllLocalArrays.)
-    val arrFinal = newReg()
-    emitLine(s"  $arrFinal = load ptr, ptr $arrSlot\n")
-    emitArrDec(arrFinal, iter.tpe)
+    // Pop the for-loop's synthetic scope. Decs the registered iter slot,
+    // releasing the share we took at loop entry. Early returns inside
+    // the body already drained the scope via `decAllLocalArrays`.
+    val iterScope = popBlockScope()
+    decBlockScope(iterScope)
 
   private def emitForRange(
       loopVars: List[Symbol],
