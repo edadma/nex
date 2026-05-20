@@ -35,6 +35,15 @@ case class TyTuple(elems: List[Type]) extends Type
 /** Nominal struct type. Field list is resolved from the declaration. */
 case class TyStruct(name: String, fields: List[(String, Type)]) extends Type
 
+/** Nominal sum / tagged-union type. `variants` is the declared order
+  * (which fixes each variant's runtime tag index — variant 0 is the
+  * first one in source). Each variant carries an ordered list of named
+  * typed fields; an empty list means a bare variant (`Diverged`,
+  * referenced without parens). Two enums declared with the same
+  * variant names produce distinct, non-interoperating types.
+  */
+case class TyEnum(name: String, variants: List[(String, List[(String, Type)])]) extends Type
+
 /** Function type. Each parameter carries its mode (read or mut) per §6.4. */
 case class TyFunc(params: List[(Type, ParamMode)], ret: Type) extends Type
 
@@ -97,8 +106,13 @@ enum SymKind:
   case TopLevel
   /** A `def`. */
   case Function
-  /** A `struct`. */
+  /** A `struct` or `enum`. */
   case TypeName
+  /** A variant of an `enum`. The symbol's type is `TyEnum` (for bare
+    * variants — referenced by name, no parens) or `TyFunc(..., TyEnum)`
+    * (for variants carrying fields — called like a constructor).
+    */
+  case EnumVariant
   /** A module name introduced by `import`. */
   case Module
   /** An imported symbol; carries the imported name. */
@@ -346,6 +360,19 @@ case class TFunDecl(
 case class TStructDecl(
     sym:       Symbol,
     fields:    List[(String, Type)],
+    isPrivate: Boolean,
+    pos:       Option[Position] = None,
+) extends TDecl
+
+/** Sum-type declaration. `sym` is the type's name (kind=TypeName); each
+  * entry in `variants` carries the variant's Symbol (kind=EnumVariant)
+  * alongside the declared field list. Variant ordering is preserved
+  * exactly as written — index 0 is the first variant, which sets the
+  * runtime tag.
+  */
+case class TEnumDecl(
+    sym:       Symbol,
+    variants:  List[(Symbol, List[(String, Type)])],
     isPrivate: Boolean,
     pos:       Option[Position] = None,
 ) extends TDecl

@@ -129,6 +129,58 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
   }
 
   // ========================================================================
+  // enum declarations
+  // ========================================================================
+
+  "enum declarations" should {
+    "parse an enum with bare and fielded variants" in {
+      val src =
+        """enum Solver =
+          |  Converged(x: real)
+          |  Diverged
+          |  MaxIters(iters: integer, last: real)""".stripMargin
+      parseProg(src).decls shouldBe List(
+        EnumDeclAST("Solver", List(
+          EnumVariantAST("Converged", List(StructField("x", NamedType("real")))),
+          EnumVariantAST("Diverged",  Nil),
+          EnumVariantAST("MaxIters",  List(
+            StructField("iters", NamedType("integer")),
+            StructField("last",  NamedType("real")),
+          )),
+        )),
+      )
+    }
+
+    "parse all-bare-variants enum" in {
+      val src =
+        """enum Color =
+          |  Red
+          |  Green
+          |  Blue""".stripMargin
+      parseProg(src).decls shouldBe List(
+        EnumDeclAST("Color", List(
+          EnumVariantAST("Red",   Nil),
+          EnumVariantAST("Green", Nil),
+          EnumVariantAST("Blue",  Nil),
+        )),
+      )
+    }
+
+    "parse private enum with end-marker" in {
+      val src =
+        """private enum Hidden =
+          |  One
+          |  Two
+          |end Hidden""".stripMargin
+      parseProg(src).decls shouldBe List(
+        EnumDeclAST("Hidden",
+          List(EnumVariantAST("One", Nil), EnumVariantAST("Two", Nil)),
+          isPrivate = true),
+      )
+    }
+  }
+
+  // ========================================================================
   // module + import declarations
   // ========================================================================
 

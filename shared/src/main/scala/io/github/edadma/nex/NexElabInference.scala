@@ -207,6 +207,7 @@ protected trait NexElabInference extends NexElabState:
   protected def inferDecl(d: TDecl): TDecl = d match
     case t: TFunDecl     => inferFun(t)
     case t: TStructDecl  => t  // fields already typed
+    case t: TEnumDecl    => t  // variants already typed in Pass B
     case t: TTopBinding  => inferTopBinding(t)
     case t: TModuleDecl  => t
     case t: TImportDecl  => t

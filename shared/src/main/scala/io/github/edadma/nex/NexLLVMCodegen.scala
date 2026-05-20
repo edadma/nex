@@ -123,8 +123,8 @@ class NexLLVMCodegen
     for d <- tp.allDecls do d match
       case f: TFunDecl =>
         if !intrinsicFunctionOpIds.contains(f.sym.id) then emitFunction(f)
-      case _: TTopBinding | _: TStructDecl | _: TModuleDecl | _: TImportDecl =>
-        () // top-bindings already emitted as globals; struct/module are metadata
+      case _: TTopBinding | _: TStructDecl | _: TEnumDecl | _: TModuleDecl | _: TImportDecl =>
+        () // top-bindings already emitted as globals; type / module decls are metadata
 
     // Flush the string-literal pool at the END. LLVM IR allows forward
     // references to module-level identifiers, so a function body that

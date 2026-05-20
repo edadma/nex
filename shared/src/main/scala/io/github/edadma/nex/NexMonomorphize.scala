@@ -121,6 +121,7 @@ class NexMonomorphize(symbols: SymbolTable):
     case TyArray(e, r)    => s"array${r}_${mangleType(e)}"
     case TyTuple(es)      => es.map(mangleType).mkString("tup_", "_", "")
     case TyStruct(n, _)   => n
+    case TyEnum(n, _)     => n
     case TyFunc(ps, r)    => ps.map((pt, _) => mangleType(pt)).mkString("fn_", "_", s"_to_${mangleType(r)}")
     case TyKindVar(n, _)  => n  // shouldn't reach here for a specialized clone
     case TyUnknown        => "unknown"

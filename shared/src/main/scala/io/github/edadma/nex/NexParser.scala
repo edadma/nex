@@ -106,6 +106,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       case x: ConstDeclAST  => x.copy(attributes = attrs)
       case x: FunDeclAST    => x.copy(attributes = attrs)
       case x: StructDeclAST => x.copy(attributes = attrs)
+      case x: EnumDeclAST   => x.copy(attributes = attrs)
       case x: ModuleDeclAST =>
         // `@test module foo.bar` — flip isTestOnly when the @test attr is present.
         x.copy(
@@ -118,7 +119,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   /** All concrete declaration forms. */
   lazy val declBare: PackratParser[DeclAST] =
-    moduleDecl | importDecl | defDecl | structDecl | valDecl | varDecl | constDecl
+    moduleDecl | importDecl | defDecl | structDecl | enumDecl | valDecl | varDecl | constDecl
 
   /** A declaration (without leading attributes) — used in block contexts. */
   lazy val decl: PackratParser[DeclAST] = attributedDecl
@@ -210,6 +211,33 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   lazy val structField: PackratParser[StructField] =
     ident ~ (":" ~> typeExpr) ^^ { case n ~ t => StructField(n, t) }
+
+  // --- enum declarations -------------------------------------------------
+  //
+  // Surface form:
+  //
+  //   enum Solver =
+  //     Converged(x: real)
+  //     Diverged
+  //     MaxIters(iters: integer, last: real)
+  //
+  // Each variant is either bare (`Diverged`) or carries a parenthesized
+  // list of `name: type` fields, matching the spec §4.6-ish "Rust-style
+  // enum" surface chosen for sum types.
+
+  lazy val enumDecl: PackratParser[DeclAST] =
+    opt("private") ~ ("enum" ~> ident) ~ ("=" ~> blockOfVariants) ~ opt(trailingEnd) ^^ {
+      case priv ~ name ~ variants ~ _ =>
+        EnumDeclAST(name, variants, isPrivate = priv.isDefined)
+    }
+
+  lazy val blockOfVariants: PackratParser[List[EnumVariantAST]] =
+    Newline ~> Indent ~> rep1sep(enumVariant, stmtSep) <~ stmtSepOpt <~ Dedent
+
+  lazy val enumVariant: PackratParser[EnumVariantAST] =
+    ident ~ opt("(" ~> rep1sep(structField, ",") <~ ")") ^^ {
+      case n ~ fs => EnumVariantAST(n, fs.getOrElse(Nil))
+    }
 
   // --- module / import declarations --------------------------------------
 

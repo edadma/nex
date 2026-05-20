@@ -223,6 +223,7 @@ protected trait NexLLVMState:
     case TyArray(e, r)   => s"array${r}_${mangleTypeForLLVM(e)}"
     case TyTuple(es)     => es.map(mangleTypeForLLVM).mkString("tup_", "_", "")
     case TyStruct(n, _)  => n
+    case TyEnum(n, _)    => n
     case TyFunc(ps, r)   => ps.map((pt, _) => mangleTypeForLLVM(pt)).mkString("fn_", "_", s"_to_${mangleTypeForLLVM(r)}")
     case TyKindVar(n, _) => n
     case TyUnknown       => "unknown"
@@ -447,6 +448,11 @@ protected trait NexLLVMState:
     case TyArray(_,_)   => "ptr"
     case TyTuple(elems)        => elems.map(llvmType).mkString("{ ", ", ", " }")
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
+    case TyEnum(n, _)          =>
+      // Chunk 3 will assign a tagged-union layout. Until then any
+      // attempt to lower an enum value through the AOT backend fails
+      // loudly with a clear diagnostic rather than emitting bogus IR.
+      notYet(s"enum `$n` codegen not yet implemented"); "i64"
     case TyFunc(_, _)   => "{ ptr, ptr }"
     case TyUnknown      => "i64" // best-effort placeholder for missing inference
     case TyKindVar(n, _) =>

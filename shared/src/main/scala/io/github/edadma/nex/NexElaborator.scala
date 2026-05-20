@@ -212,6 +212,19 @@ class NexElaborator
           val sym = define(s.name, SymKind.TypeName, TyStruct(s.name, Nil), s)
           topSyms(d) = List(sym)
           if !s.isPrivate then addExport(s.name, sym)
+        case e: EnumDeclAST =>
+          // The type itself and every variant share a placeholder TyUnknown
+          // until Pass B (`elabEnum`) refines them. Tracked together in
+          // `topSyms` so Pass B can recover the full set: head is the
+          // enum type, tail is each variant in source order.
+          val typeSym = define(e.name, SymKind.TypeName, TyEnum(e.name, Nil), e)
+          val variantSyms = e.variants.map { v =>
+            define(v.name, SymKind.EnumVariant, TyUnknown, v)
+          }
+          topSyms(d) = typeSym :: variantSyms
+          if !e.isPrivate then
+            addExport(e.name, typeSym)
+            variantSyms.foreach(s => addExport(s.name, s))
         case v: ValDeclAST =>
           val ss = topBindingSyms(v.pat, SymKind.TopLevel, v)
           topSyms(d) = ss
@@ -243,6 +256,9 @@ class NexElaborator
         d match
           case f: FunDeclAST     => seenNonModule = true; elabDecls += elabFun(f, topSyms(d).head)
           case s: StructDeclAST  => seenNonModule = true; elabDecls += elabStruct(s, topSyms(d).head)
+          case e: EnumDeclAST    =>
+            seenNonModule = true
+            elabDecls += elabEnum(e, topSyms(d).head, topSyms(d).tail)
           case v: ValDeclAST     => seenNonModule = true; elabDecls ++= elabTopBinding(v, BindingKind.Val,   topSyms(d))
           case v: VarDeclAST     => seenNonModule = true; elabDecls ++= elabTopBinding(v, BindingKind.Var,   topSyms(d))
           case c: ConstDeclAST   => seenNonModule = true; elabDecls ++= elabTopBinding(c, BindingKind.Const, topSyms(d))
@@ -465,6 +481,29 @@ class NexElaborator
     symbols.update(resolvedSym)
     TStructDecl(resolvedSym, fs, s.isPrivate, Some(s.pos))
 
+  /** Resolve an enum's variant field types and re-mint refined symbols.
+    * The type symbol gets `TyEnum(name, variants)`; each variant symbol
+    * gets either `TyEnum(parent)` (bare variant) or `TyFunc(fields,
+    * TyEnum)` (variant with fields). Inference and call-resolution will
+    * see the refined types via `symbols.get(id)`.
+    */
+  private def elabEnum(e: EnumDeclAST, typeSym: Symbol, variantSyms: List[Symbol]): TEnumDecl =
+    val variantFields = e.variants.map(v => v.fields.map(f => (f.name, typeOf(f.typ))))
+    val enumTy = TyEnum(e.name, e.variants.zip(variantFields).map { case (v, fs) => (v.name, fs) })
+
+    val resolvedType = typeSym.copy(tpe = enumTy)
+    symbols.update(resolvedType)
+
+    val resolvedVariants = variantSyms.zip(variantFields).map { case (vs, fs) =>
+      val variantTpe =
+        if fs.isEmpty then enumTy
+        else TyFunc(fs.map { case (_, ft) => (ft, ParamMode.Read) }, enumTy)
+      val rs = vs.copy(tpe = variantTpe)
+      symbols.update(rs)
+      (rs, fs)
+    }
+    TEnumDecl(resolvedType, resolvedVariants, e.isPrivate, Some(e.pos))
+
   private def elabTopBinding(
       d:    DeclAST,
       kind: BindingKind,
@@ -600,6 +639,7 @@ class NexElaborator
         // (no struct-wrapping).
         current.lookup(other).flatMap(s => symbols.get(s.id)) match
           case Some(Symbol(_, _, ts: TyStruct, SymKind.TypeName))   => ts
+          case Some(Symbol(_, _, te: TyEnum,   SymKind.TypeName))   => te
           case Some(Symbol(_, _, kv: TyKindVar, SymKind.TypeName))  => kv
           case Some(Symbol(_, _, _, SymKind.TypeName))              => TyStruct(other, Nil)
           case _                                                    =>

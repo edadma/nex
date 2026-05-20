@@ -80,6 +80,21 @@ case class StructDeclAST(
 
 case class StructField(name: String, typ: TypeAST) extends Positional
 
+/** `enum Name = <indented variants>`. Each variant either stands alone
+  * (`Diverged`) or carries a parenthesized list of typed fields
+  * (`Converged(x: real)`). Variants are nominal: two enums with the
+  * same variant names declare distinct constructors that don't
+  * interoperate.
+  */
+case class EnumDeclAST(
+    name:       String,
+    variants:   List[EnumVariantAST],
+    isPrivate:  Boolean = false,
+    attributes: List[Attribute] = Nil,
+) extends DeclAST
+
+case class EnumVariantAST(name: String, fields: List[StructField]) extends Positional
+
 /** `module foo.bar`. The path is the dotted-name sequence. */
 case class ModuleDeclAST(
     path:       List[String],

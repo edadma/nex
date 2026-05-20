@@ -436,3 +436,82 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin)
     }
   }
+
+  // ==========================================================================
+  // Sum types (enums) — interp-only until AOT codegen lands.
+  // Once the LLVM backend supports them these can migrate to the
+  // parity corpus.
+  // ==========================================================================
+
+  "sum types (enums)" should {
+
+    "declare and print bare variants" in {
+      runOut("""
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def main() =
+        |  print(Red)
+        |  print(Green)
+        |  print(Blue)
+      """.stripMargin) shouldBe "Red\nGreen\nBlue\n"
+    }
+
+    "construct and print fielded variants" in {
+      runOut("""
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def main() =
+        |  print(Converged(3.14))
+        |  print(Diverged)
+        |  print(MaxIters(100, 0.5))
+      """.stripMargin) shouldBe "Converged(3.14)\nDiverged\nMaxIters(100, 0.5)\n"
+    }
+
+    "use the enum name as a binding's type annotation" in {
+      runOut("""
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |
+        |def main() =
+        |  val a: Solver = Converged(2.5)
+        |  val b: Solver = Diverged
+        |  print(a)
+        |  print(b)
+      """.stripMargin) shouldBe "Converged(2.5)\nDiverged\n"
+    }
+
+    "pass an enum value through a function and return it" in {
+      runOut("""
+        |enum Step =
+        |  Continue(n: integer)
+        |  Done
+        |
+        |def advance(s: Step): Step = s
+        |
+        |def main() =
+        |  print(advance(Continue(7)))
+        |  print(advance(Done))
+      """.stripMargin) shouldBe "Continue(7)\nDone\n"
+    }
+
+    "reject a wrong-arity variant construction at compile time" in {
+      // Fielded variants get a `TyFunc` signature; the elaborator's
+      // normal arity check catches `Converged(1.0, 2.0)` before the
+      // interpreter ever sees it.
+      val errs = elaborateExpectingErrors("""
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |
+        |def main() = print(Converged(1.0, 2.0))
+      """.stripMargin)
+      errs.mkString(";") should include("expects 1 args")
+    }
+  }

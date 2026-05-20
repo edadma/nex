@@ -37,12 +37,31 @@ case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extend
 case class VTuple(elems: List[Value])                         extends Value
 case class VStruct(name: String, fields: mutable.LinkedHashMap[String, Value]) extends Value
 
+/** A constructed enum value. `enumName` identifies the parent sum type,
+  * `variantName` and `variantIdx` identify which case was constructed,
+  * and `fields` carries the variant's positional field values (empty
+  * for bare variants).
+  */
+case class VEnum(enumName: String, variantName: String, variantIdx: Int, fields: List[Value]) extends Value
+
 /** Either a user-defined function (params + body + captured env) or a
   * built-in prelude function (Scala lambda).
   */
 sealed trait VFunc                                            extends Value
 case class VUserFunc(params: List[Symbol], body: TExpr, env: Env) extends VFunc
 case class VBuiltin(name: String, fn: List[Value] => Value)   extends VFunc
+
+/** A callable variant constructor — the value reached when a user
+  * references a fielded variant name without applying it. Calling it
+  * produces a `VEnum`. Bare variants don't need this wrapper; they're
+  * already values.
+  */
+case class VEnumCtor(
+    enumName:    String,
+    variantName: String,
+    variantIdx:  Int,
+    fields:      List[(String, Type)],
+) extends VFunc
 
 // ============================================================================
 // Environment (top-level so VUserFunc.env doesn't need a path-dependent type)
@@ -113,6 +132,14 @@ class NexInterpreter:
     */
   private val structFields = scala.collection.mutable.Map.empty[Int, List[(String, Type)]]
 
+  /** Map from each variant Symbol id to its (parent-enum-name, declared
+    * tag index, declared fields). Looked up at variant construction
+    * sites and at pattern-match dispatch. Populated when the
+    * [[TEnumDecl]] is processed during program initialization.
+    */
+  private val enumVariantInfo =
+    scala.collection.mutable.Map.empty[Int, (String, Int, List[(String, Type)])]
+
   // --------------------------------------------------------------------------
   // Public entry
   // --------------------------------------------------------------------------
@@ -159,6 +186,24 @@ class NexInterpreter:
       case s: TStructDecl =>
         structFields(s.sym.id) = s.fields
         globalEnv.define(s.sym.id, VStruct(s.sym.name, mutable.LinkedHashMap.empty))
+      case e: TEnumDecl =>
+        // Register the enum type itself as a placeholder cell so any
+        // accidental TVarRef to the type name resolves to *something*
+        // rather than a missing binding. The interesting state lives in
+        // the per-variant cells: each variant's Symbol id maps to a
+        // value the user can reference by name (bare variants) or call
+        // (fielded variants).
+        globalEnv.define(e.sym.id, VUnit)
+        e.variants.zipWithIndex.foreach { case ((vs, fs), idx) =>
+          enumVariantInfo(vs.id) = (e.sym.name, idx, fs)
+          val cell = globalEnv.define(vs.id, VUnit)
+          if fs.isEmpty then
+            // Bare variant — the name *is* a value of the enum type.
+            cell.v = VEnum(e.sym.name, vs.name, idx, Nil)
+          else
+            // Fielded variant — the name is a callable constructor.
+            cell.v = VEnumCtor(e.sym.name, vs.name, idx, fs)
+        }
       case b: TTopBinding =>
         val cell = globalEnv.define(b.sym.id, VUnit)
         bindingInits += (() => cell.v = cloneStructValue(evalExpr(b.value, globalEnv)))
@@ -681,6 +726,8 @@ class NexInterpreter:
               callUserFunctionWithModes(uf, args, callee.tpe, env, p)
             case bf: VBuiltin =>
               callFunction(bf, args.map(evalExpr(_, env)), p)
+            case ec: VEnumCtor =>
+              callFunction(ec, args.map(evalExpr(_, env)), p)
             case other =>
               trap(s"call: not a function: ${formatValue(other)}", p)
 
@@ -878,6 +925,10 @@ class NexInterpreter:
   private[nex] def callFunction(f: VFunc, args: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     f match
       case VBuiltin(_, fn) => fn(args)
+      case VEnumCtor(en, vn, idx, fs) =>
+        if fs.size != args.size then
+          trap(s"variant `$en.$vn` expects ${fs.size} fields, got ${args.size}", p)
+        VEnum(en, vn, idx, args)
       case VUserFunc(params, body, env) =>
         if params.size != args.size then
           trap(s"arity mismatch: function expects ${params.size}, got ${args.size}", p)
@@ -1585,6 +1636,9 @@ class NexInterpreter:
       rows.mkString("[", ", ", "]")
     case VTuple(es)     => es.map(formatValue).mkString("(", ", ", ")")
     case VStruct(n, fs) => fs.map((k, v) => s"$k=${formatValue(v)}").mkString(s"$n { ", ", ", " }")
+    case VEnum(_, vn, _, Nil) => vn
+    case VEnum(_, vn, _, vs)  => vs.map(formatValue).mkString(s"$vn(", ", ", ")")
+    case VEnumCtor(en, vn, _, _) => s"<ctor $en.$vn>"
     case VBuiltin(n, _) => s"<builtin $n>"
     case VUserFunc(ps, _, _) => s"<func/${ps.size}>"
 
