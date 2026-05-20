@@ -143,6 +143,9 @@ class NexMLIRCodegen:
       emitPrintCall(arg)
     case TBlock(items, TUnitLit(_), _, _) =>
       items.foreach(emitBlockItem)
+    case TBlock(items, last, _, _) if last.tpe == TyUnit =>
+      items.foreach(emitBlockItem)
+      emitBlockItem(TBlockExpr(last))
     case other if other.tpe == TyUnit =>
       emitBlockItem(TBlockExpr(other))
     case other =>
@@ -493,6 +496,11 @@ class NexMLIRCodegen:
       emitForRange(loopVars, lo, hi, inclusive = false, body)
     case TBlockExpr(TFor(loopVars, TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
       emitForRange(loopVars, lo, hi, inclusive = true, body)
+    case TBlockExpr(TFor(loopVars, iter, body, _, _)) =>
+      val av = emitExpr(iter)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitForArray(loopVars, av, t, body)
+        case other                   => notYet(s"for over $other")
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 
@@ -527,6 +535,37 @@ class NexMLIRCodegen:
     out.append(s"    $ivI64 = arith.index_castui $ivName : index to i64\n")
     val prev    = env.get(loopVar.id)
     env(loopVar.id) = MlirVal(ivI64, MScalar(TyInteger))
+    emitForBody(body)
+    prev match
+      case Some(v) => env(loopVar.id) = v
+      case None    => env.remove(loopVar.id)
+    out.append("  }\n")
+
+  /** Statement-form `for x in arr do body` over a rank-1 array. The
+    * array's length is static (recorded in the `MTensor` shape), so
+    * we walk `0..length` via `scf.for` and `tensor.extract` each
+    * element into the loop var slot. The same body-emission path as
+    * range-based `for` is reused — `emitForBody` handles `TBlock`s
+    * and bare statements identically.
+    */
+  private def emitForArray(loopVars: List[Symbol], av: MlirVal, ty: MTensor, body: TExpr): Unit =
+    if loopVars.size != 1 then
+      notYet(s"for over array with ${loopVars.size}-way destructuring")
+      return
+    val loopVar = loopVars.head
+    val len     = ty.shape.head
+    val loC     = fresh("flo")
+    out.append(s"  $loC = arith.constant 0 : index\n")
+    val hiC     = fresh("fhi")
+    out.append(s"  $hiC = arith.constant $len : index\n")
+    val stepC   = fresh("fst")
+    out.append(s"  $stepC = arith.constant 1 : index\n")
+    val ivName  = fresh("iv")
+    out.append(s"  scf.for $ivName = $loC to $hiC step $stepC {\n")
+    val eltR    = fresh("elt")
+    out.append(s"    $eltR = tensor.extract ${av.reg}[$ivName] : ${ty.text}\n")
+    val prev    = env.get(loopVar.id)
+    env(loopVar.id) = MlirVal(eltR, MScalar(ty.elem))
     emitForBody(body)
     prev match
       case Some(v) => env(loopVar.id) = v

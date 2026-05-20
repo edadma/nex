@@ -518,6 +518,30 @@ object NexProgramCorpus:
         |    print(x)
       """.stripMargin,
       "10\n20\n30\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over val-bound array",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  for x in xs do
+        |    print(x * x)
+      """.stripMargin,
+      "1\n4\n9\n16\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over array produced by range()",
+      """
+        |def main() =
+        |  for x in range(0, 4) do
+        |    print(x + 100)
+      """.stripMargin,
+      "100\n101\n102\n103\n",
+      mlir = true,
     ),
     Case(
       "control flow",
