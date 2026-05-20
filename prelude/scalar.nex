@@ -1,5 +1,17 @@
 module prelude
 
+// ---------------------------------------------------------------------
+// Mathematical constants. `pi` and `e` are plain real literals; `inf`,
+// `nan`, and the imaginary unit `i` remain compiler-built-in because
+// Nex has no literal syntax for IEEE-754 specials, and `i` is referenced
+// by the `<number>i`-style juxtaposition that constructs pure-imaginary
+// complex values — moving it to source would require either a self-
+// referential init or a new primitive.
+// ---------------------------------------------------------------------
+
+const pi: real = 3.141592653589793
+const e: real  = 2.718281828459045
+
 // Scalar math. Every entry is one of two shapes:
 //
 //   - **libm bridges** — bodyless `@intrinsic("libm.<name>")` decls

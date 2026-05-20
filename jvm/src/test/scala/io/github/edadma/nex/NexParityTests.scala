@@ -962,6 +962,326 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       "def main() = print(cos(0.0 + 0i))",
       "1.0+0.0i\n",
     )
+
+    // The three transcendentals whose complex arm had no coverage
+    // before ε.6 — wire up at least one value check per backend.
+    // log2/log10 use `inv = 1/ln(B)` × component arithmetic, which
+    // introduces a tiny last-ulp rounding error, so the check is
+    // assert_approx rather than byte-exact on the printed text.
+    "log2(complex 8+0i) ≈ 3+0i" in parityCheck(
+      """
+        |def main() =
+        |  val z = log2(8.0 + 0i)
+        |  assert_approx(z.re, 3.0, 1.0e-12)
+        |  assert_approx(z.im, 0.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "log10(complex 1000+0i) ≈ 3+0i" in parityCheck(
+      """
+        |def main() =
+        |  val z = log10(1000.0 + 0i)
+        |  assert_approx(z.re, 3.0, 1.0e-12)
+        |  assert_approx(z.im, 0.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "tan(complex 0+0i) is 0+0i" in parityCheck(
+      "def main() = print(tan(0.0 + 0i))",
+      "0.0+0.0i\n",
+    )
+
+    // hypot was added in ε but never directly exercised — the complex
+    // sqrt body uses it, but that's covered transitively only. A direct
+    // call site pins down the wire-up on every backend.
+    "hypot of (3, 4) is 5" in parityCheck(
+      "def main() = print(hypot(3.0, 4.0))",
+      "5.0\n",
+    )
+    "hypot of (3, 0) is 3" in parityCheck(
+      "def main() = print(hypot(3.0, 0.0))",
+      "3.0\n",
+    )
+
+    // Real-side coverage broadening — most arms only had a single happy
+    // path under one input. Pin a handful of canonical values. The
+    // libm vs Java-Math last-ulp divergence (interpreter Math.exp(1)
+    // = 2.7182818284590455, libm exp(1) = 2.718281828459045) means
+    // strict byte-exact parity won't hold on transcendental output —
+    // these tests use assert_approx instead.
+    "exp(1.0) ≈ e" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(exp(1.0), e, 1.0e-14)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "log(e) ≈ 1.0" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(log(e), 1.0, 1.0e-14)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "sin(pi/2) ≈ 1.0" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(sin(pi / 2.0), 1.0, 1.0e-14)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "cos(pi) ≈ -1.0" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(cos(pi), -1.0, 1.0e-14)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "tan(pi/4) is approximately 1.0" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(tan(pi / 4.0), 1.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    // ε.6d — real-only intrinsics whose value path wasn't directly
+    // exercised. cbrt has an old "intrinsic functions" test; the rest
+    // either had only IR-shape or libm-bridge-presence checks.
+    "floor of 3.7 is 3.0" in parityCheck(
+      "def main() = print(floor(3.7))",
+      "3.0\n",
+    )
+    "floor of -2.3 is -3.0" in parityCheck(
+      "def main() = print(floor(-2.3))",
+      "-3.0\n",
+    )
+    "ceil of 3.2 is 4.0" in parityCheck(
+      "def main() = print(ceil(3.2))",
+      "4.0\n",
+    )
+    "ceil of -1.5 is -1.0" in parityCheck(
+      "def main() = print(ceil(-1.5))",
+      "-1.0\n",
+    )
+    "round of 2.5 follows round-half-up" in parityCheck(
+      // libm `round` rounds half away from zero (2.5 → 3.0). Pin the
+      // behaviour so a future swap to round-half-to-even surfaces.
+      "def main() = print(round(2.5))",
+      "3.0\n",
+    )
+    "trunc of 3.9 is 3.0" in parityCheck(
+      "def main() = print(trunc(3.9))",
+      "3.0\n",
+    )
+    "trunc of -3.9 is -3.0" in parityCheck(
+      "def main() = print(trunc(-3.9))",
+      "-3.0\n",
+    )
+    "sinh(0) is 0; cosh(0) is 1; tanh(0) is 0" in parityCheck(
+      """
+        |def main() =
+        |  print(sinh(0.0))
+        |  print(cosh(0.0))
+        |  print(tanh(0.0))
+      """.stripMargin,
+      "0.0\n1.0\n0.0\n",
+    )
+    "sinh(1) and cosh(1) form (e - 1/e)/2 and (e + 1/e)/2" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(sinh(1.0), (e - 1.0 / e) / 2.0, 1.0e-12)
+        |  assert_approx(cosh(1.0), (e + 1.0 / e) / 2.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "asinh and sinh are inverses" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(asinh(sinh(0.7)), 0.7, 1.0e-12)
+        |  assert_approx(sinh(asinh(1.5)), 1.5, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "acosh of cosh — cosh always >= 1 so the inverse is well-defined" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(acosh(cosh(1.3)), 1.3, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "atanh and tanh are inverses on (-1, 1)" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(atanh(tanh(0.5)), 0.5, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "asin and sin are inverses on [-1, 1]" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(asin(sin(0.4)), 0.4, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "acos of cos on [0, pi]" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(acos(cos(1.2)), 1.2, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "atan and tan are inverses on (-pi/2, pi/2)" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(atan(tan(0.6)), 0.6, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "atan2 of (1, 1) is pi/4" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(atan2(1.0, 1.0), pi / 4.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+    "cbrt of 27 is 3 and of -8 is -2" in parityCheck(
+      """
+        |def main() =
+        |  print(cbrt(27.0))
+        |  print(cbrt(-8.0))
+      """.stripMargin,
+      "3.0\n-2.0\n",
+    )
+  }
+
+  // ==========================================================================
+  // Stage 3-ε.6b — mathematical identity round-trips. These catch
+  // formula bugs in the prelude's complex-extension bodies that a
+  // single-input check would slide past. Each test uses assert_approx
+  // with a tight epsilon, so a transposed sign or a missing factor
+  // surfaces as a trap rather than a near-miss in float output text.
+  // ==========================================================================
+
+  "prelude transcendental identities (Stage 3-ε.6b)" should {
+    "exp(log(x)) ≈ x for x > 0" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(exp(log(2.0)),  2.0,  1.0e-12)
+        |  assert_approx(exp(log(7.5)),  7.5,  1.0e-12)
+        |  assert_approx(exp(log(100.0)), 100.0, 1.0e-10)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "log(exp(x)) ≈ x" in parityCheck(
+      """
+        |def main() =
+        |  assert_approx(log(exp(0.0)),  0.0, 1.0e-12)
+        |  assert_approx(log(exp(1.0)),  1.0, 1.0e-12)
+        |  assert_approx(log(exp(-2.5)), -2.5, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "sin(x)² + cos(x)² ≈ 1 (Pythagorean identity)" in parityCheck(
+      """
+        |def main() =
+        |  val a = sin(0.7)
+        |  val b = cos(0.7)
+        |  assert_approx(a * a + b * b, 1.0, 1.0e-12)
+        |  val c = sin(2.3)
+        |  val d = cos(2.3)
+        |  assert_approx(c * c + d * d, 1.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "Euler's identity: exp(0 + pi·i) ≈ -1 + 0i" in parityCheck(
+      """
+        |def main() =
+        |  val z = exp(0.0 + pi * i)
+        |  assert_approx(z.re, -1.0, 1.0e-12)
+        |  assert_approx(z.im,  0.0, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "complex sqrt round-trip: sqrt(z) * sqrt(z) ≈ z for z in the right half-plane" in parityCheck(
+      """
+        |def main() =
+        |  val z = 3.0 + 4.0 * i
+        |  val r = sqrt(z) * sqrt(z)
+        |  assert_approx(r.re, z.re, 1.0e-10)
+        |  assert_approx(r.im, z.im, 1.0e-10)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "log branch cut: log(-1 + 0i) ≈ 0 + pi·i" in parityCheck(
+      """
+        |def main() =
+        |  val z = log(-1.0 + 0i)
+        |  assert_approx(z.re, 0.0, 1.0e-12)
+        |  assert_approx(z.im, pi,  1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "log/exp inverse on a complex argument" in parityCheck(
+      """
+        |def main() =
+        |  val z = 0.5 + 0.25 * i
+        |  val r = log(exp(z))
+        |  assert_approx(r.re, z.re, 1.0e-12)
+        |  assert_approx(r.im, z.im, 1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "sin(complex) is consistent with the real arm at zero imag" in parityCheck(
+      """
+        |def main() =
+        |  val z = sin(0.7 + 0i)
+        |  assert_approx(z.re, sin(0.7), 1.0e-12)
+        |  assert_approx(z.im, 0.0,      1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
+
+    "cos(complex) is consistent with the real arm at zero imag" in parityCheck(
+      """
+        |def main() =
+        |  val z = cos(2.0 + 0i)
+        |  assert_approx(z.re, cos(2.0), 1.0e-12)
+        |  assert_approx(z.im, 0.0,      1.0e-12)
+        |  print(0)
+      """.stripMargin,
+      "0\n",
+    )
   }
 
   // ==========================================================================

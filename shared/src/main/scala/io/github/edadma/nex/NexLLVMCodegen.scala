@@ -62,7 +62,11 @@ class NexLLVMCodegen
     // the global pointer. Initial values are filled in by the runtime
     // init function below — this matches the interpreter, which runs
     // every binding initializer at program start.
-    val topBindings = tp.decls.collect { case b: TTopBinding => b }
+    // Top-level bindings live in either `decls` (user code) or
+    // `auxDecls` (source prelude — e.g. the `const pi` / `const e`
+    // declarations in `prelude/scalar.nex`). Both need global slots +
+    // init.
+    val topBindings = tp.allDecls.collect { case b: TTopBinding => b }
     for b <- topBindings do
       globalBindings += b.sym.id
       val ty = llvmType(b.sym.tpe)
@@ -428,8 +432,6 @@ class NexLLVMCodegen
 
     case TVarRef(s, _, t) if s.kind == SymKind.Prelude =>
       s.name match
-        case "pi"  => "0x400921FB54442D18"  // double bit-rep of math.Pi
-        case "e"   => "0x4005BF0A8B145769"  // math.E
         case "inf" => "0x7FF0000000000000"
         case "nan" => "0x7FF8000000000000"
         case "i"   =>

@@ -844,4 +844,59 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(e => e.contains("cannot assign") || e.contains("string")) shouldBe true
     }
 
+    "ambiguous call surfaces an error" in {
+      // Both overloads accept (integer, integer) at equal promotion
+      // cost (one int→real conversion each). The resolver must report
+      // ambiguity rather than silently pick one.
+      val errs = elabExpect("""
+        |def f(x: real, y: integer): integer = y
+        |def f(x: integer, y: real): integer = x
+        |def use() = print(f(1, 1))
+      """.stripMargin)
+      errs.exists(e => e.contains("ambiguous") && e.contains("`f`")) shouldBe true
+    }
+
+    "two-arg overload set: each arg type picks the matching arm" in {
+      val tp = elab("""
+        |def f(x: real, y: real): real = x + y
+        |def f(x: real, y: complex): complex = y
+        |def use(): complex = f(1.0, 0.5 + 0.25 * i)
+      """.stripMargin)
+      val use  = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "use" => d }.get
+      val call = use.body.asInstanceOf[TCall]
+      val cTpe = call.callee.asInstanceOf[TVarRef].sym.tpe
+      cTpe match
+        case TyFunc(List((TyReal, _), (TyComplex, _)), TyComplex) => succeed
+        case other => fail(s"expected (real, complex) overload, got $other")
+    }
+
+    "recursive call inside an overload body resolves to the same overload" in {
+      // `f(real)` calls `f` recursively with a real arg — must resolve
+      // to itself, not to the complex overload.
+      val tp = elab("""
+        |def f(x: real): real = if x <= 0.0 then 0.0 else x + f(x - 1.0)
+        |def f(z: complex): complex = z
+        |def use(): real = f(3.0)
+      """.stripMargin)
+      val use = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "use" => d }.get
+      val call = use.body.asInstanceOf[TCall]
+      call.tpe shouldBe TyReal
+    }
+
+    "complex overload's body can call its real sibling" in {
+      // Closely models the prelude's `sqrt(complex)` calling
+      // `sqrt(real)`. The complex body references `f` with a real arg
+      // — overload resolution at THAT call site picks the real arm.
+      val tp = elab("""
+        |def f(x: real): real = x * 2.0
+        |def f(z: complex): complex =
+        |  val mag = f(z.re)
+        |  mag + z.im * i
+        |def use(): complex = f(3.0 + 4.0 * i)
+      """.stripMargin)
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      // Both overloads still present (LLVM mangling kicks in at codegen
+      // — at the typed-AST level both decls keep their bare name).
+      funDecls.count(_.sym.name == "f") shouldBe 2
+    }
   }

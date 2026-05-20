@@ -190,8 +190,6 @@ class NexInterpreter:
   private def registerPrelude(p: TProgram): Unit =
     for s <- p.symbols.all if s.kind == SymKind.Prelude do
       val v: Value = s.name match
-        case "pi"  => VReal(math.Pi)
-        case "e"   => VReal(math.E)
         case "inf" => VReal(Double.PositiveInfinity)
         case "nan" => VReal(Double.NaN)
         case "i"   => VComplex(0.0, 1.0)

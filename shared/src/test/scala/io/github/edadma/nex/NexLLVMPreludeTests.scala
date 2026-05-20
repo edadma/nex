@@ -78,18 +78,36 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """select i1 %t\d+, double -1.0, double %t\d+"""
     }
 
-    "prelude constants pi / e / inf / nan inline as IR double literals" in {
+    "prelude IEEE constants `inf` / `nan` inline as IR double literals" in {
+      // `inf` and `nan` stay compiler-built-in (no Nex literal syntax
+      // for IEEE specials), so the codegen emits their hex bit-patterns
+      // inline at each use site.
+      val ir = compile("""
+        |def main() =
+        |  print(inf)
+        |  print(nan)
+      """.stripMargin)
+      ir should include("0x7FF0000000000000") // inf
+      ir should include("0x7FF8000000000000") // nan
+    }
+
+    "prelude constants pi / e live in source as global doubles, init'd at module start" in {
+      // `pi` and `e` are `const` decls in `prelude/scalar.nex` — the
+      // codegen emits them as `@pi = global double ...` and
+      // `@e = global double ...`, init'd by `__nex_init_globals` at
+      // program start. User-code references emit a load.
       val ir = compile("""
         |def main() =
         |  print(pi)
         |  print(e)
-        |  print(inf)
-        |  print(nan)
       """.stripMargin)
-      ir should include("0x400921FB54442D18") // pi
-      ir should include("0x4005BF0A8B145769") // e
-      ir should include("0x7FF0000000000000") // inf
-      ir should include("0x7FF8000000000000") // nan
+      ir should include regex """@pi\s*=\s*global double"""
+      ir should include regex """@e\s*=\s*global double"""
+      ir should include("call void @__nex_init_globals()")
+      // Hex bit-patterns for pi (0x400921FB54442D18) and e
+      // (0x4005BF0A8B145769) still appear once each at the init site.
+      ir should include("0x400921FB54442D18")
+      ir should include("0x4005BF0A8B145769")
     }
 
     "atan2 takes two args and lowers to libm @atan2" in {

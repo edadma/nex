@@ -156,9 +156,11 @@ protected trait NexElabState:
     * (TyUnknown for functions whose proper signatures will land in Stage 2).
     */
   protected def registerPrelude(): Unit =
-    // §10.1 Constants
-    defineNoError("pi",  SymKind.Prelude, TyReal)
-    defineNoError("e",   SymKind.Prelude, TyReal)
+    // §10.1 Constants — `inf`, `nan`, and the imaginary unit `i` remain
+    // built-in because Nex has no literal syntax for IEEE-754 specials
+    // and the `<number>i`-style complex-construction juxtaposition would
+    // create a self-reference if `i` were defined in source. `pi` and
+    // `e` live in `prelude/scalar.nex` as `const` decls.
     defineNoError("inf", SymKind.Prelude, TyReal)
     defineNoError("nan", SymKind.Prelude, TyReal)
     defineNoError("i",   SymKind.Prelude, TyComplex)

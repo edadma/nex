@@ -144,12 +144,17 @@ class NexLLVMControlFlowTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("ptr @counter")
     }
 
-    "no __nex_init_globals when there are no top bindings" in {
+    "__nex_init_globals always emits — source prelude has top bindings (const pi, const e)" in {
+      // Before ε.7, a user program with no `val`/`var`/`const` decls
+      // would emit no init function. The source prelude now contributes
+      // `const pi` and `const e` to auxDecls, which the codegen counts
+      // as top-level bindings — so the init function and main's call
+      // to it are always present.
       val ir = compile("""
         |def main() = print(42)
       """.stripMargin)
-      ir should not include "@__nex_init_globals"
-      ir should not include "call void @__nex_init_globals"
+      ir should include("define void @__nex_init_globals")
+      ir should include("call void @__nex_init_globals()")
     }
 
     "real-typed top binding gets a double global" in {
