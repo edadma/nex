@@ -222,6 +222,7 @@ val v: [real] = [1.0, 2.0, 3.0]
 
 length(v)              // 3
 v[0]                   // 1.0
+v[-1]                  // 3.0             — negative indices wrap from the end
 v[1..3]                // [2.0, 3.0]      slice (owned copy)
 v[0..=1]               // [1.0, 2.0]      inclusive slice
 
@@ -326,6 +327,27 @@ var q = Point(0.0, 0.0)
 q.x = 5.0              // OK because q is var
 q = Point(1.0, 1.0)    // rebind whole value
 ```
+
+## Sum types and `match`
+
+```nex
+enum Shape =
+  Circle(radius: real)
+  Rect(width: real, height: real)
+  Empty                                       // bare variant — no fields
+
+def area(s: Shape) =
+  match s
+    case Circle(r)  => pi * r^2
+    case Rect(w, h) => w * h
+    case Empty      => 0.0
+
+print(area(Circle(2.0)))     // 12.566370614359172
+print(area(Rect(3.0, 4.0)))  // 12.0
+print(area(Empty))           // 0.0
+```
+
+Bare variants like `Empty` are values; fielded variants like `Circle(radius)` are constructors. `match` is exhaustive — every variant of the scrutinee's enum must have an arm (or you opt out explicitly with `case _ =>`); field patterns bind by declaration order, and `_` discards.
 
 ## Lambdas
 
