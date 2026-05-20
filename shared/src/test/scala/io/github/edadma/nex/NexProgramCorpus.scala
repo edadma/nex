@@ -44,6 +44,13 @@ object NexProgramCorpus:
     *                 lands and the flag goes away. The interpreter
     *                 runner ignores `pending` so the corpus stays
     *                 useful as an interpreter smoke check.
+    * @param mlir     opt-in flag for the MLIR parity runner. When
+    *                 `true`, [[NexCorpusMlirParityTests]] additionally
+    *                 lowers this case through the MLIR backend and
+    *                 asserts byte-for-byte agreement with the
+    *                 interpreter. The count of `mlir = true` cases is
+    *                 the strangler-fig progress bar for the MLIR
+    *                 backend's coverage of the corpus.
     */
   case class Case(
       category: String,
@@ -51,6 +58,7 @@ object NexProgramCorpus:
       src:      String,
       expected: String,
       pending:  Option[String] = None,
+      mlir:     Boolean        = false,
   )
 
   /** Every parity-compatible program from NexInterpreterTests, plus
@@ -72,6 +80,7 @@ object NexProgramCorpus:
         |def main() = print(x)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "top-level bindings + print",
@@ -81,6 +90,7 @@ object NexProgramCorpus:
         |def main() = print(x)
       """.stripMargin,
       "3.5\n",
+      mlir = true,
     ),
     Case(
       "top-level bindings + print",
@@ -108,12 +118,14 @@ object NexProgramCorpus:
       "add integers",
       """def main() = print(2 + 3)""",
       "5\n",
+      mlir = true,
     ),
     Case(
       "scalar arithmetic",
       "promote int + real to real",
       """def main() = print(2 + 0.5)""",
       "2.5\n",
+      mlir = true,
     ),
     Case(
       "scalar arithmetic",
@@ -162,6 +174,7 @@ object NexProgramCorpus:
       "unary minus",
       """def main() = print(-7)""",
       "-7\n",
+      mlir = true,
     ),
     Case(
       "scalar arithmetic",
@@ -685,6 +698,7 @@ object NexProgramCorpus:
         |def main() = print(sum([1, 2, 3, 4]))
       """.stripMargin,
       "10\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -738,6 +752,7 @@ object NexProgramCorpus:
         |  print(xs + ys)
       """.stripMargin,
       "[11, 22, 33]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1342,6 +1357,7 @@ object NexProgramCorpus:
         |  print(a + b)
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "blocks + scoping",
@@ -1356,6 +1372,7 @@ object NexProgramCorpus:
         |  print(total)
       """.stripMargin,
       "6\n",
+      mlir = true,
     ),
     Case(
       "blocks + scoping",
