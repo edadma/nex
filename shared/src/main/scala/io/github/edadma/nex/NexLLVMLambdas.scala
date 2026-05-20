@@ -78,6 +78,12 @@ protected trait NexLLVMLambdas extends NexLLVMState:
         walkExpr(iter, bound)
         val sub = bound ++ loopVars.map(_.id)
         walkExpr(body, sub)
+      case TMatch(s, cases, _, _) =>
+        walkExpr(s, bound)
+        cases.foreach { c =>
+          val sub = bound ++ collectPatBindings(c.pat)
+          walkExpr(c.body, sub)
+        }
       case _ =>
         walkChildren(e, walkExpr(_, bound))
 
@@ -132,6 +138,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     case TIf(c, t, e2, _, _)              => f(c); f(t); e2.foreach(f)
     case TFor(_, it, b, _, _)             => f(it); f(b)
     case TWhile(c, b, _, _)               => f(c); f(b)
+    case TMatch(s, cs, _, _)              => f(s); cs.foreach(c => f(c.body))
     case TReturn(v, _, _)                 => v.foreach(f)
     case TAssign(t, v, _, _)              => f(t); f(v)
     case TBlock(items, r, _, _) =>
@@ -166,8 +173,19 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     case TFor(vs, it, body, _, _) =>
       collectFrees(it, bound, acc)
       collectFrees(body, bound ++ vs.map(_.id), acc)
+    case TMatch(s, cases, _, _) =>
+      collectFrees(s, bound, acc)
+      cases.foreach { c =>
+        val arm = collectPatBindings(c.pat).toSet
+        collectFrees(c.body, bound ++ arm, acc)
+      }
     case _ =>
       walkChildren(e, x => collectFrees(x, bound, acc))
+
+  private def collectPatBindings(p: TPattern): List[Int] = p match
+    case TVarPat(s, _)          => List(s.id)
+    case TVariantPat(_, args, _) => args.flatMap(collectPatBindings)
+    case _                       => Nil
 
   /** Which Symbol kinds participate in closure capture. */
   private def capturable(s: Symbol): Boolean = s.kind match

@@ -181,6 +181,68 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
   }
 
   // ========================================================================
+  // match expressions
+  // ========================================================================
+
+  "match expressions" should {
+    "parse fielded and bare variant patterns" in {
+      // The parser emits a `VariantPat` only when the source actually
+      // writes parens (`Diverged` vs `Converged(x)`). A bare identifier
+      // — capitalised or not — becomes a [[VarPat]]; the elaborator's
+      // scope lookup decides whether it's a variable binding or a no-arg
+      // variant. This keeps the parser free of any case-convention
+      // assumption.
+      val src =
+        """match s
+          |  case Converged(x)      => x
+          |  case Diverged          => 0.0
+          |  case MaxIters(n, last) => last""".stripMargin
+      parseExpr(src) shouldBe MatchExpr(
+        VarRefExpr("s"),
+        List(
+          MatchCase(VariantPat("Converged", List(VarPat("x"))), VarRefExpr("x")),
+          MatchCase(VarPat("Diverged"),                          RealLitExpr(0.0)),
+          MatchCase(
+            VariantPat("MaxIters", List(VarPat("n"), VarPat("last"))),
+            VarRefExpr("last"),
+          ),
+        ),
+      )
+    }
+
+    "parse wildcard catch-all" in {
+      val src =
+        """match c
+          |  case Red => 1
+          |  case _   => 0""".stripMargin
+      parseExpr(src) shouldBe MatchExpr(
+        VarRefExpr("c"),
+        List(
+          MatchCase(VarPat("Red"),  IntLitExpr(1)),
+          MatchCase(WildcardPat(),  IntLitExpr(0)),
+        ),
+      )
+    }
+
+    "parse nested variant pattern" in {
+      val src =
+        """match w
+          |  case Wrap(Inner(x)) => x
+          |  case _              => 0""".stripMargin
+      parseExpr(src) shouldBe MatchExpr(
+        VarRefExpr("w"),
+        List(
+          MatchCase(
+            VariantPat("Wrap", List(VariantPat("Inner", List(VarPat("x"))))),
+            VarRefExpr("x"),
+          ),
+          MatchCase(WildcardPat(), IntLitExpr(0)),
+        ),
+      )
+    }
+  }
+
+  // ========================================================================
   // module + import declarations
   // ========================================================================
 

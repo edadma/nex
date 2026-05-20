@@ -95,6 +95,12 @@ protected trait NexElabLowering extends NexElabState:
     case TMap(a, f, p, t)              => TMap(lowerExpr(a), lowerExpr(f), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(lowerExpr(a), lowerExpr(i), lowerExpr(f), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(lowerExpr(l), lowerExpr(r), p, t)
+    case TMatch(s, cases, p, t)        =>
+      val ls = lowerExpr(s)
+      val lc = cases.map { c =>
+        TMatchCase(c.pat, lowerExpr(c.body))
+      }
+      TMatch(ls, lc, p, t)
     case TInterpStringLit(parts, p, t) =>
       // Recurse into `${...}` subtrees so juxt-lowering, method-call
       // dispatch, etc. happen there too. Same rationale as Stage 2.
@@ -266,4 +272,7 @@ protected trait NexElabLowering extends NexElabState:
           case TInterpExpr(x) => walkForMutations(x, reads, names)
           case _              => ()
         }
+      case TMatch(s, cases, _, _)      =>
+        walkForMutations(s, reads, names)
+        cases.foreach(c => walkForMutations(c.body, reads, names))
       case _                           => ()

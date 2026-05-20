@@ -122,6 +122,8 @@ class NexFusion(symbols: SymbolTable):
     case TMap(a, f, p, t)              => TMap(fuseExpr(a), fuseExpr(f), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(fuseExpr(a), fuseExpr(i), fuseExpr(f), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(fuseExpr(l), fuseExpr(r), p, t)
+    case TMatch(s, cs, p, t)           =>
+      TMatch(fuseExpr(s), cs.map(c => TMatchCase(c.pat, fuseExpr(c.body))), p, t)
     case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
     case TClone(a, p, t)               => TClone(fuseExpr(a), p, t)
@@ -343,6 +345,8 @@ class NexFusion(symbols: SymbolTable):
     case TMap(a, f, p, t)              => TMap(subst(a, fromId, to), subst(f, fromId, to), p, t)
     case TReduce(a, i, f, p, t)        => TReduce(subst(a, fromId, to), subst(i, fromId, to), subst(f, fromId, to), p, t)
     case TMatMul(l, r, p, t)           => TMatMul(subst(l, fromId, to), subst(r, fromId, to), p, t)
+    case TMatch(s, cs, p, t)           =>
+      TMatch(subst(s, fromId, to), cs.map(c => TMatchCase(c.pat, subst(c.body, fromId, to))), p, t)
     case TFusedLoop(lv, len, b, cols, p, t) =>
       // The inner loop's own loopVar shadows ours (uniquely minted, but
       // be defensive): don't substitute under a binder for the same id.

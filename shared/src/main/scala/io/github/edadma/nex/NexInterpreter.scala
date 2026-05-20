@@ -918,6 +918,46 @@ class NexInterpreter:
           evalExpr(x, inner)
       evalExpr(result, inner)
 
+    case TMatch(scrutinee, cases, p, _) =>
+      val sv = evalExpr(scrutinee, env)
+      // Try each arm in source order. A successful match returns the
+      // arm's value; a successful pattern with a body that traps still
+      // throws (we don't catch). Falling off the end means
+      // exhaustiveness checking missed something — that's a compiler
+      // bug, so trap defensively.
+      val it = cases.iterator
+      var result: Option[Value] = None
+      while result.isEmpty && it.hasNext do
+        val c = it.next()
+        val arm = env.child
+        if matchPattern(c.pat, sv, arm) then
+          result = Some(evalExpr(c.body, arm))
+      result.getOrElse(trap(s"non-exhaustive match on ${formatValue(sv)}", p))
+
+  /** Try a pattern against a scrutinee value, binding the pattern's
+    * fresh symbols into `arm` when the match succeeds. Returns true on
+    * a successful match. Variant patterns dispatch on the runtime tag
+    * (Symbol id lookup in [[enumVariantInfo]]) and recurse into the
+    * payload's fields.
+    */
+  private def matchPattern(p: TPattern, v: Value, arm: Env): Boolean = p match
+    case TWildcardPat(_) => true
+    case TVarPat(sym, _) =>
+      arm.define(sym.id, cloneStructValue(v))
+      true
+    case TVariantPat(vs, args, _) =>
+      enumVariantInfo.get(vs.id) match
+        case None =>
+          // Variant info missing — must be a malformed program. Treat as no-match.
+          false
+        case Some((_, idx, _)) =>
+          v match
+            case VEnum(_, _, vidx, fields) if vidx == idx =>
+              if args.size != fields.size then false
+              else
+                args.zip(fields).forall { case (sp, fv) => matchPattern(sp, fv, arm) }
+            case _ => false
+
   // --------------------------------------------------------------------------
   // Function call / struct construction
   // --------------------------------------------------------------------------

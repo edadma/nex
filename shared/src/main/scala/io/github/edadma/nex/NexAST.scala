@@ -138,6 +138,13 @@ case class WildcardPat() extends PatternAST
   */
 case class TuplePat(elems: List[PatternAST]) extends PatternAST
 
+/** Variant pattern in a `match` arm: `Diverged` (bare) or `Converged(x, _)`
+  * (fielded). `args.isEmpty` when the source omits the parens entirely;
+  * the analyzer resolves the variant name and decides whether that is
+  * legal (bare variants only).
+  */
+case class VariantPat(name: String, args: List[PatternAST]) extends PatternAST
+
 // ============================================================================
 // Types (Pass 1: enough for binding annotations)
 // ============================================================================
@@ -279,6 +286,15 @@ case class WhileExpr(cond: ExprAST, body: ExprAST) extends ExprAST
 
 /** `return [expr]` — early exit from the enclosing function. */
 case class ReturnExpr(value: Option[ExprAST]) extends ExprAST
+
+/** `match scrutinee` followed by an indented list of `case pattern => arm`.
+  * The analyzer requires the scrutinee to have an enum type and checks
+  * the arm patterns for exhaustiveness against that enum's declared
+  * variants.
+  */
+case class MatchExpr(scrutinee: ExprAST, cases: List[MatchCase]) extends ExprAST
+
+case class MatchCase(pat: PatternAST, body: ExprAST) extends Positional
 
 /** Assignment statement (modelled as a unit-typed expression for AST
   * uniformity): `target = value`, where `target` is an l-value

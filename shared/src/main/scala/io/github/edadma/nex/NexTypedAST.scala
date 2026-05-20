@@ -327,6 +327,50 @@ case class TArrayLit(elems: List[TExpr], pos: Option[Position] = None, tpe: Type
 // -- Control flow ----------------------------------------------------------
 
 case class TIf(cond: TExpr, thenB: TExpr, elseB: Option[TExpr], pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
+
+/** A `match` expression after elaboration. The scrutinee has been
+  * type-resolved to a [[TyEnum]]; each case carries a [[TMatchCase]]
+  * with a [[TPattern]] that binds per-arm field symbols (already
+  * minted into the symbol table) and a typed body.
+  *
+  * Exhaustiveness is checked at elaboration time — by the point a
+  * [[TMatch]] reaches inference, either every variant is covered or
+  * a wildcard catch-all closes the set. Codegen relies on that, so
+  * it doesn't have to emit a panic for "unmatched value".
+  */
+case class TMatch(
+    scrutinee: TExpr,
+    cases:     List[TMatchCase],
+    pos:       Option[Position] = None,
+    tpe:       Type = TyUnknown,
+) extends TExpr
+
+case class TMatchCase(pat: TPattern, body: TExpr)
+
+/** Typed pattern for `match` arms. Variable bindings carry a fresh
+  * Symbol whose `tpe` matches the underlying field type — the
+  * interpreter and codegen use the symbol id to bind into the arm's
+  * scope at dispatch time.
+  */
+sealed trait TPattern:
+  def pos: Option[Position]
+
+/** Binds the matched value (or sub-field) to a name. */
+case class TVarPat(sym: Symbol, pos: Option[Position] = None) extends TPattern
+
+/** Matches anything and binds nothing. */
+case class TWildcardPat(pos: Option[Position] = None) extends TPattern
+
+/** Matches a specific variant tag. `variantSym` resolves to the
+  * declaring [[TEnumDecl]]'s variant (its id is the lookup key in the
+  * interpreter's `enumVariantInfo`). Sub-patterns bind the variant's
+  * fields in declaration order; bare variants carry `Nil`.
+  */
+case class TVariantPat(
+    variantSym: Symbol,
+    args:       List[TPattern],
+    pos:        Option[Position] = None,
+) extends TPattern
 case class TFor(loopVars: List[Symbol], iter: TExpr, body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
 case class TWhile(cond: TExpr, body: TExpr, pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr
 case class TReturn(value: Option[TExpr], pos: Option[Position] = None, tpe: Type = TyUnit) extends TExpr

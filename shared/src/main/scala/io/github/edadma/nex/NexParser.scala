@@ -356,6 +356,19 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val patternAtom: PackratParser[PatternAST] =
     ident ^^ { n => if n == "_" then WildcardPat() else VarPat(n) }
 
+  /** Match-arm pattern. Adds variant patterns (`Diverged`, `Converged(x, _)`)
+    * on top of the binding-style patterns. A bare identifier still parses
+    * as a `VarPat` here — the elaborator distinguishes "variable binding"
+    * from "no-arg variant" by looking the name up in the surrounding
+    * scope. Capitalisation is irrelevant; the elaborator's symbol kind
+    * decides.
+    */
+  lazy val casePattern: PackratParser[PatternAST] =
+    ident ~ ("(" ~> rep1sep(casePattern, ",") <~ ")") ^^ {
+      case n ~ args => VariantPat(n, args)
+    } |
+    ident ^^ { n => if n == "_" then WildcardPat() else VarPat(n) }
+
   // --- Type expressions ---------------------------------------------------
 
   /** Function types are right-associative: `A -> B -> C` parses as
@@ -578,6 +591,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   lazy val primaryExpr: PackratParser[ExprAST] =
     ifExpr                                                       |
+    matchExpr                                                    |
     forExpr                                                      |
     whileExpr                                                    |
     returnExpr                                                   |
@@ -644,6 +658,34 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     ("while" ~> exprNoTuple) ~ doBody ~ opt(trailingEnd) ^^ {
       case cond ~ body ~ _ => WhileExpr(cond, body)
     }
+
+  // --- match expression --------------------------------------------------
+  //
+  // Surface form:
+  //
+  //   match s
+  //     case Converged(x)      => x
+  //     case Diverged          => -1.0
+  //     case MaxIters(n, last) => last
+  //
+  // Arms live on indented lines after the scrutinee. Each arm body is
+  // either an inline expression (after `=>`) or — if the inline expr is
+  // omitted — a Newline-Indent block. A trailing `case _ => ...` covers
+  // the otherwise-unhandled cases; the elaborator only requires one if
+  // explicit variant coverage is incomplete.
+
+  lazy val matchExpr: PackratParser[ExprAST] =
+    ("match" ~> exprNoTuple) ~ matchCases ~ opt(trailingEnd) ^^ {
+      case s ~ cs ~ _ => MatchExpr(s, cs)
+    }
+
+  lazy val matchCases: PackratParser[List[MatchCase]] =
+    Newline ~> Indent ~> rep1sep(matchCase, stmtSep) <~ stmtSepOpt <~ Dedent
+
+  lazy val matchCase: PackratParser[MatchCase] =
+    positioned(("case" ~> casePattern) ~ ("=>" ~> branchBody) ^^ {
+      case p ~ b => MatchCase(p, b)
+    })
 
   /** `do` is required for an inline body and optional when the body
     * starts on a new indented line (spec §7.2 / §7.3).

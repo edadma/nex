@@ -199,6 +199,8 @@ class NexLifetime(
       case TIf(c, th, el, p, t)           => TIf(rewriteSubtree(c, refs), rewriteSubtree(th, refs), el.map(rewriteSubtree(_, refs)), p, t)
       case TFor(vs, it, b, p, t)          => TFor(vs, rewriteSubtree(it, refs), rewriteSubtree(b, refs), p, t)
       case TWhile(c, b, p, t)             => TWhile(rewriteSubtree(c, refs), rewriteSubtree(b, refs), p, t)
+      case TMatch(s, cs, p, t)            =>
+        TMatch(rewriteSubtree(s, refs), cs.map(c => TMatchCase(c.pat, rewriteSubtree(c.body, refs))), p, t)
       case TReturn(None, p, t)            => TReturn(None, p, t)
       case TInterpStringLit(parts, p, t)  =>
         TInterpStringLit(parts.map {
@@ -268,9 +270,21 @@ class NexLifetime(
       val sub = mutable.Set.empty[Int] ++= bound
       vs.foreach(s => sub += s.id)
       collectLambdaFrees(body, sub, frees)
+    case TMatch(s, cases, _, _) =>
+      collectLambdaFrees(s, bound, frees)
+      cases.foreach { c =>
+        val sub = mutable.Set.empty[Int] ++= bound
+        collectPatternBindings(c.pat).foreach(id => sub += id)
+        collectLambdaFrees(c.body, sub, frees)
+      }
     case _ =>
       // No new bindings introduced — just recurse.
       walkChildren(e, x => collectLambdaFrees(x, bound, frees))
+
+  private def collectPatternBindings(p: TPattern): List[Int] = p match
+    case TVarPat(s, _)         => List(s.id)
+    case TVariantPat(_, sub, _) => sub.flatMap(collectPatternBindings)
+    case _                     => Nil
 
   // --------------------------------------------------------------------------
   // Shared child-walker (used by both reference counting and any future
@@ -312,6 +326,7 @@ class NexLifetime(
       case TIf(c, th, el, _, _)             => f(c); f(th); el.foreach(f)
       case TFor(_, it, b, _, _)             => f(it); f(b)
       case TWhile(c, b, _, _)               => f(c); f(b)
+      case TMatch(s, cases, _, _)           => f(s); cases.foreach(c => f(c.body))
       case TReturn(v, _, _)                 => v.foreach(f)
       case TAssign(t, v, _, _)              => f(t); f(v)
       case TBlock(items, r, _, _)           =>

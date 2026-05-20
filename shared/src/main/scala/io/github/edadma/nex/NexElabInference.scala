@@ -661,12 +661,120 @@ protected trait NexElabInference extends NexElabState:
       val rr  = infExpr(result)
       TBlock(its, rr, p, rr.tpe)
 
+    case TMatch(scrutinee, cases, p, _) =>
+      val ts = infExpr(scrutinee)
+      // The scrutinee's type drives both pattern typing and the
+      // exhaustiveness check. Anything other than a [[TyEnum]] is a
+      // hard error — bare types (int / real / string) can't be
+      // discriminated in `match` yet.
+      val enumTy = ts.tpe match
+        case te: TyEnum => Some(te)
+        case TyUnknown  => None
+        case other      =>
+          err(s"`match` scrutinee must be an enum, got $other", ts.pos)
+          None
+      val typedCases = cases.map { c =>
+        val typedPat = typePattern(c.pat, enumTy)
+        val body     = infExpr(c.body)
+        TMatchCase(typedPat, body)
+      }
+      checkMatchExhaustiveness(typedCases, enumTy, p)
+      val resTy = lubTypes(typedCases.map(_.body.tpe))
+      TMatch(ts, typedCases, p, resTy)
+
     // Element-wise & matmul nodes don't appear in Stage 1 output; they
     // get introduced here. If we see them in a second-pass scenario,
     // pass through. TFusedLoop is similar — introduced by NexFusion
     // (Stage 4, post-lowering), never present during Stage 2 today,
     // but pass it through defensively in case the pipeline is rerun.
     case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex | _: TSlice | _: TSlice2 | _: TAxisAllMark | _: TClone => e
+
+  /** Pin field-binding symbols inside a match pattern to the field types
+    * declared by the scrutinee's enum. Wildcard patterns and variant-
+    * specific patterns are validated against `enumTy`; bare-name
+    * wildcards (`case x =>`) bind the scrutinee's whole type. If the
+    * scrutinee type is missing (e.g. the user wrote `match x` where `x`
+    * has an inference error), pattern symbols stay [[TyUnknown]] and
+    * exhaustiveness checking is skipped.
+    */
+  private def typePattern(p: TPattern, enumTy: Option[TyEnum]): TPattern = p match
+    case TWildcardPat(_) => p
+    case TVarPat(sym, pp) =>
+      val ty = enumTy.getOrElse(TyUnknown)
+      TVarPat(setSymType(sym, ty), pp)
+    case TVariantPat(vs, args, pp) =>
+      val vsFields: List[(String, Type)] =
+        enumTy match
+          case Some(te) =>
+            te.variants.find(_._1 == vs.name).map(_._2) match
+              case Some(fs) => fs
+              case None =>
+                err(s"variant `${vs.name}` is not part of enum `${te.name}`", pp)
+                Nil
+          case None =>
+            // Fallback to the variant's own type signature.
+            symbols.get(vs.id).map(_.tpe) match
+              case Some(TyFunc(ps, _)) => ps.map { case (t, _) => ("", t) }
+              case _                   => Nil
+      if vsFields.size != args.size then
+        // Mismatch was already reported by the elaborator's arity check;
+        // type sub-patterns against a padded TyUnknown list to keep
+        // recursion safe.
+        val padded = vsFields.padTo(args.size, ("", TyUnknown))
+        val subs = args.zip(padded).map { case (sp, (_, ft)) => bindPattern(sp, ft) }
+        TVariantPat(refreshSym(vs), subs, pp)
+      else
+        val subs = args.zip(vsFields).map { case (sp, (_, ft)) => bindPattern(sp, ft) }
+        TVariantPat(refreshSym(vs), subs, pp)
+
+  /** Bind sub-pattern symbols to the slot type at this position. */
+  private def bindPattern(p: TPattern, slotTy: Type): TPattern = p match
+    case TWildcardPat(_)  => p
+    case TVarPat(sym, pp) => TVarPat(setSymType(sym, slotTy), pp)
+    case TVariantPat(vs, args, pp) =>
+      // Nested variant pattern — recurse using slotTy as the new enum.
+      val enumOpt = slotTy match
+        case te: TyEnum => Some(te)
+        case _          => None
+      val tp = typePattern(TVariantPat(vs, args, pp), enumOpt)
+      tp
+
+  /** Exhaustiveness check (Stage 2). A `_` wildcard or a bare name
+    * pattern with no variant resolution is a catch-all. If no catch-all
+    * is present, every declared variant must appear at the top level of
+    * some arm. Duplicate variant arms surface as an error: Nex follows
+    * Rust here, where redundant arms are a hard failure.
+    */
+  private def checkMatchExhaustiveness(
+      cases:  List[TMatchCase],
+      enumTy: Option[TyEnum],
+      pos:    Option[Position],
+  ): Unit =
+    enumTy match
+      case None => () // already reported a primary error; nothing to add
+      case Some(te) =>
+        val declared = te.variants.map(_._1).toSet
+        var sawCatchAll = false
+        val covered  = scala.collection.mutable.Set.empty[String]
+        for c <- cases do
+          c.pat match
+            case TVariantPat(vs, _, p) =>
+              if !declared.contains(vs.name) then
+                err(s"variant `${vs.name}` is not part of enum `${te.name}`", p)
+              else if covered.contains(vs.name) then
+                err(s"duplicate match arm for variant `${vs.name}`", p)
+              else if sawCatchAll then
+                err(s"unreachable match arm: catch-all already covers `${vs.name}`", p)
+              else
+                covered += vs.name
+            case _: TWildcardPat | _: TVarPat =>
+              if sawCatchAll then
+                err("unreachable match arm: catch-all already present", c.pat.pos)
+              sawCatchAll = true
+        if !sawCatchAll then
+          val missing = declared -- covered
+          if missing.nonEmpty then
+            err(s"non-exhaustive match: missing variants ${missing.toList.sorted.mkString(", ")}", pos)
 
   protected def inferBlockItem(i: TBlockItem): TBlockItem = i match
     case TBlockBinding(s, kind, v) =>

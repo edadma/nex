@@ -289,6 +289,19 @@ class NexMonomorphize(symbols: SymbolTable):
     def goT(t: Type): Type = substituteKindVars(t, substMap)
     def go(x: TExpr): TExpr = specializeExpr(x, substMap, symMap)
 
+    def substPattern(p: TPattern): (TPattern, List[Int]) = p match
+      case TWildcardPat(_) => (p, Nil)
+      case TVarPat(s, pp) =>
+        val fresh = symbols.mint(s.name, goT(s.tpe), s.kind)
+        symMap(s.id) = fresh
+        (TVarPat(fresh, pp), List(s.id))
+      case TVariantPat(vs, args, pp) =>
+        val (subs, ids) = args.foldRight((List.empty[TPattern], List.empty[Int])) { (ap, acc) =>
+          val (np, nids) = substPattern(ap)
+          (np :: acc._1, nids ++ acc._2)
+        }
+        (TVariantPat(vs, subs, pp), ids)
+
     e match
       // -- Literals ----------------------------------------------------
       case lit: TIntLit    => lit
@@ -401,6 +414,18 @@ class NexMonomorphize(symbols: SymbolTable):
       case TWhile(c, b, p, t)     => TWhile(go(c), go(b), p, goT(t))
       case TReturn(v, p, t)       => TReturn(v.map(go), p, goT(t))
       case TAssign(tgt, v, p, t)  => TAssign(go(tgt), go(v), p, goT(t))
+      case TMatch(s, cases, p, t) =>
+        // Match arms introduce per-arm bindings via the patterns; mint
+        // fresh symbols so the substitution map stays consistent with the
+        // rest of the generic specialization machinery.
+        val newS = go(s)
+        val newCases = cases.map { c =>
+          val (pat2, pendingIds) = substPattern(c.pat)
+          val body2 = go(c.body)
+          pendingIds.foreach(id => symMap -= id)
+          TMatchCase(pat2, body2)
+        }
+        TMatch(newS, newCases, p, goT(t))
 
       // -- Block -------------------------------------------------------
       case TBlock(items, r, p, t) =>
@@ -486,6 +511,8 @@ class NexMonomorphize(symbols: SymbolTable):
       case TIf(c, th, el, p, t)         => TIf(go(c), go(th), el.map(go), p, t)
       case TFor(vs, it, b, p, t)        => TFor(vs, go(it), go(b), p, t)
       case TWhile(c, b, p, t)           => TWhile(go(c), go(b), p, t)
+      case TMatch(s, cs, p, t)          =>
+        TMatch(go(s), cs.map(c => TMatchCase(c.pat, go(c.body))), p, t)
       case TReturn(v, p, t)             => TReturn(v.map(go), p, t)
       case TAssign(tgt, v, p, t)        => TAssign(go(tgt), go(v), p, t)
       case TBlock(items, r, p, t) =>

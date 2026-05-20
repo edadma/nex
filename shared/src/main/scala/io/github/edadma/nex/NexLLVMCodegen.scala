@@ -749,6 +749,9 @@ class NexLLVMCodegen
     case TIf(cond, thenB, elseOpt, _, t) =>
       emitIf(cond, thenB, elseOpt, t)
 
+    case _: TMatch =>
+      notYet("`match` codegen not yet implemented (chunk 3 of sum-types)"); "0"
+
     case TWhile(cond, body, _, _) =>
       emitWhile(cond, body); "void"
 

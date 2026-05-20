@@ -514,4 +514,151 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       """.stripMargin)
       errs.mkString(";") should include("expects 1 args")
     }
+
+    "match dispatches on a bare variant" in {
+      runOut("""
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def label(c: Color): string =
+        |  match c
+        |    case Red   => "stop"
+        |    case Green => "go"
+        |    case Blue  => "wait"
+        |
+        |def main() =
+        |  print(label(Red))
+        |  print(label(Green))
+        |  print(label(Blue))
+      """.stripMargin) shouldBe "stop\ngo\nwait\n"
+    }
+
+    "match binds variant fields into the arm body" in {
+      runOut("""
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def describe(s: Solver): real =
+        |  match s
+        |    case Converged(x)       => x
+        |    case Diverged           => -1.0
+        |    case MaxIters(n, last)  => last
+        |
+        |def main() =
+        |  print(describe(Converged(3.14)))
+        |  print(describe(Diverged))
+        |  print(describe(MaxIters(100, 2.5)))
+      """.stripMargin) shouldBe "3.14\n-1.0\n2.5\n"
+    }
+
+    "match wildcard catches the remaining variants" in {
+      runOut("""
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def isRed(c: Color): bool =
+        |  match c
+        |    case Red => true
+        |    case _   => false
+        |
+        |def main() =
+        |  print(isRed(Red))
+        |  print(isRed(Green))
+        |  print(isRed(Blue))
+      """.stripMargin) shouldBe "true\nfalse\nfalse\n"
+    }
+
+    "match ignores unused fields with `_`" in {
+      runOut("""
+        |enum Step =
+        |  Continue(n: integer)
+        |  Halt
+        |
+        |def kind(s: Step): string =
+        |  match s
+        |    case Continue(_) => "continue"
+        |    case Halt        => "halt"
+        |
+        |def main() =
+        |  print(kind(Continue(99)))
+        |  print(kind(Halt))
+      """.stripMargin) shouldBe "continue\nhalt\n"
+    }
+
+    "match arms unify to a single result type" in {
+      runOut("""
+        |enum Step =
+        |  Continue(n: integer)
+        |  Done(total: integer)
+        |
+        |def main() =
+        |  val s: Step = Continue(7)
+        |  val v: integer = match s
+        |    case Continue(n) => n
+        |    case Done(t)     => t
+        |  print(v)
+      """.stripMargin) shouldBe "7\n"
+    }
+
+    "non-exhaustive match without wildcard is a compile error" in {
+      val errs = elaborateExpectingErrors("""
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def main() =
+        |  val c: Color = Red
+        |  match c
+        |    case Red => print("red")
+      """.stripMargin)
+      errs.mkString(";") should include("non-exhaustive")
+    }
+
+    "duplicate match arm is a compile error" in {
+      val errs = elaborateExpectingErrors("""
+        |enum Color =
+        |  Red
+        |  Green
+        |
+        |def main() =
+        |  val c: Color = Red
+        |  match c
+        |    case Red   => print(1)
+        |    case Red   => print(2)
+        |    case Green => print(3)
+      """.stripMargin)
+      errs.mkString(";") should include("duplicate")
+    }
+
+    "wrong-arity variant pattern is a compile error" in {
+      val errs = elaborateExpectingErrors("""
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |
+        |def main() =
+        |  val s: Solver = Diverged
+        |  match s
+        |    case Converged(a, b) => print(a)
+        |    case Diverged        => print(0)
+      """.stripMargin)
+      errs.mkString(";") should include("expects 1 field")
+    }
+
+    "matching on a non-enum is a compile error" in {
+      val errs = elaborateExpectingErrors("""
+        |def main() =
+        |  val n: integer = 3
+        |  match n
+        |    case x => print(x)
+      """.stripMargin)
+      errs.mkString(";") should include("must be an enum")
+    }
   }

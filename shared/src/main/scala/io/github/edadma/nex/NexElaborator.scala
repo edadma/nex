@@ -1,7 +1,7 @@
 package io.github.edadma.nex
 
 import scala.collection.mutable
-import scala.util.parsing.input.Positional
+import scala.util.parsing.input.{Position, Positional}
 
 /** The Nex elaborator. Drives the pipeline over a parsed program and
   * returns a fully typed, lowered [[TProgram]] (or a list of elaboration
@@ -354,6 +354,9 @@ class NexElaborator
         val temp  = symbols.mint("$tuple", TyUnknown, kind)
         val names = t.elems.map(p => bindTuplePatternName(p, kind, where))
         temp :: names
+      case _: VariantPat =>
+        err("variant patterns are only legal inside `match` arms", where)
+        Nil
 
   /** Mint a single named symbol for one element of a tuple-destructuring
     * pattern. Nested `TuplePat` cannot reach here because the parser's
@@ -373,6 +376,7 @@ class NexElaborator
       case VarPat(name)  => define(name, kind, declaredTy, where)
       case WildcardPat() => symbols.mint("_", declaredTy, kind)
       case _: TuplePat   => sys.error("unreachable: parser rejects nested tuple patterns")
+      case _: VariantPat => sys.error("unreachable: parser only emits VariantPat inside match arms")
 
   // ==========================================================================
   // Declarations
@@ -607,6 +611,9 @@ class NexElaborator
             TBlockBinding(s, kind, TTupleProj(TVarRef(temp), i))
         }
         tempBinding :: projections
+      case _: VariantPat =>
+        err("variant patterns are only legal inside `match` arms", d)
+        Nil
 
   // ==========================================================================
   // Type expressions
@@ -828,12 +835,18 @@ class NexElaborator
           TBlock(ti, tr, pos)
         }
 
+      case m: MatchExpr =>
+        elabMatch(m, pos)
+
   /** Mint Local symbols for every name in a for-loop pattern. */
   private def collectPatternSyms(pat: PatternAST): List[Symbol] =
     pat match
       case VarPat(name)  => List(define(name, SymKind.Local, TyUnknown, pat))
       case WildcardPat() => List(symbols.mint("_", TyUnknown, SymKind.Local))
       case TuplePat(es)  => es.flatMap(collectPatternSyms)
+      case _: VariantPat =>
+        err("variant patterns are not allowed in for-loop patterns", pat)
+        Nil
 
   /** Assignment targets must be a name, a field access, an index, or a
     * slice form. Anything else is a structural error. Slice targets get
@@ -845,3 +858,72 @@ class NexElaborator
       case _: TVarRef | _: TField | _: TIndex | _: TSlice | _: TSlice2 => ()
       case _                                                            =>
         err("invalid assignment target", src)
+
+  /** Elaborate a `match` expression — Stage 1 surface, before inference
+    * fills in the scrutinee's enum type. The arm scopes here mint the
+    * field-binding symbols so the typed-AST patterns hold concrete
+    * `Symbol` ids the interpreter can route through. Exhaustiveness
+    * checking lives in Stage 2 once the scrutinee type is known —
+    * Stage 1 only verifies surface shape and resolves variant references.
+    */
+  private def elabMatch(m: MatchExpr, pos: Option[Position]): TExpr =
+    val ts = elabExpr(m.scrutinee)
+    if m.cases.isEmpty then
+      err("`match` requires at least one case", m)
+    val tcases = m.cases.map { c =>
+      scoped {
+        val tp = elabPattern(c.pat)
+        TMatchCase(tp, elabExpr(c.body))
+      }
+    }
+    TMatch(ts, tcases, pos)
+
+  /** Lower a [[PatternAST]] into its typed counterpart, minting fresh
+    * symbols for every binder. Variant patterns resolve the head name
+    * against the surrounding scope: a [[SymKind.EnumVariant]] hit
+    * becomes a [[TVariantPat]]; an unknown name with no args is treated
+    * as a [[TVarPat]] binder (the elaborator's "is this a variable or
+    * a constructor" decision falls out of the lookup, just like Scala).
+    * Arity is checked against the declared field count.
+    */
+  private def elabPattern(p: PatternAST): TPattern =
+    val pos = Some(p.pos)
+    p match
+      case WildcardPat() =>
+        TWildcardPat(pos)
+      case VarPat(name) =>
+        current.lookup(name) match
+          case Some(s) if s.kind == SymKind.EnumVariant =>
+            val info = enumVariantArity(s)
+            if info != 0 then
+              err(s"variant `$name` expects $info field(s) in pattern", p)
+            TVariantPat(s, Nil, pos)
+          case _ =>
+            val sym = define(name, SymKind.Local, TyUnknown, p)
+            TVarPat(sym, pos)
+      case VariantPat(name, args) =>
+        current.lookup(name) match
+          case Some(s) if s.kind == SymKind.EnumVariant =>
+            val arity = enumVariantArity(s)
+            if arity != args.size then
+              err(s"variant `$name` expects $arity field(s), got ${args.size}", p)
+            val subs = args.map(elabPattern)
+            TVariantPat(s, subs, pos)
+          case Some(_) =>
+            err(s"`$name` is not an enum variant", p)
+            TWildcardPat(pos)
+          case None =>
+            err(s"undefined variant `$name`", p)
+            TWildcardPat(pos)
+      case TuplePat(_) =>
+        err("tuple patterns are not yet supported in `match` arms", p)
+        TWildcardPat(pos)
+
+  /** Field arity for a variant symbol, read off its current typed form.
+    * A bare variant types as [[TyEnum]] (arity 0); a fielded variant
+    * types as [[TyFunc]] whose param count is the declared arity.
+    */
+  private def enumVariantArity(s: Symbol): Int =
+    symbols.get(s.id).map(_.tpe) match
+      case Some(TyFunc(ps, _)) => ps.size
+      case _                   => 0
