@@ -20,7 +20,7 @@ nex compile [--backend B] <file>    # emit IR and invoke a backend toolchain to 
 `--backend` (only for `compile`) selects the codegen pipeline:
 
 - `llvm` (default) — emits LLVM IR text and invokes `clang -O1`. Covers the full language surface.
-- `mlir` — emits MLIR via `linalg` / `arith` / `scf` dialects and runs `mlir-opt` → `mlir-translate` → `clang -O1`. **Experimental** and currently limited to the milestones the parity suite covers (rank-1 / rank-2 array prints, element-wise binops, val-bindings, sum, matmul). Anything outside that subset raises a compile-time "not yet supported" diagnostic.
+- `mlir` — emits MLIR via `linalg` / `arith` / `scf` / `tensor` dialects and runs `mlir-opt` → `mlir-translate` → `clang -O1`. **Experimental** and growing on the strangler-fig pattern: scalar arithmetic (`+ - * / div % ^`, unary `-`), comparisons + bool + `and` / `or` / `not`, `min` / `max` / `abs`, the libm transcendentals (`sqrt` / `exp` / `log` / `sin` / `cos` / ...), array literals + `length` + indexing, scalar–array broadcasts, and the `@` operator (matmul, matvec, dot) all parity-check against the interpreter. The corpus opts cases in one at a time via a per-case `mlir = true` flag in `NexProgramCorpus` — see `NexCorpusMlirParityTests` for what's currently covered. Anything outside the opted-in surface raises a compile-time "not yet supported" diagnostic.
 
 ## Locating the source prelude
 
