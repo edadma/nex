@@ -155,7 +155,7 @@ class NexInterpreter:
         globalEnv.define(s.sym.id, VStruct(s.sym.name, mutable.LinkedHashMap.empty))
       case b: TTopBinding =>
         val cell = globalEnv.define(b.sym.id, VUnit)
-        bindingInits += (() => cell.v = evalExpr(b.value, globalEnv))
+        bindingInits += (() => cell.v = cloneStructValue(evalExpr(b.value, globalEnv)))
       case _: TModuleDecl | _: TImportDecl => ()
 
     funcInits.foreach(_())
@@ -902,7 +902,13 @@ class NexInterpreter:
       val inner = env.child
       for it <- items do it match
         case TBlockBinding(sym, _, v) =>
-          inner.define(sym.id, evalExpr(v, inner))
+          // Clone struct values at the binding site so two bindings
+          // never alias the same field map. Spec §4.15's "field
+          // reassignment requires var" + the AOT's value-typed
+          // struct ABI together mean `var c = b; c.v = 99` must
+          // not affect `b`. Arrays inside the struct also clone so
+          // nested mutation can't leak across the copy.
+          inner.define(sym.id, cloneStructValue(evalExpr(v, inner)))
         case TBlockExpr(x) =>
           evalExpr(x, inner)
       evalExpr(result, inner)
@@ -1493,6 +1499,28 @@ class NexInterpreter:
     case VArray1(b)       => b.clone()
     case VArray2(b, _, _) => b.clone()
     case _                 => trap(s"flatten: not an array", None)
+
+  /** Deep-copy a struct value so the new binding's fields can't alias
+    * the source's. Spec §4.15 + the AOT's value-typed `{ ... }`
+    * aggregate semantics together imply structs are values: a `var c
+    * = b` should produce two independent bindings, and `c.v = 99` must
+    * not be observable through `b`. The interpreter's VStruct fields
+    * map is a shared mutable, so we recursively clone here.
+    *
+    * Recurses through nested structs and through tuple/array elements
+    * so a struct that contains another struct (or a tuple/array of
+    * structs) clones every layer. Non-struct leaves pass through
+    * unchanged — integers, reals, strings, closures, and the array
+    * descriptor itself (array-vs-array uniqueness is handled by
+    * NexLifetime's TClone insertion).
+    */
+  private def cloneStructValue(v: Value): Value = v match
+    case VStruct(name, fields) =>
+      val copy = mutable.LinkedHashMap.empty[String, Value]
+      for (k, fv) <- fields do copy(k) = cloneStructValue(fv)
+      VStruct(name, copy)
+    case VTuple(es)       => VTuple(es.map(cloneStructValue))
+    case other            => other
 
   // --------------------------------------------------------------------------
   // I/O and formatting

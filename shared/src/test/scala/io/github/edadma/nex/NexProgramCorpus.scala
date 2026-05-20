@@ -1143,6 +1143,47 @@ object NexProgramCorpus:
     ),
     Case(
       "structs",
+      "var c = b on a struct copies — mutations don't alias",
+      """
+        |struct Box
+        |  v: integer
+        |end Box
+        |
+        |def main() =
+        |  var b = Box(10)
+        |  var c = b
+        |  c.v = 99
+        |  print(b.v)
+        |  print(c.v)
+        |  b.v = 1
+        |  print(b.v)
+        |  print(c.v)
+      """.stripMargin,
+      "10\n99\n1\n99\n",
+    ),
+    Case(
+      "structs",
+      "nested struct copy: inner mutation in copy doesn't leak to original",
+      """
+        |struct Inner
+        |  v: integer
+        |end Inner
+        |
+        |struct Outer
+        |  i: Inner
+        |end Outer
+        |
+        |def main() =
+        |  var a = Outer(Inner(1))
+        |  var b = a
+        |  b.i.v = 99
+        |  print(a.i.v)
+        |  print(b.i.v)
+      """.stripMargin,
+      "1\n99\n",
+    ),
+    Case(
+      "structs",
       "field write through an array-element receiver mutates the slot",
       """
         |struct P
