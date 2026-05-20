@@ -1,0 +1,24 @@
+/* Nex docs — site-specific overrides loaded after the bundled theme CSS.
+   See themes/juicerdocs/partials/head.html for the load mechanism
+   (`customCSS = [...]` in site.toml). */
+
+/* Splash hero logo: respect the source image's natural aspect ratio.
+   The juicerdocs default hard-codes a square 28rem × 28rem box, which
+   stretches non-square logos vertically. Cap the width at the same 28rem
+   but let height float so the rendered image matches what the file
+   actually is. */
+.juicerdocs-page-splash .juicerdocs-hero-logo {
+  width: auto;
+  max-width: 28rem;
+  height: auto;
+  max-height: 28rem;
+}
+
+/* Non-splash hero logo (header / folder hero outside the landing
+   splash). Same fix at the smaller default size. */
+.juicerdocs-hero-logo {
+  width: auto;
+  max-width: 3.5rem;
+  height: auto;
+  max-height: 3.5rem;
+}
