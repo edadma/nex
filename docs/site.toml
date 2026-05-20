@@ -22,12 +22,6 @@ htmlDir = ""
 # Brand assets.
 favicon = "/nex-logo.png"
 
-# Site-supplied CSS loaded AFTER the bundled theme stylesheet so it can
-# override anything. See docs/static/site.css for the current overrides
-# (hero-logo aspect ratio); the head partial picks the list up via
-# `.site.customCSS`.
-customCSS = ["/site.css"]
-
 # Recompile theme CSS/JS on every build via sass/esbuild. Falls back to a
 # verbatim copy when those aren't on PATH.
 [assets]
