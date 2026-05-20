@@ -49,6 +49,14 @@ class NexMLIRCodegen:
   private val out             = new StringBuilder
   private var nextReg         = 0
   private val env             = mutable.Map.empty[Int, MlirVal]
+  /** `var` scalar bindings live in stack memrefs so that
+    * load-modify-store patterns and loop-mutated counters compile to
+    * the obvious code. Keyed by symbol id; the value carries the
+    * memref SSA name and the element type. Registered when a
+    * `var x = init` binding is emitted; consulted by both `TVarRef`
+    * (which loads) and `TAssign` (which stores).
+    */
+  private val varSlots        = mutable.Map.empty[Int, (String, MScalar)]
   /** Per-program registry of `@intrinsic("libm.X")` function symbols.
     * Populated at the start of [[compile]] by scanning every
     * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
@@ -319,6 +327,9 @@ class NexMLIRCodegen:
       out.append(s"  $r = arith.constant 0x7FF0000000000000 : f64\n")
       MlirVal(r, MScalar(TyReal))
 
+    case TVarRef(sym, _, _) if varSlots.contains(sym.id) =>
+      emitVarLoad(sym.id)
+
     case TVarRef(sym, _, _) =>
       env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))
 
@@ -492,6 +503,11 @@ class NexMLIRCodegen:
   private def emitBlockItem(it: TBlockItem): Unit = it match
     case TBlockBinding(sym, BindingKind.Val, value) =>
       env(sym.id) = emitExpr(value)
+    case TBlockBinding(sym, BindingKind.Var, value) =>
+      val v = emitExpr(value)
+      v.ty match
+        case s: MScalar => allocVarSlot(sym, v.reg, s)
+        case other      => notYet(s"var binding for ${sym.name} of type $other (only scalars supported)")
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
@@ -505,6 +521,10 @@ class NexMLIRCodegen:
       av.ty match
         case t @ MTensor(_, List(_)) => emitForArray(loopVars, av, t, body)
         case other                   => notYet(s"for over $other")
+    case TBlockExpr(TWhile(cond, body, _, _)) =>
+      emitWhile(cond, body)
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varSlots.contains(sym.id) =>
+      emitVarStore(sym.id, emitExpr(value))
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 
@@ -543,6 +563,55 @@ class NexMLIRCodegen:
     prev match
       case Some(v) => env(loopVar.id) = v
       case None    => env.remove(loopVar.id)
+    out.append("  }\n")
+
+  /** Allocate a stack slot for a `var <sym>` scalar binding and store
+    * the initial value. The slot lives in `varSlots` keyed by symbol
+    * id so later reads/writes can find it. Uses `memref.alloca` for
+    * stack-local lifetime — the kernel-stack region is large enough
+    * for any plausible number of var counters, and the slot is
+    * automatically reclaimed on function exit.
+    */
+  private def allocVarSlot(sym: Symbol, initReg: String, sty: MScalar): Unit =
+    val mrefT = s"memref<${sty.text}>"
+    val slot  = fresh(s"var_${sym.name}")
+    out.append(s"  $slot = memref.alloca() : $mrefT\n")
+    out.append(s"  memref.store $initReg, $slot[] : $mrefT\n")
+    varSlots(sym.id) = (slot, sty)
+
+  /** Read a `var` slot. Mirrors the existing `env`-lookup MlirVal
+    * shape so the rest of the visitor doesn't have to know that
+    * vars are different from vals.
+    */
+  private def emitVarLoad(symId: Int): MlirVal =
+    val (slot, sty) = varSlots(symId)
+    val r           = fresh("vr")
+    out.append(s"  $r = memref.load $slot[] : memref<${sty.text}>\n")
+    MlirVal(r, sty)
+
+  /** Store a new value into a `var` slot. The value's type must match
+    * the slot's element type — Nex's type system already guarantees
+    * this at TAssign sites, so no promotion is needed here.
+    */
+  private def emitVarStore(symId: Int, v: MlirVal): Unit =
+    val (slot, sty) = varSlots(symId)
+    out.append(s"  memref.store ${v.reg}, $slot[] : memref<${sty.text}>\n")
+
+  /** Statement-form `while cond do body` via `scf.while` with no
+    * iter_args. The cond region computes the predicate and yields
+    * it through `scf.condition`; the body region runs (reading and
+    * writing var slots as needed) and ends with a bare `scf.yield`.
+    * Mutable counters live in `var` memref slots — the load/store
+    * pattern makes the SSA story trivial since the data isn't
+    * threaded through region results.
+    */
+  private def emitWhile(cond: TExpr, body: TExpr): Unit =
+    out.append("  scf.while : () -> () {\n")
+    val cv = emitExpr(cond)
+    out.append(s"    scf.condition(${cv.reg})\n")
+    out.append("  } do {\n")
+    emitForBody(body)
+    out.append("    scf.yield\n")
     out.append("  }\n")
 
   /** Statement-form `for x in arr do body` over a rank-1 array. The

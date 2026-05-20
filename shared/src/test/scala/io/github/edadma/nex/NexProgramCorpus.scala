@@ -508,6 +508,7 @@ object NexProgramCorpus:
         |    i = i + 1
       """.stripMargin,
       "0\n1\n2\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -576,6 +577,7 @@ object NexProgramCorpus:
         |  print(s)
       """.stripMargin,
       "15\n",
+      mlir = true,
     ),
     Case(
       "control flow",
