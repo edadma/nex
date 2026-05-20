@@ -156,7 +156,8 @@ object MlirBackend extends Backend:
 
       shellOrFail(
         Seq(tool("clang"), "-O1", "-o", binFile.toPlatformString,
-            llFile.toPlatformString, rtFile.toPlatformString),
+            llFile.toPlatformString, rtFile.toPlatformString,
+            s"-L$llvmHome/lib", s"-Wl,-rpath,$llvmHome/lib", "-lmlir_c_runner_utils"),
         ctx = s"clang failed on:\n$src",
       )
 

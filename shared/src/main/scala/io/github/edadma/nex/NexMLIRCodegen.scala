@@ -504,6 +504,16 @@ class NexMLIRCodegen:
         case other =>
           notYet(s"rank-1 slice on $other")
 
+    case TSlice2(arr, rowAx, colAx, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(rows, cols)) =>
+          val rowSpec = axisToSlice(rowAx, rows)
+          val colSpec = axisToSlice(colAx, cols)
+          emitRank2Slice(av, t, rowSpec, colSpec)
+        case other =>
+          notYet(s"rank-2 slice on $other")
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -574,6 +584,52 @@ class NexMLIRCodegen:
       case Some(v) => env(loopVar.id) = v
       case None    => env.remove(loopVar.id)
     out.append("  }\n")
+
+  /** Resolved spec for one axis of a rank-2 slice. `offset` and `size`
+    * are the corresponding entries in the `tensor.extract_slice`
+    * offsets/sizes lists; `collapsed` is true when this axis was a
+    * single integer index (in which case the result tensor drops one
+    * rank — MLIR's `extract_slice` handles this via its
+    * rank-reducing form when the static size is 1).
+    */
+  private case class AxisSlice(offset: Int, size: Int, collapsed: Boolean)
+
+  /** Resolve a `TAxisSpec` to its concrete (offset, size, collapsed)
+    * triple given the corresponding source dimension extent. Only
+    * literal-bound axes are accepted — anything else surfaces as
+    * `notYet`.
+    */
+  private def axisToSlice(spec: TAxisSpec, dim: Int): AxisSlice = spec match
+    case TAxisAll =>
+      AxisSlice(offset = 0, size = dim, collapsed = false)
+    case TAxisIndex(TIntLit(v, _, _)) =>
+      AxisSlice(offset = v.toInt, size = 1, collapsed = true)
+    case TAxisRange(TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive) =>
+      val end = if inclusive then hi.toInt + 1 else hi.toInt
+      AxisSlice(offset = lo.toInt, size = math.max(0, end - lo.toInt), collapsed = false)
+    case other =>
+      notYet(s"rank-2 slice axis spec: ${other.getClass.getSimpleName} with non-literal bound")
+
+  /** Rank-2 `tensor.extract_slice` with literal offset/size on both
+    * axes. Output rank is `2 - (number of collapsed axes)`. When
+    * both axes are collapsed the result is a scalar — but that
+    * shape isn't reachable here because the elaborator emits a
+    * `TIndex` (not a `TSlice2`) for the two-integer-index form.
+    */
+  private def emitRank2Slice(av: MlirVal, srcTy: MTensor, rowSpec: AxisSlice, colSpec: AxisSlice): MlirVal =
+    val outShape = List(rowSpec, colSpec).collect {
+      case s if !s.collapsed => s.size
+    }
+    val outTy = MTensor(srcTy.elem, outShape)
+    if outShape.contains(0) then
+      val r = fresh("emp")
+      out.append(s"  $r = tensor.empty() : ${outTy.text}\n")
+      return MlirVal(r, outTy)
+    val r = fresh("sl2")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}[${rowSpec.offset}, ${colSpec.offset}] [${rowSpec.size}, ${colSpec.size}] [1, 1] : ${srcTy.text} to ${outTy.text}\n",
+    )
+    MlirVal(r, outTy)
 
   /** Rank-1 slice `a[lo..hi]` / `a[lo..=hi]` with literal bounds.
     * Lowers to `tensor.extract_slice` with a static offset / size /

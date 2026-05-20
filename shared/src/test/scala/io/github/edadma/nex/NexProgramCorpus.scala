@@ -1369,6 +1369,7 @@ object NexProgramCorpus:
         |  print(m[:, 1])
       """.stripMargin,
       "[2, 5]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1379,6 +1380,7 @@ object NexProgramCorpus:
         |  print(m[0, 0..2])
       """.stripMargin,
       "[1, 2]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1389,6 +1391,7 @@ object NexProgramCorpus:
         |  print(m[0..2, :])
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1399,6 +1402,7 @@ object NexProgramCorpus:
         |  print(m[0..2, 1..3])
       """.stripMargin,
       "[[2, 3], [5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1422,6 +1426,7 @@ object NexProgramCorpus:
         |  print(m[:, 0..=2])
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",

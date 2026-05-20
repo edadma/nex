@@ -241,7 +241,8 @@ object Cli:
       case 0 => ()
       case rc => return rc
     runProcess(s"clang -> $binPath",
-      Seq(tool("clang"), "-O1", "-o", binPath, llPath, runtimePath)) match
+      Seq(tool("clang"), "-O1", "-o", binPath, llPath, runtimePath,
+          s"-L$llvmHome/lib", s"-Wl,-rpath,$llvmHome/lib", "-lmlir_c_runner_utils")) match
       case 0 => println(s"nex: wrote $binPath"); 0
       case rc => rc
 
