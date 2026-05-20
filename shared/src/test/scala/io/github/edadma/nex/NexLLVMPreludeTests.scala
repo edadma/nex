@@ -269,6 +269,23 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """getelementptr inbounds %nex_arr1, ptr %t\d+, i32 0, i32 1"""
     }
 
+    "filter shrinks the result buffer down to the kept-element count" in {
+      val ir = compile("""
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5]
+        |  print(filter(xs, x -> x % 2 == 0))
+      """.stripMargin)
+      // The shrink emits a realloc on the buffer pointer, sized to
+      // `count * elem_size` (with a size=0 guard so the call stays
+      // well-defined when nothing matched). Without the shrink the
+      // buffer stays at worst-case input-length size.
+      ir should include("declare ptr @realloc(ptr, i64)")
+      ir should include regex """call ptr @realloc\(ptr %t\d+, i64 %t\d+\)"""
+      // The guard: select between `i64 1` and the raw byte count when
+      // the count is zero.
+      ir should include regex """select i1 %t\d+, i64 1, i64 %t\d+"""
+    }
+
     "map on rank-2 lowers to __nex_arr2_alloc + a flat counting loop" in {
       val ir = compile("""
         |def main() =
