@@ -144,6 +144,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare double @trunc(double)
         |declare i64 @llabs(i64)
         |declare double @copysign(double, double)
+        |declare double @hypot(double, double)
         |
         |; Trap messages mirror the interpreter's `NexTrap.msg` so a
         |; cross-backend `assert_traps(fn, "substring")` finds the same
@@ -233,6 +234,36 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %l  = call double @log(double %q)
         |  %r  = fmul double %l, 5.0e-01
         |  ret double %r
+        |}
+        |
+        |; Principal-branch complex square root, matching the interpreter's
+        |; sqrtV/sqrtComplexPair: mag = hypot(re, im); out_re = sqrt((mag+re)/2);
+        |; out_im = signum(im) * sqrt((mag-re)/2), with the branch-cut special
+        |; case (im==0 && re<0) → (0, sqrt(-re)). Returned as a { double, double }
+        |; aggregate matching Nex's complex value layout.
+        |define { double, double } @__nex_csqrt({ double, double } %z) {
+        |entry:
+        |  %re        = extractvalue { double, double } %z, 0
+        |  %im        = extractvalue { double, double } %z, 1
+        |  %mag       = call double @hypot(double %re, double %im)
+        |  %sum       = fadd double %mag, %re
+        |  %halfsum   = fmul double %sum, 5.0e-01
+        |  %out_re    = call double @sqrt(double %halfsum)
+        |  %diff      = fsub double %mag, %re
+        |  %halfdiff  = fmul double %diff, 5.0e-01
+        |  %abs_iout  = call double @sqrt(double %halfdiff)
+        |  %neg_iout  = fsub double 0.0, %abs_iout
+        |  %im_pos    = fcmp ogt double %im, 0.0
+        |  %signed_im = select i1 %im_pos, double %abs_iout, double %neg_iout
+        |  %neg_re    = fsub double 0.0, %re
+        |  %sqrt_negr = call double @sqrt(double %neg_re)
+        |  %re_neg    = fcmp olt double %re, 0.0
+        |  %branchcut = select i1 %re_neg, double %sqrt_negr, double 0.0
+        |  %im_zero   = fcmp oeq double %im, 0.0
+        |  %out_im    = select i1 %im_zero, double %branchcut, double %signed_im
+        |  %r0        = insertvalue { double, double } undef, double %out_re, 0
+        |  %r1        = insertvalue { double, double } %r0, double %out_im, 1
+        |  ret { double, double } %r1
         |}
         |
         |; Print a real value without a trailing newline. Matches the

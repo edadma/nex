@@ -777,4 +777,33 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       ti.opId shouldBe "libm.sqrt$real"
       ti.typeRefs shouldBe Nil
     }
+
+    "parser accepts [T: Complex] and elaborator binds KindConstraint.Complex" in {
+      val tp = elab("def f[T: Complex](x: T): T = x", runMonomorph = false)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Complex)
+      fn.returnType shouldBe TyKindVar("T", KindConstraint.Complex)
+    }
+
+    "Complex-constrained type param rejects real arg" in {
+      val errs = elabExpect("""
+        |def csq[T: Complex](x: T): T = x
+        |def use(): real = csq(2.0)
+      """.stripMargin)
+      errs.exists(e => e.contains("`T`") && e.contains("Complex")) shouldBe true
+    }
+
+    "monomorph mangles opId to libm.sqrt$complex for a Complex-constrained clone" in {
+      val tp = elab("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Complex](x: T): T
+        |def use(): complex = gsqrt(1.0 + 0i)
+      """.stripMargin)
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      funDecls.exists(_.sym.name == "gsqrt") shouldBe false
+      val clone = funDecls.find(_.sym.name == "gsqrt$complex").get
+      val ti    = clone.body.asInstanceOf[TIntrinsic]
+      ti.opId shouldBe "libm.sqrt$complex"
+      ti.typeRefs shouldBe Nil
+    }
   }

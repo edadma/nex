@@ -596,8 +596,9 @@ class NexElaborator
       case Some("Numeric")  => KindConstraint.Numeric
       case Some("Real")     => KindConstraint.Real
       case Some("Float")    => KindConstraint.Float
+      case Some("Complex")  => KindConstraint.Complex
       case Some(other)      =>
-        err(s"unknown kind constraint `$other` — supported: Any, Numeric, Real, Float", where)
+        err(s"unknown kind constraint `$other` — supported: Any, Numeric, Real, Float, Complex", where)
         KindConstraint.Any
 
   // ==========================================================================

@@ -1063,6 +1063,7 @@ protected trait NexElabInference extends NexElabState:
     case KindConstraint.Numeric => "Numeric"
     case KindConstraint.Real    => "Real"
     case KindConstraint.Float   => "Float"
+    case KindConstraint.Complex => "Complex"
 
   protected def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr =
     callee match

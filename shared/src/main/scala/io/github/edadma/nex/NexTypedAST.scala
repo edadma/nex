@@ -59,6 +59,7 @@ enum KindConstraint:
   case Numeric
   case Real
   case Float
+  case Complex
 
   /** The concrete types this constraint admits, in the current v0 type
     * world. `real`/`real64` are the same physical type until split-precision
@@ -74,6 +75,7 @@ enum KindConstraint:
     case (Real,    TyInteger) => true
     case (Real,    TyReal)    => true
     case (Float,   TyReal)    => true
+    case (Complex, TyComplex) => true
     case _                    => false
 
 // ============================================================================

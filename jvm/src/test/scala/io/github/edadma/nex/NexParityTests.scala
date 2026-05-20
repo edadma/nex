@@ -931,6 +931,36 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "2.0000000000000004\n",
     )
+
+    // Stage 3-δ piece 1 — Complex constraint extends the per-kind
+    // dispatch from γ. `[T: Complex]` admits only TyComplex; the
+    // monomorph clone carries opId `libm.sqrt$complex` and bridges to
+    // a complex-aware kernel (interpreter: complexUnary + sqrtComplexPair;
+    // LLVM: __nex_csqrt aggregate-returning runtime helper).
+    "Complex-constrained sqrt: real-positive in, exact real out" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Complex](x: T): T
+        |def main() = print(gsqrt(1.0 + 0i))
+      """.stripMargin,
+      "1.0+0.0i\n",
+    )
+    "Complex-constrained sqrt: branch cut at the negative real axis" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Complex](x: T): T
+        |def main() = print(gsqrt(-1.0 + 0i))
+      """.stripMargin,
+      "0.0+1.0i\n",
+    )
+    "Complex-constrained sqrt: principal sqrt of pure-imaginary" in parityCheck(
+      """
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Complex](x: T): T
+        |def main() = print(gsqrt(0.0 + 2i))
+      """.stripMargin,
+      "1.0+1.0i\n",
+    )
   }
 
   "rank-1 prelude reductions" should {

@@ -254,6 +254,13 @@ class NexLLVMCodegen
         emitLine(s"  $reg = call double @sqrt(double %arg0)\n")
         emitTerminator(s"  ret double $reg\n")
 
+      case "libm.sqrt$complex" =>
+        if params.size != 1 then
+          throw new RuntimeException(s"libm.sqrt$$complex expects 1 param, got ${params.size}")
+        val reg = newReg()
+        emitLine(s"  $reg = call { double, double } @__nex_csqrt({ double, double } %arg0)\n")
+        emitTerminator(s"  ret { double, double } $reg\n")
+
       case other =>
         throw new RuntimeException(
           s"intrinsic `$other` has no LLVM implementation — register one in NexLLVMCodegen.emitIntrinsicBody",
@@ -282,6 +289,12 @@ class NexLLVMCodegen
         val xv  = liftToRealForIntrinsic(args.head)
         val reg = newReg()
         emitLine(s"  $reg = call double @${libmUnaryName(opId)}(double $xv)\n")
+        reg
+
+      case "libm.sqrt$complex" =>
+        val zv  = emitExpr(args.head)
+        val reg = newReg()
+        emitLine(s"  $reg = call { double, double } @__nex_csqrt({ double, double } $zv)\n")
         reg
 
       case "libm.atan2" =>

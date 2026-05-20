@@ -44,6 +44,7 @@ object NexIntrinsics:
     // lookup. Each kind a constraint admits requires its entry here
     // and in every backend dispatch table.
     "libm.sqrt$real",
+    "libm.sqrt$complex",
   )
 
   /** Throw if `opId` is not a known intrinsic. Use this at the top of each

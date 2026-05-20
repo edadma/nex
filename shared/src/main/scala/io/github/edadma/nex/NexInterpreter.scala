@@ -984,7 +984,8 @@ class NexInterpreter:
       // emits one per concrete kind admitted by the source decl's
       // constraint (Float → real today; widening to other constraints
       // adds an entry per kind they admit).
-      "libm.sqrt$real" -> realUnary("libm.sqrt$real", math.sqrt),
+      "libm.sqrt$real"    -> realUnary("libm.sqrt$real", math.sqrt),
+      "libm.sqrt$complex" -> complexUnary("libm.sqrt$complex", sqrtComplexPair),
     )
 
   /** Bridge a unary real → real libm function into the intrinsic
@@ -1001,6 +1002,36 @@ class NexInterpreter:
         case List(VReal(x)) => VReal(f(x))
         case _              =>
           trap(s"$opId: expected real argument, got ${args.map(formatValue).mkString(", ")}", p)
+
+  /** Bridge a unary complex → complex function into the intrinsic
+    * dispatch table. The kernel receives the value's (re, im) pair and
+    * returns the result as another (re, im) pair. Used by Stage 3-δ
+    * complex-kinded specialized intrinsics (`libm.sqrt$complex`, etc.).
+    */
+  private def complexUnary(
+      opId: String,
+      f:    (Double, Double) => (Double, Double),
+  ): (List[Value], Option[scala.util.parsing.input.Position]) => Value =
+    (args, p) =>
+      args match
+        case List(VComplex(re, im)) =>
+          val (ro, io) = f(re, im)
+          VComplex(ro, io)
+        case _ =>
+          trap(s"$opId: expected complex argument, got ${args.map(formatValue).mkString(", ")}", p)
+
+  /** Principal-branch complex square root in (re, im) form. Matches
+    * [[sqrtV]]'s VComplex arm — the shared formula lifted out so the
+    * intrinsic dispatcher and the legacy `sqrt` prelude entry agree on
+    * the branch cut at the negative real axis.
+    */
+  private def sqrtComplexPair(re: Double, im: Double): (Double, Double) =
+    val mag  = math.hypot(re, im)
+    val rOut = math.sqrt((mag + re) / 2)
+    val iOut =
+      if im == 0 && re < 0 then math.sqrt(-re)
+      else math.signum(im) * math.sqrt((mag - re) / 2)
+    (rOut, iOut)
 
   /** Mode-aware user-function call. For each `mut` parameter whose
     * call-site argument is a [[TVarRef]] (or projection thereof) the
