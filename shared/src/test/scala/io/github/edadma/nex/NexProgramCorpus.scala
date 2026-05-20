@@ -1457,7 +1457,6 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "42\n",
-      pending = Some("AOT mut-by-ref: callee writes don't reach caller's slot — needs by-ref ABI"),
     ),
     Case(
       "mut by-ref",
@@ -1472,7 +1471,6 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "28\n",
-      pending = Some("AOT mut-by-ref ABI gap (see `bump` case above)"),
     ),
     Case(
       "mut by-ref",
@@ -1491,7 +1489,6 @@ object NexProgramCorpus:
         |  print(y)
       """.stripMargin,
       "2\n1\n",
-      pending = Some("AOT mut-by-ref ABI gap"),
     ),
     Case(
       "mut by-ref",
@@ -1506,7 +1503,6 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "105\n",
-      pending = Some("AOT mut-by-ref ABI gap (nested forwarding)"),
     ),
     Case(
       "mut by-ref",
@@ -1536,7 +1532,6 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "3\n",
-      pending = Some("AOT mut-by-ref ABI gap (param name shadowing)"),
     ),
 
     // ========================================================================
