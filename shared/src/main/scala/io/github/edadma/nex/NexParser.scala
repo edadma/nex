@@ -165,10 +165,18 @@ class NexParser extends StandardTokenParsers with PackratParsers:
                    typeParams = tps.getOrElse(Nil))
     }
 
+  /** A function-declaration parameter. Optional `= <expr>` after the
+    * type annotation supplies a default value (spec §6.5); the default
+    * is captured untouched and re-elaborated at each call site that
+    * uses it. The grammar is parser-permissive — defaults may appear
+    * anywhere in the list — but the elaborator enforces that defaulted
+    * params appear at the end (so positional callers can omit only a
+    * trailing run).
+    */
   lazy val funParam: PackratParser[FunParam] =
-    ident ~ ":" ~ opt("mut") ~ typeExpr ^^ {
-      case n ~ _ ~ mut ~ t =>
-        FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read)
+    ident ~ ":" ~ opt("mut") ~ typeExpr ~ opt("=" ~> exprNoTuple) ^^ {
+      case n ~ _ ~ mut ~ t ~ d =>
+        FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read, d)
     }
 
   /** Optional type-parameter list on a generic def head: `[T]` for an
@@ -569,9 +577,20 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     callTail | indexTail | dotTail
 
   lazy val callTail: PackratParser[ExprAST => ExprAST] =
-    "(" ~> repsep(exprNoTuple, ",") <~ ")" ^^ { args =>
+    "(" ~> repsep(callArg, ",") <~ ")" ^^ { args =>
       (recv: ExprAST) => CallExpr(recv, args)
     }
+
+  /** A single position in a call's argument list. Either a positional
+    * expression or `name = <expr>` for the named-argument form (spec
+    * §6.5). The parser commits to "named" only when an identifier is
+    * immediately followed by `=`; otherwise it falls back to a plain
+    * `exprNoTuple` (which itself may start with an identifier and
+    * continue as a normal expression).
+    */
+  lazy val callArg: PackratParser[ExprAST] =
+    (ident <~ "=") ~ exprNoTuple ^^ { case n ~ v => NamedArg(n, v) } |
+    exprNoTuple
 
   lazy val indexTail: PackratParser[ExprAST => ExprAST] =
     "[" ~> rep1sep(indexElem, ",") <~ "]" ^^ { ixs =>
@@ -591,7 +610,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * node so the analyzer can decide field-vs-method per §4.9.
     */
   lazy val dotTail: PackratParser[ExprAST => ExprAST] =
-    "." ~> ident ~ opt("(" ~> repsep(exprNoTuple, ",") <~ ")") ^^ {
+    "." ~> ident ~ opt("(" ~> repsep(callArg, ",") <~ ")") ^^ {
       case name ~ None       => (recv: ExprAST) => FieldExpr(recv, name)
       case name ~ Some(args) => (recv: ExprAST) => MethodCallExpr(recv, name, args)
     }

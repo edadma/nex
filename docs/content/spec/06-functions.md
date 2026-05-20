@@ -41,7 +41,7 @@ def factorial(n: integer): integer =
 
 ## 6.3 Parameters
 
-Each parameter is declared with `name: type`. Default values are *deferred*. Named arguments at call sites are *deferred*.
+Each parameter is declared with `name: type`. An optional `= default` clause supplies a value to use when the caller omits the argument (see §6.5).
 
 ## 6.4 Parameter modes
 
@@ -65,7 +65,47 @@ Mode mismatches at call sites:
 
 Modes apply only to array and struct types. Scalar parameters (`integer`, `real`, `bool`, `complex`, `unit`) are always pass-by-value.
 
-## 6.5 Closures
+## 6.5 Default values and named arguments
+
+A parameter may carry a default expression in its declaration:
+
+```nex
+def greet(name: string, greeting: string = "Hello") =
+  print(s"${greeting}, ${name}!")
+
+def scale(x: real, factor: real = 2.0, offset: real = 0.0) =
+  factor * x + offset
+```
+
+Default-valued parameters must form a **contiguous trailing run** — once one parameter has a default, every later parameter must also have one. This guarantees that a positional caller can simply drop trailing arguments.
+
+```nex
+greet("World")                 // "Hello, World!" — greeting defaulted
+scale(10.0)                    //  20.0 — factor + offset defaulted
+scale(10.0, 3.0)               //  30.0 — offset defaulted
+```
+
+**Named arguments** at the call site identify a parameter by name with `name = expr`. Named arguments may appear in any order, may skip over middle parameters that have defaults, and must come *after* any positional arguments:
+
+```nex
+greet(name = "Nex")                            // "Hello, Nex!"
+greet(greeting = "Hi", name = "Foo")           // "Hi, Foo!"
+scale(10.0, offset = 5.0)                      //  25.0 — factor defaulted
+scale(10.0, factor = 7.0, offset = 2.0)        //  72.0
+```
+
+Resolution rule (compile-time):
+
+1. All positional arguments fill leading parameter positions in order.
+2. Each named argument fills the parameter slot matching its name.
+3. Any unfilled slot uses that parameter's declared default; an unfilled slot whose parameter has no default is a compile error.
+4. Supplying the same parameter twice (positional + named, or named twice) is a compile error.
+
+The default expression is **captured untouched at declaration time and re-evaluated at every call site that uses it** (Scala / JavaScript semantics, not Python's evaluate-once). A default like `id: integer = next_id()` calls `next_id()` fresh on each call.
+
+**Restrictions.** Defaults and named arguments are only supported when the callee is a single, non-overloaded `def` referenced by name. Overload sets (multiple `def`s sharing a name) require fully-positional calls. Computed callees (lambda values, function-typed parameters, returned closures) likewise require positional arguments. Method-call syntax (`receiver.f(args)`) does not yet support named arguments — use the function-call form `f(receiver, ...)` if you need them.
+
+## 6.6 Closures
 
 Function values may be created with lambda syntax (chapter 4) and passed as arguments or returned from functions:
 
@@ -79,7 +119,7 @@ add5(3.0)                    // 8.0
 
 Closures capture lexical bindings. Capture of `val` bindings is unrestricted. Capture of `var` array bindings moves the binding into the closure (uniqueness preserved).
 
-## 6.6 Higher-order functions
+## 6.7 Higher-order functions
 
 Functions are first-class values. They may be passed as arguments and returned from other functions:
 
@@ -89,11 +129,11 @@ apply(square, 3.0)           // 9.0
 apply(x -> x + 1.0, 3.0)     // 4.0
 ```
 
-## 6.7 Recursion
+## 6.8 Recursion
 
 Direct and mutual recursion are supported. Mutually-recursive functions must appear in the same module; forward declarations are not required.
 
-## 6.8 `return`
+## 6.9 `return`
 
 The `return` expression terminates the enclosing function with the given value (or `()` if omitted). It is useful for early exit:
 
@@ -107,7 +147,7 @@ def first_negative(v: [real]) =
 
 A function's final expression provides its return value implicitly without `return`.
 
-## 6.9 `@intrinsic` declarations
+## 6.10 `@intrinsic` declarations
 
 A bodyless `def` annotated with `@intrinsic("opId")` declares a function whose implementation is supplied by the compiler — typically a libm bridge or a runtime helper — rather than by Nex source. The `opId` string names the lowering: `@intrinsic("libm.sqrt")` lowers to a direct call to the host's libm `sqrt` primitive.
 
@@ -118,7 +158,7 @@ def sqrt(x: real): real
 
 This is how the standard prelude bridges the real-libm transcendentals (see the Prelude chapter); user code generally has no reason to write `@intrinsic` directly. The attribute is the only sanctioned escape hatch — any other bodyless `def` is a parse error.
 
-## 6.10 Test functions
+## 6.11 Test functions
 
 A function declared with the `@test` attribute is a unit test: it takes no arguments, returns `unit`, and is discovered automatically by the test runner.
 

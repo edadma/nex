@@ -113,6 +113,21 @@ protected trait NexElabState:
     */
   protected val mutableSymIds = mutable.Set.empty[Int]
 
+  /** Function symbol id → parallel list of optional default expressions,
+    * one entry per parameter (None when the param has no default). Spec
+    * §6.5: defaults are captured untouched at decl time and substituted
+    * into the call site's argument list when a positional caller omits
+    * them or a named caller doesn't supply them. Re-elaborated per call
+    * so each call evaluates the default fresh. Populated in `elabFun`.
+    */
+  protected val paramDefaults = mutable.Map.empty[Int, List[Option[ExprAST]]]
+
+  /** Function symbol id → parallel list of parameter names. Used by the
+    * call-site resolver to map `name = expr` (NamedArg) to its position
+    * in the param list. Populated in `elabFun`.
+    */
+  protected val paramNames = mutable.Map.empty[Int, List[String]]
+
   /** Symbol id → TLambda value, for every `val/var = lambda` binding whose
     * lambda has any `TyUnknown` param. Populated by inferTopBinding /
     * inferBlockItem. Consumed by [[inferArg]] when a TVarRef to such a

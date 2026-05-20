@@ -725,6 +725,66 @@ object NexProgramCorpus:
     ),
     Case(
       "functions",
+      "default parameter values are filled when omitted",
+      """
+        |def scale(x: real, factor: real = 2.0, offset: real = 0.0) =
+        |  print(factor * x + offset)
+        |def main() =
+        |  scale(10.0)
+        |  scale(10.0, 3.0)
+        |  scale(10.0, 5.0, 1.0)
+      """.stripMargin,
+      "20.0\n30.0\n51.0\n",
+    ),
+    Case(
+      "functions",
+      "named arguments resolve to positions in any order",
+      """
+        |def greet(name: string, greeting: string = "Hello") =
+        |  print(s"${greeting}, ${name}!")
+        |def main() =
+        |  greet("World")
+        |  greet(name = "Nex")
+        |  greet(greeting = "Hi", name = "Foo")
+        |  greet("Bar", greeting = "Yo")
+      """.stripMargin,
+      "Hello, World!\nHello, Nex!\nHi, Foo!\nYo, Bar!\n",
+    ),
+    Case(
+      "functions",
+      "named arg fills a non-trailing slot, default fills the rest",
+      """
+        |def scale(x: real, factor: real = 2.0, offset: real = 0.0) =
+        |  print(factor * x + offset)
+        |def main() =
+        |  scale(10.0, offset = 5.0)
+        |  scale(10.0, factor = 7.0)
+      """.stripMargin,
+      "25.0\n70.0\n",
+    ),
+    Case(
+      "functions",
+      "default expression is re-evaluated at every call site",
+      // The default is captured untouched and re-evaluated per call —
+      // observable here because `next_id()` increments a top-level
+      // counter and the default reads it fresh on each call.
+      """
+        |var counter = 0
+        |def next_id(): integer =
+        |  counter = counter + 1
+        |  counter
+        |def tag(prefix: string, id: integer = next_id()) =
+        |  print(s"${prefix}-${id}")
+        |def main() =
+        |  tag("a")
+        |  tag("b")
+        |  tag("c", 99)
+        |  tag("d")
+      """.stripMargin,
+      "a-1\nb-2\nc-99\nd-3\n",
+    ),
+    Case(
+      "functions",
       "recursion (fact)",
       """
         |def fact(n: integer): integer =
