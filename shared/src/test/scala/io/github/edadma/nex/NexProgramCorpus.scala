@@ -257,6 +257,33 @@ object NexProgramCorpus:
       """.stripMargin,
       "true\n",
     ),
+    Case(
+      "comparison + logical",
+      "IEEE: every relational op with NaN returns false",
+      """
+        |def main() =
+        |  val x = nan
+        |  print(x < x)
+        |  print(x <= x)
+        |  print(x > x)
+        |  print(x >= x)
+        |  print(x == x)
+        |  print(x != x)
+      """.stripMargin,
+      "false\nfalse\nfalse\nfalse\nfalse\ntrue\n",
+    ),
+    Case(
+      "comparison + logical",
+      "IEEE: -0.0 and +0.0 compare equal, neither less nor greater",
+      """
+        |def main() =
+        |  val x = -0.0
+        |  print(x == 0.0)
+        |  print(x < 0.0)
+        |  print(x > 0.0)
+      """.stripMargin,
+      "true\nfalse\nfalse\n",
+    ),
 
     // ========================================================================
     // control flow
@@ -407,6 +434,30 @@ object NexProgramCorpus:
         |  print(f(4))
       """.stripMargin,
       "-1\n8\n",
+    ),
+    Case(
+      "control flow",
+      "array of lambdas — each closure fits in 16-byte slots",
+      """
+        |def main() =
+        |  val fs = [(x: integer) -> x + 1, (x: integer) -> x * 2, (x: integer) -> x - 1]
+        |  for f in fs do
+        |    print(f(10))
+      """.stripMargin,
+      "11\n20\n9\n",
+    ),
+    Case(
+      "control flow",
+      "rank-2 single-index returns the row as a rank-1 array",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m[0])
+        |  print(m[1])
+        |  print(m[1][0])
+        |  print(m[0][1])
+      """.stripMargin,
+      "[1, 2]\n[3, 4]\n3\n2\n",
     ),
 
     // ========================================================================

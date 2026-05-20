@@ -1104,10 +1104,15 @@ class NexInterpreter:
       case "^"   => powV(l, r)
       case "=="  => VBool(valueEq(l, r))
       case "!="  => VBool(!valueEq(l, r))
-      case "<"   => VBool(cmpNum(l, r) < 0)
-      case "<="  => VBool(cmpNum(l, r) <= 0)
-      case ">"   => VBool(cmpNum(l, r) > 0)
-      case ">="  => VBool(cmpNum(l, r) >= 0)
+      // Ordered comparisons follow IEEE-754: every relational op with
+      // NaN on either side returns false. `cmpNum` is the total-order
+      // helper used by min/max where NaN handling is implementation-
+      // defined; using it for `<`/`<=`/`>`/`>=` would silently treat
+      // NaN as the largest value, contradicting the spec.
+      case "<"   => VBool(ordLt(l, r))
+      case "<="  => VBool(ordLe(l, r))
+      case ">"   => VBool(ordGt(l, r))
+      case ">="  => VBool(ordGe(l, r))
       case ".."  => rangeV(l, r, inclusive = false, p)
       case "..=" => rangeV(l, r, inclusive = true, p)
       case _     => trap(s"unknown binary op `$op`", p)
@@ -1214,6 +1219,40 @@ class NexInterpreter:
     case (VInt(x), VReal(y))  => java.lang.Double.compare(x.toDouble, y)
     case (VReal(x), VInt(y))  => java.lang.Double.compare(x, y.toDouble)
     case (VReal(x), VReal(y)) => java.lang.Double.compare(x, y)
+    case _ => throw new NexTrap(s"cannot order ${formatValue(a)} and ${formatValue(b)}", None)
+
+  /** IEEE-754 ordered relational helpers — used by the spec's `<` / `<=` /
+    * `>` / `>=` operators. Any comparison with NaN returns false; `-0.0`
+    * and `+0.0` compare equal (neither less than nor greater than). For
+    * integer-only operand pairs we delegate to Scala's primitive
+    * comparisons which match IEEE for the int-to-double promotion path.
+    */
+  private def ordLt(a: Value, b: Value): Boolean = (a, b) match
+    case (VInt(x), VInt(y))   => x < y
+    case (VInt(x), VReal(y))  => x.toDouble < y
+    case (VReal(x), VInt(y))  => x < y.toDouble
+    case (VReal(x), VReal(y)) => x < y
+    case _ => throw new NexTrap(s"cannot order ${formatValue(a)} and ${formatValue(b)}", None)
+
+  private def ordLe(a: Value, b: Value): Boolean = (a, b) match
+    case (VInt(x), VInt(y))   => x <= y
+    case (VInt(x), VReal(y))  => x.toDouble <= y
+    case (VReal(x), VInt(y))  => x <= y.toDouble
+    case (VReal(x), VReal(y)) => x <= y
+    case _ => throw new NexTrap(s"cannot order ${formatValue(a)} and ${formatValue(b)}", None)
+
+  private def ordGt(a: Value, b: Value): Boolean = (a, b) match
+    case (VInt(x), VInt(y))   => x > y
+    case (VInt(x), VReal(y))  => x.toDouble > y
+    case (VReal(x), VInt(y))  => x > y.toDouble
+    case (VReal(x), VReal(y)) => x > y
+    case _ => throw new NexTrap(s"cannot order ${formatValue(a)} and ${formatValue(b)}", None)
+
+  private def ordGe(a: Value, b: Value): Boolean = (a, b) match
+    case (VInt(x), VInt(y))   => x >= y
+    case (VInt(x), VReal(y))  => x.toDouble >= y
+    case (VReal(x), VInt(y))  => x >= y.toDouble
+    case (VReal(x), VReal(y)) => x >= y
     case _ => throw new NexTrap(s"cannot order ${formatValue(a)} and ${formatValue(b)}", None)
 
   private def valueEq(a: Value, b: Value): Boolean = (a, b) match
