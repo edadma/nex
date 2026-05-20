@@ -341,6 +341,8 @@ class NexMLIRCodegen:
       (lv.ty, rv.ty) match
         case (lt: MTensor, rt: MTensor) if lt == rt =>
           emitElementWiseBinop(op, lv, rv, lt)
+        case (lt: MTensor, rt: MTensor) if lt.shape == rt.shape =>
+          emitElementWiseMixed(op, lv, rv, lt, rt)
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
 
@@ -359,6 +361,8 @@ class NexMLIRCodegen:
       (sv.ty, av.ty) match
         case (MScalar(st), t @ MTensor(et, _)) if st == et =>
           emitBroadcast(op, sv, av, t, scalarFirst)
+        case (MScalar(st), t @ MTensor(et, _)) =>
+          emitBroadcastMixed(op, sv, av, t, scalarFirst, st, et)
         case (sty, aty) =>
           notYet(s"broadcast $op on $sty and $aty")
 
@@ -910,6 +914,75 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : $scalar\n")
     out.append("    }\n")
     MlirVal(outR, ty)
+
+  /** Element-wise arithmetic on tensors of matching shape but mismatched
+    * element types (e.g. `[int] + [real]`). The wider numeric type is
+    * the result element type; each loaded element is promoted to that
+    * type via `arith.sitofp` inside the region body before the binop
+    * runs. Mirrors `emitElementWiseComparison` but yields a numeric
+    * tensor rather than a bool tensor.
+    */
+  private def emitElementWiseMixed(op: String, lv: MlirVal, rv: MlirVal, lt: MTensor, rt: MTensor): MlirVal =
+    val lElem    = lt.elem
+    val rElem    = rt.elem
+    val commonT  = if lElem == TyReal || rElem == TyReal then TyReal else TyInteger
+    val commonS  = scalarText(commonT)
+    val outTy    = MTensor(commonT, lt.shape)
+    val opName   = scalarBinop(op, commonT)
+    val initR    = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("ewm")
+    out.append(
+      s"  $outR = linalg.map ins(${lv.reg}, ${rv.reg} : ${lt.text}, ${rt.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(lElem)}, %b: ${scalarText(rElem)}, %_o: $commonS) {\n")
+    val aName = promoteInRegion("%a", lElem, commonT)
+    val bName = promoteInRegion("%b", rElem, commonT)
+    out.append(s"      %s = $opName $aName, $bName : $commonS\n")
+    out.append(s"      linalg.yield %s : $commonS\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** Scalar-against-tensor arithmetic broadcast when the scalar's
+    * element type doesn't match the tensor's (e.g. `2 + [1.0, 2.0]`).
+    * The scalar is promoted once outside the map body if needed; the
+    * per-element promotion of the loaded tensor element happens
+    * inside the region body. Output element type is the wider common
+    * type. `scalarFirst` controls operand order for non-commutative
+    * ops.
+    */
+  private def emitBroadcastMixed(
+      op: String,
+      sv: MlirVal,
+      av: MlirVal,
+      ty: MTensor,
+      scalarFirst: Boolean,
+      scalarElem: Type,
+      arrElem: Type,
+  ): MlirVal =
+    val commonT = if scalarElem == TyReal || arrElem == TyReal then TyReal else TyInteger
+    val commonS = scalarText(commonT)
+    val opName  = scalarBinop(op, commonT)
+    val svPromoted =
+      if scalarElem == commonT then sv.reg
+      else
+        val r = fresh("ps")
+        out.append(s"  $r = arith.sitofp ${sv.reg} : ${scalarText(scalarElem)} to $commonS\n")
+        r
+    val outTy = MTensor(commonT, ty.shape)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("bcm")
+    out.append(
+      s"  $outR = linalg.map ins(${av.reg} : ${ty.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(arrElem)}, %_o: $commonS) {\n")
+    val elemName = promoteInRegion("%a", arrElem, commonT)
+    val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
+    out.append(s"      %s = $opName $lhs, $rhs : $commonS\n")
+    out.append(s"      linalg.yield %s : $commonS\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
 
   /** Element-wise comparison: `xs < ys`, `xs == ys`, etc. Output element
     * type is always `i1`. Mixed-element-type inputs (`[int] < [real]`)
