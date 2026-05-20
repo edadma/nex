@@ -165,10 +165,18 @@ class NexParser extends StandardTokenParsers with PackratParsers:
                    typeParams = tps.getOrElse(Nil))
     }
 
+  /** A function-declaration parameter. Optional `= <expr>` after the
+    * type annotation supplies a default value (spec §6.5); the default
+    * is captured untouched and re-elaborated at each call site that
+    * uses it. The grammar is parser-permissive — defaults may appear
+    * anywhere in the list — but the elaborator enforces that defaulted
+    * params appear at the end (so positional callers can omit only a
+    * trailing run).
+    */
   lazy val funParam: PackratParser[FunParam] =
-    ident ~ ":" ~ opt("mut") ~ typeExpr ^^ {
-      case n ~ _ ~ mut ~ t =>
-        FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read)
+    ident ~ ":" ~ opt("mut") ~ typeExpr ~ opt("=" ~> exprNoTuple) ^^ {
+      case n ~ _ ~ mut ~ t ~ d =>
+        FunParam(n, t, if mut.isDefined then ParamMode.Mut else ParamMode.Read, d)
     }
 
   /** Optional type-parameter list on a generic def head: `[T]` for an
@@ -277,7 +285,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * that's the analyzer's job.
     */
   lazy val endMarker: PackratParser[Any] =
-    "end" ~> opt(ident | "if" | "for" | "while" | "do" | "def" | "struct" | "module")
+    "end" ~> opt(ident | "if" | "for" | "while" | "do" | "def" | "struct" | "module" | "match")
 
   /** End marker preceded by one or more Newlines. Used after a block whose
     * Dedent already emitted a Newline (since `newlineAfterDedent = true`).
@@ -422,8 +430,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   /** An expression at the level where commas are NOT consumed (used inside
     * function arguments, array literals, etc.). Lambdas, `or`, `and`, ...
     * down through application sit below this.
+    *
+    * A postfix `match` may follow any non-tuple expression (spec §7.5).
+    * The trailer is optional; without it the underlying `arrowExpr`
+    * flows through unchanged. With it, the trailer wraps the whole
+    * left-hand side in a [[MatchExpr]] scrutinee.
     */
-  lazy val exprNoTuple: PackratParser[ExprAST] = arrowExpr
+  lazy val exprNoTuple: PackratParser[ExprAST] =
+    arrowExpr ~ opt(("match" ~> matchCases) ~ opt(trailingEnd)) ^^ {
+      case e ~ None              => e
+      case e ~ Some(cs ~ _)      => MatchExpr(e, cs)
+    }
 
   /** Lambdas — `param-shape -> body`. Right-associative: `x -> y -> z`
     * parses as `x -> (y -> z)`. Body may be a single expression OR a
@@ -560,9 +577,20 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     callTail | indexTail | dotTail
 
   lazy val callTail: PackratParser[ExprAST => ExprAST] =
-    "(" ~> repsep(exprNoTuple, ",") <~ ")" ^^ { args =>
+    "(" ~> repsep(callArg, ",") <~ ")" ^^ { args =>
       (recv: ExprAST) => CallExpr(recv, args)
     }
+
+  /** A single position in a call's argument list. Either a positional
+    * expression or `name = <expr>` for the named-argument form (spec
+    * §6.5). The parser commits to "named" only when an identifier is
+    * immediately followed by `=`; otherwise it falls back to a plain
+    * `exprNoTuple` (which itself may start with an identifier and
+    * continue as a normal expression).
+    */
+  lazy val callArg: PackratParser[ExprAST] =
+    (ident <~ "=") ~ exprNoTuple ^^ { case n ~ v => NamedArg(n, v) } |
+    exprNoTuple
 
   lazy val indexTail: PackratParser[ExprAST => ExprAST] =
     "[" ~> rep1sep(indexElem, ",") <~ "]" ^^ { ixs =>
@@ -582,7 +610,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * node so the analyzer can decide field-vs-method per §4.9.
     */
   lazy val dotTail: PackratParser[ExprAST => ExprAST] =
-    "." ~> ident ~ opt("(" ~> repsep(exprNoTuple, ",") <~ ")") ^^ {
+    "." ~> ident ~ opt("(" ~> repsep(callArg, ",") <~ ")") ^^ {
       case name ~ None       => (recv: ExprAST) => FieldExpr(recv, name)
       case name ~ Some(args) => (recv: ExprAST) => MethodCallExpr(recv, name, args)
     }
@@ -591,7 +619,6 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   lazy val primaryExpr: PackratParser[ExprAST] =
     ifExpr                                                       |
-    matchExpr                                                    |
     forExpr                                                      |
     whileExpr                                                    |
     returnExpr                                                   |
@@ -661,29 +688,26 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   // --- match expression --------------------------------------------------
   //
-  // Surface form:
+  // Surface form (postfix):
   //
-  //   match s
-  //     case Converged(x)      => x
-  //     case Diverged          => -1.0
-  //     case MaxIters(n, last) => last
+  //   s match
+  //     Converged(x)      -> x
+  //     Diverged          -> -1.0
+  //     MaxIters(n, last) -> last
+  //   end match            // optional
   //
-  // Arms live on indented lines after the scrutinee. Each arm body is
-  // either an inline expression (after `=>`) or — if the inline expr is
-  // omitted — a Newline-Indent block. A trailing `case _ => ...` covers
-  // the otherwise-unhandled cases; the elaborator only requires one if
+  // The scrutinee sits to the LEFT of the `match` keyword (Scala 3 / Kotlin
+  // / Rust trailing-form). Arms live on indented lines after `match`. Each
+  // arm is `pattern -> body` — body is either an inline expression or an
+  // indented block via `branchBody`. A trailing `_ -> ...` covers the
+  // otherwise-unhandled cases; the elaborator only requires one if
   // explicit variant coverage is incomplete.
-
-  lazy val matchExpr: PackratParser[ExprAST] =
-    ("match" ~> exprNoTuple) ~ matchCases ~ opt(trailingEnd) ^^ {
-      case s ~ cs ~ _ => MatchExpr(s, cs)
-    }
 
   lazy val matchCases: PackratParser[List[MatchCase]] =
     Newline ~> Indent ~> rep1sep(matchCase, stmtSep) <~ stmtSepOpt <~ Dedent
 
   lazy val matchCase: PackratParser[MatchCase] =
-    positioned(("case" ~> casePattern) ~ ("=>" ~> branchBody) ^^ {
+    positioned(casePattern ~ ("->" ~> branchBody) ^^ {
       case p ~ b => MatchCase(p, b)
     })
 

@@ -468,8 +468,8 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |
         |def main() =
         |  val c: Color = Red
-        |  match c
-        |    case Red => print("red")
+        |  c match
+        |    Red -> print("red")
       """.stripMargin)
       errs.mkString(";") should include("non-exhaustive")
     }
@@ -482,10 +482,10 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |
         |def main() =
         |  val c: Color = Red
-        |  match c
-        |    case Red   => print(1)
-        |    case Red   => print(2)
-        |    case Green => print(3)
+        |  c match
+        |    Red   -> print(1)
+        |    Red   -> print(2)
+        |    Green -> print(3)
       """.stripMargin)
       errs.mkString(";") should include("duplicate")
     }
@@ -498,9 +498,9 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
         |
         |def main() =
         |  val s: Solver = Diverged
-        |  match s
-        |    case Converged(a, b) => print(a)
-        |    case Diverged        => print(0)
+        |  s match
+        |    Converged(a, b) -> print(a)
+        |    Diverged        -> print(0)
       """.stripMargin)
       errs.mkString(";") should include("expects 1 field")
     }
@@ -509,8 +509,8 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       val errs = elaborateExpectingErrors("""
         |def main() =
         |  val n: integer = 3
-        |  match n
-        |    case x => print(x)
+        |  n match
+        |    x -> print(x)
       """.stripMargin)
       errs.mkString(";") should include("must be an enum")
     }

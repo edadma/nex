@@ -193,10 +193,10 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
       // variant. This keeps the parser free of any case-convention
       // assumption.
       val src =
-        """match s
-          |  case Converged(x)      => x
-          |  case Diverged          => 0.0
-          |  case MaxIters(n, last) => last""".stripMargin
+        """s match
+          |  Converged(x)      -> x
+          |  Diverged          -> 0.0
+          |  MaxIters(n, last) -> last""".stripMargin
       parseExpr(src) shouldBe MatchExpr(
         VarRefExpr("s"),
         List(
@@ -212,9 +212,9 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
 
     "parse wildcard catch-all" in {
       val src =
-        """match c
-          |  case Red => 1
-          |  case _   => 0""".stripMargin
+        """c match
+          |  Red -> 1
+          |  _   -> 0""".stripMargin
       parseExpr(src) shouldBe MatchExpr(
         VarRefExpr("c"),
         List(
@@ -226,9 +226,9 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
 
     "parse nested variant pattern" in {
       val src =
-        """match w
-          |  case Wrap(Inner(x)) => x
-          |  case _              => 0""".stripMargin
+        """w match
+          |  Wrap(Inner(x)) -> x
+          |  _              -> 0""".stripMargin
       parseExpr(src) shouldBe MatchExpr(
         VarRefExpr("w"),
         List(
@@ -237,6 +237,21 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
             VarRefExpr("x"),
           ),
           MatchCase(WildcardPat(), IntLitExpr(0)),
+        ),
+      )
+    }
+
+    "parse optional `end match` trailer" in {
+      val src =
+        """c match
+          |  Red -> 1
+          |  _   -> 0
+          |end match""".stripMargin
+      parseExpr(src) shouldBe MatchExpr(
+        VarRefExpr("c"),
+        List(
+          MatchCase(VarPat("Red"),  IntLitExpr(1)),
+          MatchCase(WildcardPat(),  IntLitExpr(0)),
         ),
       )
     }

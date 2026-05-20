@@ -53,9 +53,17 @@ case class FunDeclAST(
 ) extends DeclAST
 
 /** A function-declaration parameter. `mode` is `read` (inferred) or `mut`
-  * (declared) per spec §6.4.
+  * (declared) per spec §6.4. `default` is the optional `= <expr>` clause
+  * (spec §6.5) — the expression is captured untouched and is re-elaborated
+  * at every call site that needs it (each call evaluates the default
+  * fresh, matching Scala / JS semantics; the default is NOT memoized).
   */
-case class FunParam(name: String, typ: TypeAST, mode: ParamMode)
+case class FunParam(
+    name:    String,
+    typ:     TypeAST,
+    mode:    ParamMode,
+    default: Option[ExprAST] = None,
+)
 
 /** A kind-parameter declaration on a generic `def` head:
   * `def f[T: Float, U: Numeric](...)`. The `constraint` is the source-
@@ -231,8 +239,19 @@ case class JuxtaposeExpr(coeff: ExprAST, body: ExprAST) extends ExprAST
 
 // -- Application / projection ----------------------------------------------
 
-/** Function call: `f(arg, arg, ...)`. */
+/** Function call: `f(arg, arg, ...)`. Each entry is a plain expression
+  * for a positional argument, or a [[NamedArg]] wrapper for the
+  * `name = expr` form (spec §6.5 named arguments).
+  */
 case class CallExpr(callee: ExprAST, args: List[ExprAST]) extends ExprAST
+
+/** A named argument in a call site: `name = value`. Only legal inside a
+  * [[CallExpr]] argument list — the parser refuses to produce it
+  * elsewhere. The elaborator unwraps named args at the call site by
+  * matching them against the callee's parameter names and producing a
+  * fully-positional [[TCall]].
+  */
+case class NamedArg(name: String, value: ExprAST) extends ExprAST
 
 /** Indexing: `a[i]` (single) or `a[i, j]` (rank-2; Pass 2). */
 case class IndexExpr(arr: ExprAST, indices: List[ExprAST]) extends ExprAST

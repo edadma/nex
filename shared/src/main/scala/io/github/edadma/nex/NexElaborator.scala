@@ -440,6 +440,19 @@ class NexElaborator
         if p.mode == ParamMode.Mut then mutableSymIds += s.id
         s
       }
+      // Spec §6.5: defaults must form a contiguous trailing run — a
+      // gap (`x: T = ..., y: T, z: T = ...`) leaves positional callers
+      // with no unambiguous way to skip the middle param. Named-arg
+      // callers can still hit the gap, but the elaborator-side
+      // resolution simplifies enormously when defaults are trailing.
+      val defaults = f.params.map(_.default)
+      val firstDef = defaults.indexWhere(_.isDefined)
+      if firstDef >= 0 then
+        val gap = defaults.drop(firstDef).indexWhere(_.isEmpty)
+        if gap >= 0 then
+          err("default-valued parameters must form a contiguous trailing run", f)
+      paramDefaults(sym.id) = defaults
+      paramNames(sym.id)    = f.params.map(_.name)
       // Resolve the return type inside the scoped block so a generic
       // `def f[T: Float](x: T): T` finds `T` for the return-type
       // position — by the time the block exits the type-param scope
@@ -769,8 +782,16 @@ class NexElaborator
         callee match
           case VarRefExpr("__array") =>
             TArrayLit(args.map(elabExpr), pos)
+          case VarRefExpr(name) =>
+            val resolved = resolveCallArgs(name, args, e)
+            TCall(elabExpr(callee), resolved.map(elabExpr), pos)
           case _ =>
-            TCall(elabExpr(callee), args.map(elabExpr), pos)
+            // Computed callee (lambda value, returned function, etc.) —
+            // no support for named args or defaults; the parameter info
+            // isn't reachable from a runtime function value in v0.
+            if args.exists(_.isInstanceOf[NamedArg]) then
+              err("named arguments are only allowed when calling a function by its declared name", e)
+            TCall(elabExpr(callee), args.map(unwrapNamedArg).map(elabExpr), pos)
       case IndexExpr(arr, idx) =>
         // `:` (AxisAllExpr) only appears inside an index list — Stage 2
         // detects it and rewrites the surrounding TIndex into a
@@ -789,7 +810,13 @@ class NexElaborator
       case FieldExpr(r, name) =>
         TField(elabExpr(r), name, pos)
       case MethodCallExpr(r, n, args) =>
-        TMethodCall(elabExpr(r), n, args.map(elabExpr), pos)
+        // Method-call sugar `recv.f(args)` desugars to `f(recv, args)`
+        // post-elaboration. Defaults / named args on the method form
+        // are not yet wired — surface a clear diag if the user tries
+        // them; everything else passes through positionally.
+        if args.exists(_.isInstanceOf[NamedArg]) then
+          err("named arguments are not yet supported with method-call syntax (use the function-call form `f(recv, ...)` instead)", e)
+        TMethodCall(elabExpr(r), n, args.map(unwrapNamedArg).map(elabExpr), pos)
 
       case LambdaExpr(params, body) =>
         scoped {
@@ -837,6 +864,16 @@ class NexElaborator
 
       case m: MatchExpr =>
         elabMatch(m, pos)
+
+      case NamedArg(name, value) =>
+        // A `name = expr` form leaked out of a call argument list.
+        // The parser only produces NamedArg inside `callArg` positions,
+        // so reaching here means a NamedArg survived without its
+        // surrounding CallExpr — most likely the user tried `name = expr`
+        // as a standalone expression. Surface a clear diag and elaborate
+        // the inner value so downstream type-checking still proceeds.
+        err(s"`$name = ...` is only legal as a named argument inside a call (spec §6.5)", e)
+        elabExpr(value)
 
   /** Mint Local symbols for every name in a for-loop pattern. */
   private def collectPatternSyms(pat: PatternAST): List[Symbol] =
@@ -927,3 +964,97 @@ class NexElaborator
     symbols.get(s.id).map(_.tpe) match
       case Some(TyFunc(ps, _)) => ps.size
       case _                   => 0
+
+  /** Strip a [[NamedArg]] wrapper if present; otherwise return the expr
+    * unchanged. Used at call sites that don't support the named form
+    * (computed callees, overload sets) so an erroneous NamedArg doesn't
+    * propagate into [[elabExpr]] — the surrounding code emits the diag.
+    */
+  private def unwrapNamedArg(e: ExprAST): ExprAST = e match
+    case NamedArg(_, v) => v
+    case other          => other
+
+  /** Resolve a `name(args...)` call against the named function's
+    * parameter list (spec §6.5):
+    *
+    *   - All positional args come first; all [[NamedArg]] args come
+    *     after. Mixed in the other order is rejected.
+    *   - Positional args fill slots in order.
+    *   - Each named arg fills the slot matching its `name`; rejected
+    *     if the slot is already filled or the name is unknown.
+    *   - Remaining empty slots are filled with the param's declared
+    *     default expression; missing defaults surface as a "missing
+    *     required argument" diag.
+    *
+    * If `name` doesn't resolve to a single non-overloaded function
+    * symbol (or if the symbol has no recorded parameter list — e.g.
+    * prelude builtins, struct constructors, enum variants), this
+    * helper passes the args through unchanged after unwrapping any
+    * [[NamedArg]]s and reporting them as errors (named args + defaults
+    * are not yet wired for those callee shapes).
+    */
+  private def resolveCallArgs(name: String, args: List[ExprAST], where: Positional): List[ExprAST] =
+    val candidates = current.lookupAll(name).filter(_.kind == SymKind.Function)
+    val hasNamed   = args.exists(_.isInstanceOf[NamedArg])
+
+    // Single function target with recorded param info → full resolution.
+    // Anything else (zero hits, overloaded, missing param info) falls
+    // through to positional pass-through after stripping NamedArg
+    // wrappers and reporting them.
+    val target =
+      if candidates.size == 1 then
+        for
+          pn <- paramNames.get(candidates.head.id)
+          pd <- paramDefaults.get(candidates.head.id)
+        yield (pn, pd)
+      else None
+
+    target match
+      case None =>
+        if hasNamed then
+          if candidates.size > 1 then
+            err(s"named arguments require a single (non-overloaded) target — `$name` resolves to ${candidates.size} overloads", where)
+          else
+            err(s"named arguments are only allowed when calling a user-defined `def` by name", where)
+        args.map(unwrapNamedArg)
+
+      case Some((pNames, pDefs)) =>
+        // All positional args first, then all named.
+        val firstNamed = args.indexWhere(_.isInstanceOf[NamedArg])
+        val (positional, namedTail) =
+          if firstNamed < 0 then (args, Nil)
+          else
+            val (head, tail) = args.splitAt(firstNamed)
+            if tail.exists(!_.isInstanceOf[NamedArg]) then
+              err("positional arguments must precede named arguments", where)
+            (head, tail.collect { case na: NamedArg => na })
+
+        val n     = pNames.size
+        val slots = Array.fill[Option[ExprAST]](n)(None)
+
+        if positional.size > n then
+          err(s"too many arguments: `$name` expects $n, got ${args.size}", where)
+          args.map(unwrapNamedArg)
+        else
+          for (a, i) <- positional.zipWithIndex do slots(i) = Some(a)
+
+          for na <- namedTail do
+            val idx = pNames.indexOf(na.name)
+            if idx < 0 then
+              err(s"unknown parameter name `${na.name}` for `$name`", where)
+            else if slots(idx).isDefined then
+              err(s"parameter `${na.name}` supplied more than once", where)
+            else
+              slots(idx) = Some(na.value)
+
+          var missingReported = false
+          for i <- 0 until n do
+            if slots(i).isEmpty then
+              pDefs(i) match
+                case Some(d) => slots(i) = Some(d)
+                case None    =>
+                  if !missingReported then
+                    err(s"missing required argument `${pNames(i)}` for `$name`", where)
+                    missingReported = true
+
+          slots.map(_.getOrElse(IntLitExpr(0))).toList
