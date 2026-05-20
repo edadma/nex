@@ -225,6 +225,7 @@ object Cli:
       "--one-shot-bufferize=bufferize-function-boundaries",
       "--convert-linalg-to-loops",
       "--convert-scf-to-cf",
+      "--expand-strided-metadata",
       "--finalize-memref-to-llvm",
       "--convert-arith-to-llvm",
       "--convert-func-to-llvm",

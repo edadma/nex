@@ -494,6 +494,16 @@ class NexMLIRCodegen:
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
 
+    case TSlice(arr, TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) =>
+          val end      = if inclusive then hi.toInt + 1 else hi.toInt
+          val sliceLen = math.max(0, end - lo.toInt)
+          emitRank1Slice(av, t, lo.toInt, sliceLen)
+        case other =>
+          notYet(s"rank-1 slice on $other")
+
     case TIntrinsic(opId, _, _) =>
       notYet(s"intrinsic `$opId` (MLIR backend has no Stage-0 intrinsic dispatch yet)")
 
@@ -564,6 +574,23 @@ class NexMLIRCodegen:
       case Some(v) => env(loopVar.id) = v
       case None    => env.remove(loopVar.id)
     out.append("  }\n")
+
+  /** Rank-1 slice `a[lo..hi]` / `a[lo..=hi]` with literal bounds.
+    * Lowers to `tensor.extract_slice` with a static offset / size /
+    * unit stride, which produces a freshly-allocated tensor of the
+    * sliced length. Empty slices (computed length <= 0) collapse to
+    * `tensor.empty() : tensor<0xT>` — printing walks zero elements
+    * and emits `[]\n`.
+    */
+  private def emitRank1Slice(av: MlirVal, srcTy: MTensor, offset: Int, len: Int): MlirVal =
+    val outTy = MTensor(srcTy.elem, List(len))
+    if len == 0 then
+      val r = fresh("emp")
+      out.append(s"  $r = tensor.empty() : ${outTy.text}\n")
+      return MlirVal(r, outTy)
+    val r = fresh("sl")
+    out.append(s"  $r = tensor.extract_slice ${av.reg}[$offset] [$len] [1] : ${srcTy.text} to ${outTy.text}\n")
+    MlirVal(r, outTy)
 
   /** Allocate a stack slot for a `var <sym>` scalar binding and store
     * the initial value. The slot lives in `varSlots` keyed by symbol
