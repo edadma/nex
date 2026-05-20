@@ -92,9 +92,15 @@ class NexMLIRCodegen:
       case _ => ()
     }
 
-  /** Recognise `print(<scalar>)` as the only allowed top-level effect.
-    * Anything else inside the body must be a no-binding `TBlock` whose
-    * result is the print call.
+  /** Recognise the shapes of `def main()` that the backend supports:
+    *
+    *   - a bare `print(arg)` expression
+    *   - a `TBlock` whose result is a `print(arg)` (val bindings + one
+    *     final print)
+    *   - a `TBlock` whose result is `TUnitLit` (statement-position
+    *     `print(...)` calls interleaved with val bindings)
+    *
+    * Anything else surfaces as `notYet`.
     */
   private def emitMainBody(body: TExpr): Unit = unwrapEmptyBlock(body) match
     case TCall(TVarRef(p, _, _), List(arg), _, _) if p.name == "print" =>
@@ -102,6 +108,8 @@ class NexMLIRCodegen:
     case TBlock(items, TCall(TVarRef(p, _, _), List(arg), _, _), _, _) if p.name == "print" =>
       items.foreach(emitBlockItem)
       emitPrintCall(arg)
+    case TBlock(items, TUnitLit(_), _, _) =>
+      items.foreach(emitBlockItem)
     case other =>
       notYet(s"main body shape: ${other.getClass.getSimpleName}")
 
@@ -309,6 +317,21 @@ class NexMLIRCodegen:
         case t: MTensor => emitSumReduce(av.reg, t)
         case other      => notYet(s"sum over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitMinMaxReduce(s.name, av.reg, t)
+        case other                   => notYet(s"${s.name} over $other")
+
+    case TCall(TVarRef(s, _, _), List(a, b), _, _)
+        if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
+      emitScalarMinMax(s.name, emitExpr(a), emitExpr(b))
+
+    case TCall(TVarRef(s, _, _), List(x), _, _)
+        if s.kind == SymKind.Prelude && s.name == "abs" =>
+      emitScalarAbs(emitExpr(x))
+
     case TMatMul(lhs, rhs, _, _) =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
@@ -327,8 +350,10 @@ class NexMLIRCodegen:
       env(sym.id) = emitExpr(value)
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
-    case TBlockExpr(_) =>
-      notYet("statement-position expressions in block")
+    case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
+      emitPrintCall(arg)
+    case TBlockExpr(other) =>
+      notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 
   /** Element-wise binop via `linalg.map` over a fresh `tensor.empty()`
     * output. Both operands must already have the same tensor type.
@@ -508,6 +533,109 @@ class NexMLIRCodegen:
     val sumR = fresh("sum")
     out.append(s"  $sumR = tensor.extract $sumTR[] : ${outTy.text}\n")
     MlirVal(sumR, MScalar(elemT))
+
+  /** Scalar binary `min` / `max`. Promotes mixed `int × real` operands
+    * to real before dispatching to the matching `arith.{minsi, maxsi,
+    * minimumf, maximumf}` op. Same NaN-propagating spelling we use
+    * for array min/max.
+    */
+  private def emitScalarMinMax(name: String, lv: MlirVal, rv: MlirVal): MlirVal =
+    val (lp, rp) = (lv.ty, rv.ty) match
+      case (MScalar(TyInteger), MScalar(TyReal))    => (promoteIntToReal(lv), rv)
+      case (MScalar(TyReal), MScalar(TyInteger))    => (lv, promoteIntToReal(rv))
+      case _                                        => (lv, rv)
+    (lp.ty, rp.ty) match
+      case (MScalar(TyInteger), MScalar(TyInteger)) =>
+        val opName = if name == "min" then "arith.minsi" else "arith.maxsi"
+        val r      = fresh(name)
+        out.append(s"  $r = $opName ${lp.reg}, ${rp.reg} : i64\n")
+        MlirVal(r, MScalar(TyInteger))
+      case (MScalar(TyReal), MScalar(TyReal)) =>
+        val opName = if name == "min" then "arith.minimumf" else "arith.maximumf"
+        val r      = fresh(name)
+        out.append(s"  $r = $opName ${lp.reg}, ${rp.reg} : f64\n")
+        MlirVal(r, MScalar(TyReal))
+      case (lt, rt) =>
+        notYet(s"$name on $lt and $rt")
+
+  /** Scalar `abs`: branchless via `cmp + select`. Avoids depending on
+    * the math dialect (which would force `--convert-math-to-llvm` into
+    * the pass pipeline). Integer abs uses signed less-than against zero
+    * and subtracts; real abs flips the sign with `arith.negf` when
+    * `x < 0.0`. Note: `arith.cmpf olt(-0.0, 0.0)` is false (signed-zero
+    * pair is equal in IEEE), so this preserves `-0.0` for the negative
+    * zero — a known divergence the corpus does not currently test for
+    * `abs(real)`.
+    */
+  private def emitScalarAbs(v: MlirVal): MlirVal = v.ty match
+    case MScalar(TyInteger) =>
+      val zero = fresh("z")
+      out.append(s"  $zero = arith.constant 0 : i64\n")
+      val neg = fresh("neg")
+      out.append(s"  $neg = arith.subi $zero, ${v.reg} : i64\n")
+      val cmp = fresh("cmp")
+      out.append(s"  $cmp = arith.cmpi slt, ${v.reg}, $zero : i64\n")
+      val r = fresh("abs")
+      out.append(s"  $r = arith.select $cmp, $neg, ${v.reg} : i64\n")
+      MlirVal(r, MScalar(TyInteger))
+    case MScalar(TyReal) =>
+      val zero = fresh("z")
+      out.append(s"  $zero = arith.constant 0.0 : f64\n")
+      val neg = fresh("neg")
+      out.append(s"  $neg = arith.negf ${v.reg} : f64\n")
+      val cmp = fresh("cmp")
+      out.append(s"  $cmp = arith.cmpf olt, ${v.reg}, $zero : f64\n")
+      val r = fresh("abs")
+      out.append(s"  $r = arith.select $cmp, $neg, ${v.reg} : f64\n")
+      MlirVal(r, MScalar(TyReal))
+    case other =>
+      notYet(s"abs of $other")
+
+  /** Reduce a rank-1 tensor with the `min` or `max` prelude. Mirrors
+    * `emitSumReduce` but seeds the accumulator with `arr[0]` rather
+    * than a zero sentinel — matches `NexInterpreter`'s
+    * `b.tail.foldLeft(b.head)` and dodges the need for an
+    * IEEE-defined +∞ / -∞ constant in MLIR text.
+    *
+    * Reducer ops:
+    *   - int  → `arith.minsi` / `arith.maxsi`
+    *   - real → `arith.minimumf` / `arith.maximumf`
+    *     (IEEE 754-2019 spelling, NaN-propagating like the
+    *      `arith.cmpf` predicates we use elsewhere)
+    *
+    * Empty-array case is the caller's problem — the elaborator either
+    * rejects empty literals or accepts them with a trap at runtime;
+    * `tensor.extract` on an empty rank-1 tensor is UB by MLIR rules,
+    * which matches NexInterpreter's `trap("min: empty array", ...)`.
+    */
+  private def emitMinMaxReduce(name: String, srcReg: String, ty: MTensor): MlirVal =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val outTy  = MTensor(elemT, Nil)
+    val zeroIdx = fresh("z_idx")
+    out.append(s"  $zeroIdx = arith.constant 0 : index\n")
+    val initER = fresh("init_e")
+    out.append(s"  $initER = tensor.extract $srcReg[$zeroIdx] : ${ty.text}\n")
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.from_elements $initER : ${outTy.text}\n")
+    val opName = (name, elemT) match
+      case ("min", TyInteger) => "arith.minsi"
+      case ("max", TyInteger) => "arith.maxsi"
+      case ("min", TyReal)    => "arith.minimumf"
+      case ("max", TyReal)    => "arith.maximumf"
+      case _                  => notYet(s"$name reducer on $elemT")
+    val dims  = ty.shape.indices.mkString(", ")
+    val redTR = fresh(s"${name}_t")
+    out.append(
+      s"  $redTR = linalg.reduce ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) dimensions = [$dims]\n",
+    )
+    out.append(s"    (%in: $scalar, %acc: $scalar) {\n")
+    out.append(s"      %s = $opName %in, %acc : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
+    out.append("    }\n")
+    val redR = fresh(name)
+    out.append(s"  $redR = tensor.extract $redTR[] : ${outTy.text}\n")
+    MlirVal(redR, MScalar(elemT))
 
   /** Fold a unary-minus over a numeric literal. Returns `None` for
     * non-literal operands so the caller can decide whether to reject.

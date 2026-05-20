@@ -720,6 +720,7 @@ object NexProgramCorpus:
         |def main() = print(min([3, 1, 4, 1, 5, 9, 2, 6]))
       """.stripMargin,
       "1\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -728,6 +729,7 @@ object NexProgramCorpus:
         |def main() = print(max([3, 1, 4, 1, 5, 9, 2, 6]))
       """.stripMargin,
       "9\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -736,6 +738,7 @@ object NexProgramCorpus:
         |def main() = print(min([2.5, 1.5, 3.5]))
       """.stripMargin,
       "1.5\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -744,6 +747,7 @@ object NexProgramCorpus:
         |def main() = print(max([2.5, 1.5, 3.5]))
       """.stripMargin,
       "3.5\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -754,6 +758,7 @@ object NexProgramCorpus:
         |  print(max(3, 7))
       """.stripMargin,
       "3\n7\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1254,6 +1259,7 @@ object NexProgramCorpus:
       "abs",
       """def main() = print(abs(-7))""",
       "7\n",
+      mlir = true,
     ),
     Case(
       "prelude",
