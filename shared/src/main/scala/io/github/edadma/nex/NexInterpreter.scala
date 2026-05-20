@@ -270,12 +270,24 @@ class NexInterpreter:
     case "trunc"  => unary1(args, "trunc")(v => VReal(asReal(v).toLong.toDouble))
     case "min"    =>
       args match
-        case List(a, b) => if cmpNum(a, b) <= 0 then a else b
-        case _          => trap(s"min expects 2 args, got ${args.size}", None)
+        case List(a, b)           => if cmpNum(a, b) <= 0 then a else b
+        case List(VArray1(b))     =>
+          if b.isEmpty then trap("min: empty array", None)
+          else b.tail.foldLeft(b.head)((acc, v) => if cmpNum(acc, v) <= 0 then acc else v)
+        case List(VArray2(b, _, _)) =>
+          if b.isEmpty then trap("min: empty array", None)
+          else b.tail.foldLeft(b.head)((acc, v) => if cmpNum(acc, v) <= 0 then acc else v)
+        case _ => trap(s"min expects (scalar, scalar) or (array), got ${args.size} args", None)
     case "max"    =>
       args match
-        case List(a, b) => if cmpNum(a, b) >= 0 then a else b
-        case _          => trap(s"max expects 2 args, got ${args.size}", None)
+        case List(a, b)           => if cmpNum(a, b) >= 0 then a else b
+        case List(VArray1(b))     =>
+          if b.isEmpty then trap("max: empty array", None)
+          else b.tail.foldLeft(b.head)((acc, v) => if cmpNum(acc, v) >= 0 then acc else v)
+        case List(VArray2(b, _, _)) =>
+          if b.isEmpty then trap("max: empty array", None)
+          else b.tail.foldLeft(b.head)((acc, v) => if cmpNum(acc, v) >= 0 then acc else v)
+        case _ => trap(s"max expects (scalar, scalar) or (array), got ${args.size} args", None)
     case "conj"   =>
       unary1(args, "conj") {
         case VComplex(re, im) => VComplex(re, -im)

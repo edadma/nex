@@ -688,6 +688,48 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "min over an integer array",
+      """
+        |def main() = print(min([3, 1, 4, 1, 5, 9, 2, 6]))
+      """.stripMargin,
+      "1\n",
+    ),
+    Case(
+      "arrays",
+      "max over an integer array",
+      """
+        |def main() = print(max([3, 1, 4, 1, 5, 9, 2, 6]))
+      """.stripMargin,
+      "9\n",
+    ),
+    Case(
+      "arrays",
+      "min over a real array",
+      """
+        |def main() = print(min([2.5, 1.5, 3.5]))
+      """.stripMargin,
+      "1.5\n",
+    ),
+    Case(
+      "arrays",
+      "max over a real array",
+      """
+        |def main() = print(max([2.5, 1.5, 3.5]))
+      """.stripMargin,
+      "3.5\n",
+    ),
+    Case(
+      "arrays",
+      "min/max binary scalar form still works",
+      """
+        |def main() =
+        |  print(min(3, 7))
+        |  print(max(3, 7))
+      """.stripMargin,
+      "3\n7\n",
+    ),
+    Case(
+      "arrays",
       "element-wise add",
       """
         |def main() =

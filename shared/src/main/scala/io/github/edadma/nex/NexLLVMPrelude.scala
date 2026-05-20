@@ -265,6 +265,16 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("product", List(arr))              => emitProductCall(arr, resultT)
       case ("dot",     List(a, b))             => emitDotCall(a, b, resultT)
 
+      // §10.4 unary min/max on an array. The binary scalar form is
+      // handled by the elaborator's regular call path (it generates a
+      // TCall with two args and the prelude dispatcher above handles
+      // that via the lifted scalar entry); only the array overload
+      // routes here.
+      case ("min", List(arr)) if isArrayType(arr.tpe) =>
+        emitMinMaxCall(arr, resultT, isMin = true)
+      case ("max", List(arr)) if isArrayType(arr.tpe) =>
+        emitMinMaxCall(arr, resultT, isMin = false)
+
       // §10.4 rank-1 builders.
       case ("range",     List(lo, hi))         => emitRangeCall(lo, hi)
       case ("enumerate", List(arr))            => emitEnumerateCall(arr, resultT)
@@ -1121,6 +1131,74 @@ protected trait NexLLVMPrelude extends NexLLVMState:
 
     emitArrDec(av, a.tpe)
     emitArrDec(bv, b.tpe)
+    val r = newReg()
+    emitLine(s"  $r = load $accLLT, ptr $accSlot\n")
+    r
+
+  /** Lower `min(arr)` / `max(arr)` — the spec §10.4 unary array
+    * overload. Initial accumulator is `arr[0]`; each subsequent
+    * element is compared against the accumulator with `icmp`/`fcmp`
+    * and `select`. Empty arrays trap (the accumulator has no value
+    * to seed from).
+    */
+  private def emitMinMaxCall(arr: TExpr, resultT: Type, isMin: Boolean): String =
+    val rank   = arrayRank(arr.tpe)
+    val elem   = arrayElem(arr.tpe)
+    val stT    = storageType(elem)
+    val llT    = llvmType(elem)
+    val accLLT = llvmType(resultT)
+    val lenFn  = rank match
+      case 1 => "__nex_arr1_len"
+      case 2 => "__nex_arr2_len"
+      case _ => notImpl(s"min/max on rank $rank array")
+    val labelPrefix = if isMin then "hof.min" else "hof.max"
+    val cmpOp = (elem, isMin) match
+      case (TyInteger, true)  => "icmp slt"
+      case (TyInteger, false) => "icmp sgt"
+      case (TyReal,    true)  => "fcmp olt"
+      case (TyReal,    false) => "fcmp ogt"
+      case _ =>
+        notImpl(s"min/max on array element type $elem")
+
+    val arrV   = emitExpr(arr)
+    val len    = newReg(); emitLine(s"  $len = call i64 @$lenFn(ptr $arrV)\n")
+    // Empty-array trap. Spec §10.4 doesn't define min/max of [].
+    val isEmpty = newReg()
+    emitLine(s"  $isEmpty = icmp eq i64 $len, 0\n")
+    val okL    = freshLabel(s"$labelPrefix.ok")
+    val flL    = freshLabel(s"$labelPrefix.fail")
+    emitTerminator(s"  br i1 $isEmpty, label %$flL, label %$okL\n")
+    startBlock(flL)
+    emitLine(s"  call void @__nex_trap_with(ptr @.minmax_empty_msg)\n")
+    emitTerminator(s"  unreachable\n")
+    startBlock(okL)
+
+    val buf     = bufPtr(arrV, arr.tpe)
+    // Seed the accumulator with arr[0], then loop 1..len-1.
+    val firstSlot = newReg()
+    emitLine(s"  $firstSlot = getelementptr inbounds $stT, ptr $buf, i64 0\n")
+    val first   = loadElem(stT, firstSlot, llT)
+    val accSlot = newReg()
+    emitLine(s"  $accSlot = alloca $accLLT\n")
+    storeElem(stT, first, accSlot)
+
+    // Loop bound is `len - 1`, body indexes `i + 1`.
+    val tail = newReg(); emitLine(s"  $tail = sub i64 $len, 1\n")
+    emitCountingLoop(tail, labelPrefix) { i =>
+      val j = newReg(); emitLine(s"  $j = add i64 $i, 1\n")
+      val slot = newReg()
+      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $j\n")
+      val e   = loadElem(stT, slot, llT)
+      val cur = newReg()
+      emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
+      val pick = newReg()
+      emitLine(s"  $pick = $cmpOp $accLLT $e, $cur\n")
+      val sel  = newReg()
+      emitLine(s"  $sel = select i1 $pick, $accLLT $e, $accLLT $cur\n")
+      storeElem(stT, sel, accSlot)
+    }
+
+    emitArrDec(arrV, arr.tpe)
     val r = newReg()
     emitLine(s"  $r = load $accLLT, ptr $accSlot\n")
     r
