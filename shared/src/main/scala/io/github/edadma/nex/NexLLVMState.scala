@@ -448,11 +448,16 @@ protected trait NexLLVMState:
     case TyArray(_,_)   => "ptr"
     case TyTuple(elems)        => elems.map(llvmType).mkString("{ ", ", ", " }")
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")
-    case TyEnum(n, _)          =>
-      // Chunk 3 will assign a tagged-union layout. Until then any
-      // attempt to lower an enum value through the AOT backend fails
-      // loudly with a clear diagnostic rather than emitting bogus IR.
-      notYet(s"enum `$n` codegen not yet implemented"); "i64"
+    case te @ TyEnum(_, _)     =>
+      // Tagged-union layout: `{ i32 tag, [N x i64] payload }`. N is the
+      // maximum field count across all variants. Each field occupies one
+      // 8-byte slot — scalar (int / real / bool) gets stored directly,
+      // pointer-shaped values (string) get stored as a pointer in the
+      // same slot. Slot widening to >8 bytes (complex, tuple, nested
+      // aggregates) is rejected at codegen time by [[checkEnumField]].
+      val n = enumPayloadSlots(te)
+      if n == 0 then "{ i32, [0 x i64] }"
+      else s"{ i32, [$n x i64] }"
     case TyFunc(_, _)   => "{ ptr, ptr }"
     case TyUnknown      => "i64" // best-effort placeholder for missing inference
     case TyKindVar(n, _) =>
@@ -489,6 +494,7 @@ protected trait NexLLVMState:
     case TyFunc(_, _)     => 16 // closure value is { fn_ptr, env_ptr }
     case TyTuple(es)      => es.map(aggregateFieldSize).sum
     case TyStruct(_, fs)  => fs.map(f => aggregateFieldSize(f._2)).sum
+    case te: TyEnum       => 4 + 8 * enumPayloadSlots(te) // tag + N x i64 payload
     case _                => 8
 
   /** Field-of-aggregate size: scalars and pointers are 8 bytes; bools
@@ -498,6 +504,28 @@ protected trait NexLLVMState:
   protected def aggregateFieldSize(t: Type): Int = t match
     case TyBool => 8 // padded
     case other  => elemSize(other)
+
+  /** Maximum field count across the variants of `te` — the width of the
+    * `[N x i64]` payload area in the tagged-union layout. Bare variants
+    * contribute 0. Memoized so the type appears identical no matter how
+    * many times it is queried.
+    */
+  protected def enumPayloadSlots(te: TyEnum): Int =
+    if te.variants.isEmpty then 0
+    else te.variants.iterator.map(_._2.size).max
+
+  /** Validate that a variant field type fits the 8-byte-slot layout used
+    * by the AOT enum representation. Returns the LLVM type a field of
+    * that type stores as inside the payload — always `i64` for the
+    * one-slot encoding. Aborts codegen with [[notImpl]] for types whose
+    * value cannot be stored in a single i64 slot (complex, tuple,
+    * struct, array, function, nested enum).
+    */
+  protected def enumFieldSlotType(t: Type): String = t match
+    case TyInteger | TyReal | TyBool | TyString => "i64"
+    case other =>
+      notImpl(s"enum variant field of type $other (only int / real / bool / string allowed)")
+      "i64"
 
   /** Element type of an array Type; emits a diag and returns TyInteger when
     * the given type isn't a TyArray (which would mean the elaborator left the
@@ -538,7 +566,23 @@ protected trait NexLLVMState:
     * per-aggregate-type helpers generated on demand.
     */
   protected def isRefCountedType(t: Type): Boolean =
-    isArrayType(t) || isClosureType(t) || t == TyString || aggregateContainsRefCounted(t)
+    isArrayType(t) || isClosureType(t) || t == TyString
+      || aggregateContainsRefCounted(t) || enumContainsRefCounted(t)
+
+  /** True when `t` is a [[TyEnum]] whose variants carry at least one
+    * refcounted field. Memoized via [[aggContainsMemo]]. Refcount-
+    * carrying enums need a per-enum drop helper that switches on the
+    * tag and runs the per-field decrement for the active variant.
+    */
+  protected def enumContainsRefCounted(t: Type): Boolean = t match
+    case te: TyEnum =>
+      aggContainsMemo.get(te) match
+        case Some(b) => b
+        case None =>
+          val r = te.variants.exists { case (_, fs) => fs.exists(f => isRefCountedType(f._2)) }
+          aggContainsMemo(te) = r
+          r
+    case _ => false
 
   /** True when `t` is a tuple or struct (transitively) carrying at
     * least one refcounted leaf. Memoized because the same type shows
@@ -597,6 +641,7 @@ protected trait NexLLVMState:
     case TyString                                          => true
     case TyArray(_, _)                                     => true
     case t if aggregateContainsRefCounted(t)               => true
+    case t if enumContainsRefCounted(t)                    => true
     case _                                                 => false
 
   /** Stable mangling of a Nex type for use in generated symbol names.
@@ -617,6 +662,7 @@ protected trait NexLLVMState:
     case TyArray(e, r)   => s"arr${r}_${typeMangle(e)}"
     case TyTuple(es)     => "tup_" + es.map(typeMangle).mkString("_")
     case TyStruct(n, fs) => s"struct_${n}_" + fs.map(f => typeMangle(f._2)).mkString("_")
+    case TyEnum(n, _)    => s"enum_$n"
     case _               => "any"
 
   /** Per-element-type deep-dec helpers that still need an emitted
@@ -639,6 +685,33 @@ protected trait NexLLVMState:
 
   protected def aggIncHelperName(t: Type): String = s"@__nex_inc_${typeMangle(t)}"
   protected def aggDropHelperName(t: Type): String = s"@__nex_drop_${typeMangle(t)}"
+
+  protected def enumIncHelperName(te: TyEnum):  String = s"@__nex_enum_inc_${te.name}"
+  protected def enumDropHelperName(te: TyEnum): String = s"@__nex_enum_drop_${te.name}"
+  protected def enumPrintHelperName(te: TyEnum): String = s"@__nex_print_enum_${te.name}"
+  protected def enumStrHelperName(te: TyEnum):   String = s"@__nex_enum_str_${te.name}"
+
+  /** Per-enum-type ARC / print helpers that still need a definition.
+    * Drained by `flushEnumHelpers` at end-of-module — same fixed-point
+    * pattern as the aggregate helpers, in case a freshly-emitted enum
+    * helper requests another enum helper (no recursion in v0 since
+    * variant fields are scalar-only, but the loop is cheap).
+    */
+  protected val enumHelperPending = mutable.LinkedHashSet.empty[TyEnum]
+  protected val enumHelperEmitted = mutable.Set.empty[TyEnum]
+
+  protected def requestEnumHelper(te: TyEnum): Unit =
+    if !enumHelperEmitted.contains(te) then enumHelperPending += te
+
+  /** Per-enum-type print + value-to-string helpers. Tracked separately
+    * from inc / drop because pure-value enums (no refcounted fields)
+    * still need print / format support.
+    */
+  protected val enumPrintPending = mutable.LinkedHashSet.empty[TyEnum]
+  protected val enumPrintEmitted = mutable.Set.empty[TyEnum]
+
+  protected def requestEnumPrintHelper(te: TyEnum): Unit =
+    if !enumPrintEmitted.contains(te) then enumPrintPending += te
 
   /** Mark an aggregate type as needing inc / drop helpers if not
     * already emitted. Idempotent. Called from [[emitArrInc]] /
@@ -666,6 +739,10 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_inc(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_inc(ptr $value)\n")
+    else if enumContainsRefCounted(t) then
+      val te = t.asInstanceOf[TyEnum]
+      requestEnumHelper(te)
+      emitLine(s"  call void ${enumIncHelperName(te)}(${llvmType(te)} $value)\n")
     else if aggregateContainsRefCounted(t) then
       requestAggHelper(t)
       emitLine(s"  call void ${aggIncHelperName(t)}(${llvmType(t)} $value)\n")
@@ -680,6 +757,10 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_dec(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_dec(ptr $value)\n")
+    else if enumContainsRefCounted(t) then
+      val te = t.asInstanceOf[TyEnum]
+      requestEnumHelper(te)
+      emitLine(s"  call void ${enumDropHelperName(te)}(${llvmType(te)} $value)\n")
     else if aggregateContainsRefCounted(t) then
       requestAggHelper(t)
       emitLine(s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $value)\n")
