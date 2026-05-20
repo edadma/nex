@@ -1404,7 +1404,7 @@ class NexLLVMCodegen
     * binary ops use this to align operand shapes before applying the
     * per-component formulas.
     */
-  private def toComplex(v: String, t: Type): (String, String) = t match
+  protected def toComplex(v: String, t: Type): (String, String) = t match
     case TyComplex =>
       val re = newReg()
       emitLine(s"  $re = extractvalue { double, double } $v, 0\n")
@@ -1421,7 +1421,7 @@ class NexLLVMCodegen
       notYet(s"complex promotion from $other"); (v, "0.0")
 
   /** Pack a (re, im) pair into a `{ double, double }` aggregate value. */
-  private def packComplex(re: String, im: String): String =
+  protected def packComplex(re: String, im: String): String =
     val c0 = newReg()
     emitLine(s"  $c0 = insertvalue { double, double } undef, double $re, 0\n")
     val c1 = newReg()
@@ -1431,7 +1431,7 @@ class NexLLVMCodegen
   /** Per-component complex arithmetic. Caller has already split both
     * operands into (re, im) pairs via [[toComplex]].
     */
-  private def emitComplexArith(op: String, lre: String, lim: String, rre: String, rim: String): String =
+  protected def emitComplexArith(op: String, lre: String, lim: String, rre: String, rim: String): String =
     op match
       case "+" =>
         val re = newReg(); emitLine(s"  $re = fadd double $lre, $rre\n")
