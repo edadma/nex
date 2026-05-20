@@ -53,6 +53,9 @@ Note that *language* version and *compiler* version are tracked independently. A
 - FFI / C ABI compatibility
 - Calling external Fortran / BLAS / LAPACK
 
+**Standard library:**
+- `geometry3` stdlib module — quaternions plus the other 3D-rotation representations (rotation matrices, axis–angle, Euler angles) and the conversions between them. Quaternions are *not* planned as a built-in primitive: they don't extend the integer → real → complex promotion lattice cleanly (complex has no canonical embedding into quaternions — which of `i` / `j` / `k`?), their multiplication is non-commutative (which breaks the element-wise / broadcast story for `*`), and the workloads that need them (3D graphics, robotics, attitude estimation) sit outside the Fortran / numerical-array audience the language is shaped around. The library home is the right one once generics (`def foo[T](...)`) and structs with methods both ship — until then, users who need a `Q4` can roll a 4-field struct and write the ops by hand.
+
 **Backend:**
 - GPU / accelerator targets
 
