@@ -185,6 +185,19 @@ case class VarRefExpr(name: String) extends ExprAST
   */
 case class BinOpExpr(op: String, lhs: ExprAST, rhs: ExprAST) extends ExprAST
 
+/** Chained comparison: `a <op1> b <op2> c <op3> ...`. The parser emits
+  * this when two or more comparison operators (`==`, `!=`, `<`, `<=`,
+  * `>`, `>=`) appear back-to-back at the same precedence level. The
+  * elaborator desugars it to an `and`-chain over pairwise comparisons
+  * with each inner operand bound to a fresh local so it is evaluated
+  * exactly once — matching Python's chained-comparison semantics.
+  *
+  * Invariant: `operands.size == ops.size + 1` and `ops.size >= 2`.
+  * Single-comparison forms stay as plain `BinOpExpr` so existing
+  * downstream code is unaffected.
+  */
+case class ChainedCmpExpr(operands: List[ExprAST], ops: List[String]) extends ExprAST
+
 /** Unary prefix operator. `op` is `-` or `not`. */
 case class UnaryOpExpr(op: String, operand: ExprAST) extends ExprAST
 

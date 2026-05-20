@@ -674,6 +674,45 @@ class NexElaborator
             TVarRef(symbols.mint(name, TyUnknown, SymKind.Local), pos)
 
       case BinOpExpr(op, l, r)        => TBinOp(op, elabExpr(l), elabExpr(r), pos)
+
+      case ChainedCmpExpr(operands, ops) =>
+        // Lower `a OP1 b OP2 c OP3 d` to nested `if`-blocks with each
+        // inner operand bound on the success path of the previous
+        // comparison. The result is Python-equivalent semantics:
+        //
+        //   { val t1 = b
+        //     if (a OP1 t1)
+        //       { val t2 = c
+        //         if (t1 OP2 t2) then (t2 OP3 d) else false }
+        //     else false }
+        //
+        // Each inner operand is evaluated at most once and only if
+        // every earlier comparison succeeded; the last operand drops
+        // out as the rhs of the final comparison so it inherits the
+        // same lazy treatment. Synthesized symbols are bypass-defined:
+        // they never enter user scope, and downstream walks see them
+        // only via the TVarRef nodes we hand-craft here.
+        val telabs    = operands.map(elabExpr)
+        val falseExpr = TBoolLit(false, pos)
+
+        def buildChain(prev: TExpr, opIdx: Int): TExpr =
+          val isLast = opIdx == ops.length - 1
+          val opStr  = ops(opIdx)
+          if isLast then
+            TBinOp(opStr, prev, telabs(opIdx + 1), pos)
+          else
+            val nextSym = symbols.mint(s"__nex_chain_$opIdx", TyUnknown, SymKind.Local)
+            val nextRef = TVarRef(nextSym, pos)
+            val cmpHere = TBinOp(opStr, prev, nextRef, pos)
+            val rest    = buildChain(nextRef, opIdx + 1)
+            TBlock(
+              List(TBlockBinding(nextSym, BindingKind.Val, telabs(opIdx + 1))),
+              TIf(cmpHere, rest, Some(falseExpr), pos),
+              pos,
+            )
+
+        buildChain(telabs.head, 0)
+
       case UnaryOpExpr(op, operand)   => TUnaryOp(op, elabExpr(operand), pos)
       case JuxtaposeExpr(c, b)        => TJuxtapose(elabExpr(c), elabExpr(b), pos)
 

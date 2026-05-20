@@ -15,7 +15,7 @@ weight: 30
 | `unit` | Single value `()` | 0 bits |
 | `string` | UTF-8 byte string | reference-typed |
 
-Sized variants (`integer32`, `real32`, `complex32`, etc.) are *deferred to v1+*.
+Sized variants (`integer32`, `real32`, `complex32`, etc.) are *deferred*.
 
 ## 3.2 Numeric promotion
 
@@ -48,7 +48,7 @@ The array type `[T]` denotes a **rank-1** array (vector) of elements of type `T`
 
 Rank-2 arrays are **rectangular** — every row has the same number of columns. Constructing a jagged array (rows of differing lengths) traps at runtime. Storage is **column-major**, matching Fortran and the standard LAPACK/BLAS convention so that future FFI to those libraries is layout-compatible without transposing.
 
-Higher-rank arrays (`[[[T]]]` and beyond) and statically-shaped arrays (`[T; N]`, `[T; M, N]`) are *deferred to v1+*.
+Higher-rank arrays (`[[[T]]]` and beyond) and statically-shaped arrays (`[T; N]`, `[T; M, N]`) are *deferred*.
 
 ## 3.4 Tuple types
 

@@ -112,7 +112,7 @@ def newton(f: real -> real, x0: real) =
   const LOCAL_TOL = 1.0e-8
   // ...
 
-// Function calls are NOT allowed in `const` RHS (deferred to v1+).
+// Function calls are NOT allowed in `const` RHS (deferred).
 // Use val for runtime-computed module-level values:
 val SQRT_2 = sqrt(2.0)      // function call → must be val, not const
 
@@ -383,7 +383,7 @@ def scale_in_place(v: mut [real], factor: real) =
 // A planned `@strict` attribute will disable auto-clone insertion in
 // this function body — every clone must then be written explicitly
 // with .clone(). For performance-critical paths where every allocation
-// must be visible. (Parser-reserved today; deferred to v0.1+.)
+// must be visible. (Parser-reserved today; deferred.)
 ```
 
 ## Higher-order functions
@@ -505,8 +505,8 @@ matmul(transpose(M), M)                         // 2×2; same as transpose(M) @ 
 ## Prelude — construction
 
 ```nex
-zeros(5)                                        // [0, 0, 0, 0, 0]            — integer zeros (v0)
-ones(3)                                         // [1, 1, 1]                  — integer ones (v0)
+zeros(5)                                        // [0, 0, 0, 0, 0]            — integer zeros
+ones(3)                                         // [1, 1, 1]                  — integer ones
 fill(4, 7.0)                                    // [7.0, 7.0, 7.0, 7.0]       — real, from x: real
 fill(5, 0.0)                                    // [0.0, 0.0, 0.0, 0.0, 0.0]  — real zeros via fill
 linspace(0.0, 1.0, 5)                           // [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -518,7 +518,7 @@ fill((3, 2), 0.0)                               // 3×2 real zero matrix
 identity(3)                                     // 3×3 integer identity matrix
 ```
 
-Rank-2 construction takes a `(rows, cols)` tuple as the shape argument (single-integer arg = rank-1; tuple arg = rank-2). `zeros`/`ones`/`identity` return integer-element arrays in v0 — for real-typed initial buffers use `fill(n, 0.0)` / `fill((r, c), 0.0)` / `linspace`.
+Rank-2 construction takes a `(rows, cols)` tuple as the shape argument (single-integer arg = rank-1; tuple arg = rank-2). `zeros`/`ones`/`identity` currently return integer-element arrays — for real-typed initial buffers use `fill(n, 0.0)` / `fill((r, c), 0.0)` / `linspace`.
 
 ## Prelude — I/O
 
@@ -564,7 +564,7 @@ def test_trap_message_contains_substring() =
   assert_traps(() -> 1 div 0, "division by zero")
 ```
 
-(Array- and complex-valued `assert_approx` are *deferred to v0.1+* — for now compare element-wise yourself, or check `abs(diff)` against a scalar tolerance.)
+(Array- and complex-valued `assert_approx` are *deferred* — for now compare element-wise yourself, or check `abs(diff)` against a scalar tolerance.)
 
 A whole module can be marked test-only:
 

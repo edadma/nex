@@ -32,7 +32,7 @@ The compiler **automatically inserts clones** wherever needed to satisfy the uni
 2. If a `val` array is passed to a `mut` parameter, the compiler inserts a clone so the function receives a fresh mutable buffer.
 3. The clone-placement optimization pass picks the optimal point for each clone (e.g., clones the *earlier* use so the *later* use can be a move), and elides clones that are provably unnecessary.
 
-A planned `@strict` function attribute will disable auto-clone insertion within a function body — every clone must then be written explicitly as `.clone()`, and missing clones become compile errors. This mode is intended for library authors and performance-critical code where every allocation must be visible. The attribute is reserved at the parser level today; the enforcement pass is *deferred to v0.1+*.
+A planned `@strict` function attribute will disable auto-clone insertion within a function body — every clone must then be written explicitly as `.clone()`, and missing clones become compile errors. This mode is intended for library authors and performance-critical code where every allocation must be visible. The attribute is reserved at the parser level today; the enforcement pass is *deferred*.
 
 ## 8.4 Read-mode parameters need no clones
 
@@ -51,8 +51,8 @@ a[0] = 10.0                // ok: a is mutable, never moved
 
 The current implementation uses **automatic reference counting (ARC)** for all heap-allocated values (arrays, strings, structs containing those). Each heap-allocated value carries a reference count; increments occur when ownership is shared, decrements occur when a reference goes out of scope, and the value is freed when the count reaches zero.
 
-ARC requires no garbage collector runtime, has no pause-style overhead, and is straightforward to implement. The per-operation cost (atomic increments and decrements) is acceptable for current workloads; performance-critical paths can be revisited in v0.5 / v1.
+ARC requires no garbage collector runtime, has no pause-style overhead, and is straightforward to implement. The per-operation cost (atomic increments and decrements) is acceptable for current workloads; performance-critical paths can be revisited later.
 
 ## 8.6 Future: RAII for `var` arrays
 
-In v0.5 or v1, the memory management for `var` arrays will be upgraded from ARC to **RAII** (deterministic deallocation at scope exit). Because uniqueness guarantees a single owner, RAII can free a `var` array immediately when its binding goes out of scope, with no refcount overhead. This change is *invisible to user code* — only the runtime characteristic changes. `val` arrays continue to use ARC.
+The memory management for `var` arrays will be upgraded from ARC to **RAII** (deterministic deallocation at scope exit). Because uniqueness guarantees a single owner, RAII can free a `var` array immediately when its binding goes out of scope, with no refcount overhead. This change is *invisible to user code* — only the runtime characteristic changes. `val` arrays continue to use ARC.
