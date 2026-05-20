@@ -39,6 +39,12 @@ protected trait NexLLVMPrint extends NexLLVMState:
           case TyStruct(_, _) =>
             emitPrintStruct(arg)
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
+          case te: TyEnum =>
+            val v = emitExpr(arg)
+            requestEnumPrintHelper(te)
+            emitLine(s"  call void ${enumPrintHelperName(te)}(${llvmType(te)} $v)\n")
+            if isRefCountedType(arg.tpe) then emitArrDec(v, arg.tpe)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
           case TyComplex =>
             emitPrintComplex(emitExpr(arg))
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
@@ -94,6 +100,10 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitPrintTuple(arg)
       case TyStruct(_, _) =>
         emitPrintStruct(arg)
+      case te: TyEnum =>
+        requestEnumPrintHelper(te)
+        emitLine(s"  call void ${enumPrintHelperName(te)}(${llvmType(te)} $v)\n")
+        if isRefCountedType(arg.tpe) then emitArrDec(v, arg.tpe)
       case TyComplex =>
         emitPrintComplex(v)
       case other =>
@@ -304,6 +314,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitPrintTupleValue(v, t, es)
       case t @ TyStruct(name, fields) =>
         emitPrintStructValue(v, t, name, fields)
+      case te: TyEnum =>
+        requestEnumPrintHelper(te)
+        emitLine(s"  call void ${enumPrintHelperName(te)}(${llvmType(te)} $v)\n")
       case TyComplex =>
         // Already-loaded `{ double, double }` value — reuse the
         // top-level complex print path which handles the sign /

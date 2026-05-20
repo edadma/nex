@@ -2582,4 +2582,224 @@ object NexProgramCorpus:
       """.stripMargin,
       "2.0+0.0i\n1.0-1.0i\n0.0+0.0i\n0.9999999999999999+1.0i\n",
     ),
+
+    // ========================================================================
+    // sum types (enums)
+    // ========================================================================
+
+    Case(
+      "sum types (enums)",
+      "declare and print bare variants",
+      """
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def main() =
+        |  print(Red)
+        |  print(Green)
+        |  print(Blue)
+      """.stripMargin,
+      "Red\nGreen\nBlue\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "construct and print fielded variants",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def main() =
+        |  print(Converged(3.14))
+        |  print(Diverged)
+        |  print(MaxIters(100, 0.5))
+      """.stripMargin,
+      "Converged(3.14)\nDiverged\nMaxIters(100, 0.5)\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "use the enum name as a binding's type annotation",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |
+        |def main() =
+        |  val a: Solver = Converged(2.5)
+        |  val b: Solver = Diverged
+        |  print(a)
+        |  print(b)
+      """.stripMargin,
+      "Converged(2.5)\nDiverged\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "pass an enum value through a function and return it",
+      """
+        |enum Step =
+        |  Continue(n: integer)
+        |  Done
+        |
+        |def advance(s: Step): Step = s
+        |
+        |def main() =
+        |  print(advance(Continue(7)))
+        |  print(advance(Done))
+      """.stripMargin,
+      "Continue(7)\nDone\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match dispatches on a bare variant",
+      """
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def label(c: Color): string =
+        |  match c
+        |    case Red   => "stop"
+        |    case Green => "go"
+        |    case Blue  => "wait"
+        |
+        |def main() =
+        |  print(label(Red))
+        |  print(label(Green))
+        |  print(label(Blue))
+      """.stripMargin,
+      "stop\ngo\nwait\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match binds variant fields into the arm body",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |  MaxIters(iters: integer, last: real)
+        |
+        |def describe(s: Solver): real =
+        |  match s
+        |    case Converged(x)       => x
+        |    case Diverged           => -1.0
+        |    case MaxIters(n, last)  => last
+        |
+        |def main() =
+        |  print(describe(Converged(3.14)))
+        |  print(describe(Diverged))
+        |  print(describe(MaxIters(100, 2.5)))
+      """.stripMargin,
+      "3.14\n-1.0\n2.5\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match wildcard catches the remaining variants",
+      """
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def isRed(c: Color): bool =
+        |  match c
+        |    case Red => true
+        |    case _   => false
+        |
+        |def main() =
+        |  print(isRed(Red))
+        |  print(isRed(Green))
+        |  print(isRed(Blue))
+      """.stripMargin,
+      "true\nfalse\nfalse\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match ignores unused fields with `_`",
+      """
+        |enum Step =
+        |  Continue(n: integer)
+        |  Halt
+        |
+        |def kind(s: Step): string =
+        |  match s
+        |    case Continue(_) => "continue"
+        |    case Halt        => "halt"
+        |
+        |def main() =
+        |  print(kind(Continue(99)))
+        |  print(kind(Halt))
+      """.stripMargin,
+      "continue\nhalt\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match arms unify to a single result type",
+      """
+        |enum Step =
+        |  Continue(n: integer)
+        |  Done(total: integer)
+        |
+        |def main() =
+        |  val s: Step = Continue(7)
+        |  val v: integer = match s
+        |    case Continue(n) => n
+        |    case Done(t)     => t
+        |  print(v)
+      """.stripMargin,
+      "7\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match arm uses a variant field of type string",
+      """
+        |enum Cmd =
+        |  Echo(msg: string)
+        |  Quit
+        |
+        |def main() =
+        |  val c: Cmd = Echo("hello")
+        |  match c
+        |    case Echo(s) => print(s)
+        |    case Quit    => print("bye")
+      """.stripMargin,
+      "hello\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "match arm uses a bool field",
+      """
+        |enum Flag =
+        |  Set(v: bool)
+        |  Unset
+        |
+        |def show(f: Flag): bool =
+        |  match f
+        |    case Set(v) => v
+        |    case Unset  => false
+        |
+        |def main() =
+        |  print(show(Set(true)))
+        |  print(show(Set(false)))
+        |  print(show(Unset))
+      """.stripMargin,
+      "true\nfalse\nfalse\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "interpolated print of a fielded variant in s\"...\"",
+      """
+        |enum Solver =
+        |  Converged(x: real)
+        |  Diverged
+        |
+        |def main() =
+        |  val s = Converged(1.25)
+        |  print(s"result=${s}")
+      """.stripMargin,
+      "result=Converged(1.25)\n",
+    ),
   )

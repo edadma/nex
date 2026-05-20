@@ -713,6 +713,20 @@ protected trait NexLLVMState:
   protected def requestEnumPrintHelper(te: TyEnum): Unit =
     if !enumPrintEmitted.contains(te) then enumPrintPending += te
 
+  /** Variant Symbol id → (parent enum type, declared tag index, declared
+    * field list). Populated up-front from every [[TEnumDecl]] in the
+    * program so [[TVarRef]] and [[TCall]] sites resolving an
+    * [[SymKind.EnumVariant]] symbol can find the construction info.
+    * Mirror of the interpreter's `enumVariantInfo` map.
+    */
+  protected val variantInfo =
+    mutable.Map.empty[Int, (TyEnum, Int, List[(String, Type)])]
+
+  /** Variant Symbol id → tag index inside its parent enum. Convenience
+    * accessor used by both construction and pattern dispatch.
+    */
+  protected def variantTag(id: Int): Int = variantInfo(id)._2
+
   /** Mark an aggregate type as needing inc / drop helpers if not
     * already emitted. Idempotent. Called from [[emitArrInc]] /
     * [[emitArrDec]] and from helper bodies that recurse into nested

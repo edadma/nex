@@ -1035,6 +1035,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         s"  call void @__nex_env_inc(ptr $env)\n"
     else if fT == TyString then
       s"  call void @__nex_str_inc(ptr $fv)\n"
+    else if enumContainsRefCounted(fT) then
+      val te = fT.asInstanceOf[TyEnum]
+      requestEnumHelper(te)
+      s"  call void ${enumIncHelperName(te)}(${llvmType(te)} $fv)\n"
     else if aggregateContainsRefCounted(fT) then
       requestAggHelper(fT)
       s"  call void ${aggIncHelperName(fT)}(${llvmType(fT)} $fv)\n"
@@ -1049,6 +1053,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         s"  call void @__nex_env_dec(ptr $env)\n"
     else if fT == TyString then
       s"  call void @__nex_str_dec(ptr $fv)\n"
+    else if enumContainsRefCounted(fT) then
+      val te = fT.asInstanceOf[TyEnum]
+      requestEnumHelper(te)
+      s"  call void ${enumDropHelperName(te)}(${llvmType(te)} $fv)\n"
     else if aggregateContainsRefCounted(fT) then
       requestAggHelper(fT)
       s"  call void ${aggDropHelperName(fT)}(${llvmType(fT)} $fv)\n"
@@ -1116,6 +1124,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
       s"  call void @__nex_str_dec(ptr $valReg)\n"
     case TyArray(_, _)                       =>
       s"  call void ${arrDecFor(elem)}(ptr $valReg)\n"
+    case t if enumContainsRefCounted(t)      =>
+      val te = t.asInstanceOf[TyEnum]
+      requestEnumHelper(te)
+      s"  call void ${enumDropHelperName(te)}(${llvmType(te)} $valReg)\n"
     case t if aggregateContainsRefCounted(t) =>
       requestAggHelper(t)
       s"  call void ${aggDropHelperName(t)}(${llvmType(t)} $valReg)\n"
