@@ -143,6 +143,8 @@ class NexMLIRCodegen:
       emitPrintCall(arg)
     case TBlock(items, TUnitLit(_), _, _) =>
       items.foreach(emitBlockItem)
+    case other if other.tpe == TyUnit =>
+      emitBlockItem(TBlockExpr(other))
     case other =>
       notYet(s"main body shape: ${other.getClass.getSimpleName}")
 
@@ -480,8 +482,64 @@ class NexMLIRCodegen:
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
       emitPrintCall(arg)
+    case TBlockExpr(TFor(loopVars, TBinOp("..", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+      emitForRange(loopVars, lo, hi, inclusive = false, body)
+    case TBlockExpr(TFor(loopVars, TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+      emitForRange(loopVars, lo, hi, inclusive = true, body)
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
+
+  /** Statement-form `for i in lo..hi do body` over a constant integer
+    * range. Lowers to `scf.for %iv = %lo to %hi step %c1 { … }`. The
+    * loop var is provided as MLIR `index` type; we cast to i64 and
+    * bind to the symbol id so the body's references resolve as
+    * scalars. Inclusive ranges (`..=`) bump the bound by one (scf.for
+    * is exclusive on its upper bound).
+    *
+    * Body emission delegates to [[emitForBody]], which handles a
+    * `TBlock` body (multiple statements) the same way it handles
+    * `def main()`'s top-level block — items go through
+    * `emitBlockItem`, so nested prints / nested for-loops compose
+    * naturally.
+    */
+  private def emitForRange(loopVars: List[Symbol], lo: Long, hi: Long, inclusive: Boolean, body: TExpr): Unit =
+    if loopVars.size != 1 then
+      notYet(s"for over range with ${loopVars.size}-way destructuring")
+      return
+    val loopVar = loopVars.head
+    val loC     = fresh("flo")
+    out.append(s"  $loC = arith.constant $lo : index\n")
+    val hiVal   = if inclusive then hi + 1L else hi
+    val hiC     = fresh("fhi")
+    out.append(s"  $hiC = arith.constant $hiVal : index\n")
+    val stepC   = fresh("fst")
+    out.append(s"  $stepC = arith.constant 1 : index\n")
+    val ivName  = fresh("iv")
+    out.append(s"  scf.for $ivName = $loC to $hiC step $stepC {\n")
+    val ivI64   = fresh("ivi")
+    out.append(s"    $ivI64 = arith.index_castui $ivName : index to i64\n")
+    val prev    = env.get(loopVar.id)
+    env(loopVar.id) = MlirVal(ivI64, MScalar(TyInteger))
+    emitForBody(body)
+    prev match
+      case Some(v) => env(loopVar.id) = v
+      case None    => env.remove(loopVar.id)
+    out.append("  }\n")
+
+  /** Body of a loop. Accepts a bare `TBlock` whose result is `Unit`
+    * (the common shape `for i do … do print(i)` produces, since the
+    * `do` clause introduces a block), a `TBlock` that ends with a
+    * value-producing expression (the result is discarded), or a
+    * single non-block statement.
+    */
+  private def emitForBody(body: TExpr): Unit = body match
+    case TBlock(items, TUnitLit(_), _, _) =>
+      items.foreach(emitBlockItem)
+    case TBlock(items, last, _, _) =>
+      items.foreach(emitBlockItem)
+      emitBlockItem(TBlockExpr(last))
+    case other =>
+      emitBlockItem(TBlockExpr(other))
 
   /** Element-wise binop via `linalg.map` over a fresh `tensor.empty()`
     * output. Both operands must already have the same tensor type.

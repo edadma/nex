@@ -418,6 +418,42 @@ object NexProgramCorpus:
         |    print(i)
       """.stripMargin,
       "0\n1\n2\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over inclusive range",
+      """
+        |def main() =
+        |  for i in 1..=3 do
+        |    print(i)
+      """.stripMargin,
+      "1\n2\n3\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "for over range computes a running sum",
+      """
+        |def main() =
+        |  var s = 0
+        |  for i in 1..=5 do
+        |    s = s + i
+        |  print(s)
+      """.stripMargin,
+      "15\n",
+    ),
+    Case(
+      "control flow",
+      "nested for over range",
+      """
+        |def main() =
+        |  for i in 0..2 do
+        |    for j in 0..2 do
+        |      print(i * 10 + j)
+      """.stripMargin,
+      "0\n1\n10\n11\n",
+      mlir = true,
     ),
     Case(
       "control flow",
