@@ -599,7 +599,15 @@ protected trait NexElabInference extends NexElabState:
           // wrote e.g. `for a, b in xs` over a non-tuple array.
           err(s"for-loop binds ${loopVars.size} names but each element is $elem, not a tuple", it.pos)
           loopVars
-        case TyArray(_, _) => loopVars // rank-2 iteration not yet defined
+        case TyArray(_, r) =>
+          // Rank-2+ for-iteration semantics aren't fixed in the spec
+          // (row-wise vs flat). Reject at compile time so neither
+          // backend silently picks a different interpretation; users
+          // can opt in via `for row in m.map(r -> r)` once the spec
+          // settles. The error references the rank to make the
+          // diagnostic actionable.
+          err(s"for-loop iteration over rank-$r arrays is not yet defined — flatten first or iterate explicitly", it.pos)
+          loopVars
         case TyUnknown     => loopVars
         case other         =>
           err(s"for-loop iterable must be an array, got $other", it.pos)
