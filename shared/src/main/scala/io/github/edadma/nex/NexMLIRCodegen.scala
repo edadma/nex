@@ -66,10 +66,28 @@ class NexMLIRCodegen:
     env.clear()
     val c0 = fresh("c0")
     out.append(s"  $c0 = arith.constant 0 : i32\n")
+    emitTopBindings(tp)
     emitMainBody(mainDecl.body)
     out.append(s"  func.return $c0 : i32\n")
     out.append("}\n")
     out.toString
+
+  /** Materialise every top-level `val` binding into the env, in
+    * declaration order, by reusing the expression visitor. Emitted
+    * inline at the top of `@main` — top-level vals semantically
+    * execute once at program start, and `@main` is the only function
+    * the backend emits today, so this is the natural place. `var` and
+    * `const` top-level bindings are not yet supported and surface as
+    * `notYet` if the program references them.
+    */
+  private def emitTopBindings(tp: TProgram): Unit =
+    tp.decls.foreach {
+      case TTopBinding(sym, BindingKind.Val, value, _) =>
+        env(sym.id) = emitExpr(value)
+      case TTopBinding(sym, kind, _, _) =>
+        notYet(s"top-level $kind binding for ${sym.name}")
+      case _ => ()
+    }
 
   /** Recognise `print(<scalar>)` as the only allowed top-level effect.
     * Anything else inside the body must be a no-binding `TBlock` whose
@@ -221,6 +239,19 @@ class NexMLIRCodegen:
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
 
+    case TBinOp(op, lhs, rhs, _, _) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      (lv.ty, rv.ty) match
+        case (MScalar(lt), MScalar(rt)) if lt == rt =>
+          emitScalarBinop(op, lv, rv, MScalar(lt))
+        case (MScalar(TyInteger), MScalar(TyReal)) =>
+          emitScalarBinop(op, promoteIntToReal(lv), rv, MScalar(TyReal))
+        case (MScalar(TyReal), MScalar(TyInteger)) =>
+          emitScalarBinop(op, lv, promoteIntToReal(rv), MScalar(TyReal))
+        case (lt, rt) =>
+          notYet(s"scalar binop $op on $lt and $rt")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && s.name == "sum" =>
       val av = emitExpr(arr)
@@ -272,6 +303,27 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : $scalar\n")
     out.append("    }\n")
     MlirVal(outR, ty)
+
+  /** Scalar `+ - *` on matching int/int or real/real operands. The
+    * dispatcher in [[scalarBinop]] is the gate for which operators
+    * land; everything else (`/`, `div`, `%`, `^`) bubbles up as
+    * `notYet` from there before any IR is emitted.
+    */
+  private def emitScalarBinop(op: String, lv: MlirVal, rv: MlirVal, ty: MScalar): MlirVal =
+    val opName = scalarBinop(op, ty.elem)
+    val r      = fresh("sb")
+    out.append(s"  $r = $opName ${lv.reg}, ${rv.reg} : ${ty.text}\n")
+    MlirVal(r, ty)
+
+  /** Sign-extend-to-float promotion of an `i64` SSA value into `f64`,
+    * matching the interpreter's `asReal` promotion at mixed-type
+    * binop call sites. Used to handle `int + real`-style expressions
+    * where the elaborator leaves operand types mismatched.
+    */
+  private def promoteIntToReal(v: MlirVal): MlirVal =
+    val r = fresh("pr")
+    out.append(s"  $r = arith.sitofp ${v.reg} : i64 to f64\n")
+    MlirVal(r, MScalar(TyReal))
 
   /** Matrix multiply via `linalg.matmul`. Both operands must already
     * be rank-2 tensors with matching element type and inner K dim

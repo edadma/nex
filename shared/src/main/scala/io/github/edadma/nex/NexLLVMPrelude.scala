@@ -720,8 +720,9 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   /** Emit `filter(arr, predicate)` — allocate a worst-case-sized result
     * array of length(arr), iterate and copy elements where the
     * predicate returns true, then truncate the descriptor's length
-    * field to the actual count. The over-allocation costs at most a
-    * pointer's-worth of unused memory and avoids a two-pass approach.
+    * field to the actual count and `realloc` the buffer down to that
+    * exact size so a sparse predicate doesn't leave the dropped tail
+    * pinned as slack until the array dies.
     */
   private def emitFilterCall(arr: TExpr, fn: TExpr, resultT: Type): String =
     if arrayRank(arr.tpe) != 1 then
@@ -778,6 +779,25 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val lenP  = newReg()
     emitLine(s"  $lenP = getelementptr inbounds %nex_arr1, ptr $res, i32 0, i32 1\n")
     emitLine(s"  store i64 $cnt, ptr $lenP\n")
+
+    // Shrink the buffer to the kept-element count. realloc returns
+    // either the same block trimmed in place or a fresh smaller one;
+    // either way the buffer ptr in the descriptor is updated. Pass at
+    // least one byte so realloc-to-zero stays well-defined across
+    // implementations.
+    val bufP   = newReg()
+    emitLine(s"  $bufP = getelementptr inbounds %nex_arr1, ptr $res, i32 0, i32 2\n")
+    val oldBuf = newReg()
+    emitLine(s"  $oldBuf = load ptr, ptr $bufP\n")
+    val raw    = newReg()
+    emitLine(s"  $raw = mul i64 $cnt, $esz\n")
+    val nz     = newReg()
+    emitLine(s"  $nz = icmp eq i64 $raw, 0\n")
+    val shrunkSize = newReg()
+    emitLine(s"  $shrunkSize = select i1 $nz, i64 1, i64 $raw\n")
+    val newBuf = newReg()
+    emitLine(s"  $newBuf = call ptr @realloc(ptr $oldBuf, i64 $shrunkSize)\n")
+    emitLine(s"  store ptr $newBuf, ptr $bufP\n")
 
     emitArrDec(arrV, arr.tpe)
     emitLine(s"  call void @__nex_env_dec(ptr $envPtr)\n")
