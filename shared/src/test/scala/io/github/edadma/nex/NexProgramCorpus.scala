@@ -1241,12 +1241,14 @@ object NexProgramCorpus:
       "sqrt of real",
       """def main() = print(sqrt(9.0))""",
       "3.0\n",
+      mlir = true,
     ),
     Case(
       "prelude",
       "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
       "nan\n",
+      mlir = true,
     ),
     Case(
       "prelude",

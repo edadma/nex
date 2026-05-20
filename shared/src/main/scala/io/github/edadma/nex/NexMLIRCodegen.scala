@@ -46,14 +46,33 @@ class NexMLIRCodegen:
 
   private case class MlirVal(reg: String, ty: MlirType)
 
-  private val out     = new StringBuilder
-  private var nextReg = 0
-  private val env     = mutable.Map.empty[Int, MlirVal]
+  private val out             = new StringBuilder
+  private var nextReg         = 0
+  private val env             = mutable.Map.empty[Int, MlirVal]
+  /** Per-program registry of `@intrinsic("libm.X")` function symbols.
+    * Populated at the start of [[compile]] by scanning every
+    * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
+    * the codegen looks the callee's symbol id up here; on a hit the
+    * call lowers to a direct `func.call @X(...)` instead of routing
+    * through the generic call path (which still rejects everything
+    * else as `notYet`).
+    */
+  private val libmIntrinsics  = mutable.Map.empty[Int, String]
 
   def compile(tp: TProgram): String =
     val mainDecl = tp.decls.collectFirst {
       case f: TFunDecl if f.sym.name == "main" && f.params.isEmpty => f
     }.getOrElse(notYet("program has no `def main()`"))
+
+    libmIntrinsics.clear()
+    tp.allDecls.foreach {
+      case f: TFunDecl =>
+        f.body match
+          case TIntrinsic(opId, _, _) if opId.startsWith("libm.") =>
+            libmIntrinsics(f.sym.id) = opId.stripPrefix("libm.")
+          case _ => ()
+      case _ => ()
+    }
 
     out.append("func.func private @nex_print_i64(i64)\n")
     out.append("func.func private @nex_print_f64(f64)\n")
@@ -63,7 +82,19 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_array_2d_i64(i64, i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_f64(i64, i64, i64)\n")
     out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
-    out.append("func.func private @pow(f64, f64) -> f64\n\n")
+    // libm bridges declared by the `@intrinsic` decls discovered above.
+    // Two-argument libm fns (atan2, hypot, pow) get a (f64, f64) -> f64
+    // signature; everything else is unary. `pow` is also declared
+    // unconditionally because the `^` operator routes there.
+    out.append("func.func private @pow(f64, f64) -> f64\n")
+    libmIntrinsics.values.toSeq.sorted.distinct.foreach {
+      case "pow"                  => ()  // already declared above
+      case n @ ("atan2" | "hypot") =>
+        out.append(s"func.func private @$n(f64, f64) -> f64\n")
+      case n =>
+        out.append(s"func.func private @$n(f64) -> f64\n")
+    }
+    out.append("\n")
     out.append("func.func @main() -> i32 {\n")
     nextReg = 0
     env.clear()
@@ -332,6 +363,9 @@ class NexMLIRCodegen:
         if s.kind == SymKind.Prelude && s.name == "abs" =>
       emitScalarAbs(emitExpr(x))
 
+    case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
+      emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
+
     case TMatMul(lhs, rhs, _, _) =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
@@ -450,6 +484,26 @@ class NexMLIRCodegen:
         MlirVal(r, MScalar(TyBool))
       case (lt, rt) =>
         notYet(s"comparison $op on $lt and $rt")
+
+  /** Call a libm bridge declared in the prologue. All arguments are
+    * promoted to f64 (sign-extending integer operands as needed) and
+    * the result is f64. Used by every `@intrinsic("libm.X")` prelude
+    * function — `sqrt(9.0)`, `hypot(3, 4)`, etc. Returns NaN for
+    * domain errors (libm semantics), which matches NexInterpreter's
+    * spec §10.2 behavior — e.g. `sqrt(-4.0)` prints `nan`.
+    */
+  private def emitLibmCall(name: String, args: List[MlirVal]): MlirVal =
+    val argsF = args.map { v =>
+      v.ty match
+        case MScalar(TyReal)    => v
+        case MScalar(TyInteger) => promoteIntToReal(v)
+        case other              => notYet(s"libm `$name` arg of type $other")
+    }
+    val argTypes = argsF.map(_ => "f64").mkString(", ")
+    val argRegs  = argsF.map(_.reg).mkString(", ")
+    val r        = fresh(name)
+    out.append(s"  $r = func.call @$name($argRegs) : ($argTypes) -> f64\n")
+    MlirVal(r, MScalar(TyReal))
 
   /** Scalar `^` (power). `int ^ int` dispatches to the C runtime's
     * `nex_ipow` (exponentiation by squaring), matching the LLVM
