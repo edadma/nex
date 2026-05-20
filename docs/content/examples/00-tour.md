@@ -337,17 +337,17 @@ enum Shape =
   Empty                                       // bare variant — no fields
 
 def area(s: Shape) =
-  match s
-    case Circle(r)  => pi * r^2
-    case Rect(w, h) => w * h
-    case Empty      => 0.0
+  s match
+    Circle(r)  -> pi * r^2
+    Rect(w, h) -> w * h
+    Empty      -> 0.0
 
 print(area(Circle(2.0)))     // 12.566370614359172
 print(area(Rect(3.0, 4.0)))  // 12.0
 print(area(Empty))           // 0.0
 ```
 
-Bare variants like `Empty` are values; fielded variants like `Circle(radius)` are constructors. `match` is exhaustive — every variant of the scrutinee's enum must have an arm (or you opt out explicitly with `case _ =>`); field patterns bind by declaration order, and `_` discards.
+Bare variants like `Empty` are values; fielded variants like `Circle(radius)` are constructors. The scrutinee sits to the left of `match` and arms use `Pattern -> body`; an optional `end match` may close the block. `match` is exhaustive — every variant of the scrutinee's enum must have an arm (or you opt out explicitly with `_ ->`); field patterns bind by declaration order, and `_` discards.
 
 ## Lambdas
 
