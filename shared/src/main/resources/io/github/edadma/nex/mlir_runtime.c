@@ -40,6 +40,25 @@ void nex_print_f64(double v) {
     putchar('\n');
 }
 
+/* Integer exponentiation by squaring, mirroring NexLLVMPreamble's
+ * @__nex_ipow. Result = base^exp for exp >= 0 (spec §4.4); returns 0
+ * defensively for negative exponents — the elaborator forces a
+ * TyReal result type for those, so the integer path never reaches
+ * a negative exponent in well-typed programs.
+ */
+int64_t nex_ipow(int64_t base, int64_t exp) {
+    if (exp < 0) return 0;
+    int64_t result = 1;
+    int64_t b = base;
+    int64_t e = exp;
+    while (e > 0) {
+        if (e & 1) result *= b;
+        e >>= 1;
+        if (e > 0) b *= b;
+    }
+    return result;
+}
+
 /* ---------------------------------------------------------------------------
  * Array printers. The MLIR side passes the aligned data pointer as an
  * intptr_t-shaped i64 (from `memref.extract_aligned_pointer_as_index` +

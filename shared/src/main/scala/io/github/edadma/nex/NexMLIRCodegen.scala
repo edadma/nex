@@ -60,7 +60,9 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_array_1d_i64(i64, i64)\n")
     out.append("func.func private @nex_print_array_1d_f64(i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_i64(i64, i64, i64)\n")
-    out.append("func.func private @nex_print_array_2d_f64(i64, i64, i64)\n\n")
+    out.append("func.func private @nex_print_array_2d_f64(i64, i64, i64)\n")
+    out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
+    out.append("func.func private @pow(f64, f64) -> f64\n\n")
     out.append("func.func @main() -> i32 {\n")
     nextReg = 0
     env.clear()
@@ -189,7 +191,21 @@ class NexMLIRCodegen:
     case TUnaryOp("-", inner, _, _) =>
       foldLiteralNeg(inner) match
         case Some(lit) => emitExpr(lit)
-        case None      => notYet(s"unary minus on non-literal: ${inner.getClass.getSimpleName}")
+        case None =>
+          val v = emitExpr(inner)
+          v.ty match
+            case MScalar(TyInteger) =>
+              val zero = fresh("z")
+              val r    = fresh("neg")
+              out.append(s"  $zero = arith.constant 0 : i64\n")
+              out.append(s"  $r = arith.subi $zero, ${v.reg} : i64\n")
+              MlirVal(r, MScalar(TyInteger))
+            case MScalar(TyReal) =>
+              val r = fresh("neg")
+              out.append(s"  $r = arith.negf ${v.reg} : f64\n")
+              MlirVal(r, MScalar(TyReal))
+            case other =>
+              notYet(s"unary minus on $other")
 
     case TArrayLit(elems, _, TyArray(elemT, 1)) if elems.nonEmpty =>
       val vals = elems.map(emitExpr)
@@ -239,17 +255,26 @@ class NexMLIRCodegen:
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
 
-    case TBinOp(op, lhs, rhs, _, _) =>
+    case TBinOp("^", lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
-      (lv.ty, rv.ty) match
-        case (MScalar(lt), MScalar(rt)) if lt == rt =>
+      emitScalarPower(lv, rv, resultTy)
+
+    case TBinOp(op, lhs, rhs, _, resultTy) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      (lv.ty, rv.ty, resultTy) match
+        case (MScalar(TyInteger), MScalar(TyInteger), TyReal) =>
+          // `int op int` whose elaborated result is real — e.g. `7 / 2`.
+          // Lift both operands to f64 before the float op.
+          emitScalarBinop(op, promoteIntToReal(lv), promoteIntToReal(rv), MScalar(TyReal))
+        case (MScalar(lt), MScalar(rt), _) if lt == rt =>
           emitScalarBinop(op, lv, rv, MScalar(lt))
-        case (MScalar(TyInteger), MScalar(TyReal)) =>
+        case (MScalar(TyInteger), MScalar(TyReal), _) =>
           emitScalarBinop(op, promoteIntToReal(lv), rv, MScalar(TyReal))
-        case (MScalar(TyReal), MScalar(TyInteger)) =>
+        case (MScalar(TyReal), MScalar(TyInteger), _) =>
           emitScalarBinop(op, lv, promoteIntToReal(rv), MScalar(TyReal))
-        case (lt, rt) =>
+        case (lt, rt, _) =>
           notYet(s"scalar binop $op on $lt and $rt")
 
     case TCall(TVarRef(s, _, _), List(arr), _, _)
@@ -324,6 +349,33 @@ class NexMLIRCodegen:
     val r = fresh("pr")
     out.append(s"  $r = arith.sitofp ${v.reg} : i64 to f64\n")
     MlirVal(r, MScalar(TyReal))
+
+  /** Scalar `^` (power). `int ^ int` dispatches to the C runtime's
+    * `nex_ipow` (exponentiation by squaring), matching the LLVM
+    * backend's `@__nex_ipow`. Anything else routes through libm
+    * `pow(f64, f64)` after lifting integer operands to f64. The
+    * elaborated `resultTy` is the source of truth for which path
+    * to take — `int ^ int` only stays integer-typed when the
+    * exponent is provably non-negative.
+    */
+  private def emitScalarPower(lv: MlirVal, rv: MlirVal, resultTy: Type): MlirVal =
+    (lv.ty, rv.ty, resultTy) match
+      case (MScalar(TyInteger), MScalar(TyInteger), TyInteger) =>
+        val r = fresh("ipow")
+        out.append(s"  $r = func.call @nex_ipow(${lv.reg}, ${rv.reg}) : (i64, i64) -> i64\n")
+        MlirVal(r, MScalar(TyInteger))
+      case _ =>
+        val lf = lv.ty match
+          case MScalar(TyInteger) => promoteIntToReal(lv)
+          case MScalar(TyReal)    => lv
+          case other              => notYet(s"power lhs $other")
+        val rf = rv.ty match
+          case MScalar(TyInteger) => promoteIntToReal(rv)
+          case MScalar(TyReal)    => rv
+          case other              => notYet(s"power rhs $other")
+        val r = fresh("rpow")
+        out.append(s"  $r = func.call @pow(${lf.reg}, ${rf.reg}) : (f64, f64) -> f64\n")
+        MlirVal(r, MScalar(TyReal))
 
   /** Matrix multiply via `linalg.matmul`. Both operands must already
     * be rank-2 tensors with matching element type and inner K dim
@@ -406,15 +458,23 @@ class NexMLIRCodegen:
     * it on a scalar. Used uniformly inside `linalg.reduce` and
     * `linalg.map` body regions, so both reductions and element-wise
     * ops share the dispatch table.
+    *
+    * Nex's `/` is always real division — the elaborator promotes
+    * `int / int` to real-typed before this dispatcher sees it, so
+    * `("/", TyInteger)` is never expected and isn't listed. `div`
+    * (integer division) and `%` (integer modulo) stay on `i64`.
     */
   private def scalarBinop(op: String, t: Type): String = (op, t) match
-    case ("+", TyInteger) => "arith.addi"
-    case ("-", TyInteger) => "arith.subi"
-    case ("*", TyInteger) => "arith.muli"
-    case ("+", TyReal)    => "arith.addf"
-    case ("-", TyReal)    => "arith.subf"
-    case ("*", TyReal)    => "arith.mulf"
-    case _                => notYet(s"scalar binop $op on $t")
+    case ("+",   TyInteger) => "arith.addi"
+    case ("-",   TyInteger) => "arith.subi"
+    case ("*",   TyInteger) => "arith.muli"
+    case ("div", TyInteger) => "arith.divsi"
+    case ("%",   TyInteger) => "arith.remsi"
+    case ("+",   TyReal)    => "arith.addf"
+    case ("-",   TyReal)    => "arith.subf"
+    case ("*",   TyReal)    => "arith.mulf"
+    case ("/",   TyReal)    => "arith.divf"
+    case _                  => notYet(s"scalar binop $op on $t")
 
   /** Render a `Double` so MLIR's FloatAttr parser accepts it. Whole
     * numbers get a trailing `.0`; everything else uses Scala's
