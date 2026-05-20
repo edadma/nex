@@ -1926,6 +1926,37 @@ object NexProgramCorpus:
       """.stripMargin,
       "x+y = 30\n",
     ),
+    Case(
+      "string interpolation",
+      "real value via s-interpolation returned from a function",
+      // Exercises the value-position interpolation path: the s"..."
+      // string is built and returned, then printed by the caller. Goes
+      // through `__nex_str_from_double`, which uses the same
+      // shortest-round-trip + Java post-processing as `print(x)`.
+      """
+        |def fmt(x: real): string = s"x=${x}"
+        |def main() =
+        |  print(fmt(1.4142135623730951))
+        |  print(fmt(1.0))
+        |  print(fmt(0.0))
+        |  print(fmt(-3.5))
+        |  print(fmt(1.0e-20))
+        |  print(fmt(1.0e20))
+      """.stripMargin,
+      "x=1.4142135623730951\nx=1.0\nx=0.0\nx=-3.5\nx=1.0E-20\nx=1.0E20\n",
+    ),
+    Case(
+      "string interpolation",
+      "real interpolation handles nan / inf / -inf via the value-position path",
+      """
+        |def fmt(x: real): string = s"x=${x}"
+        |def main() =
+        |  print(fmt(nan))
+        |  print(fmt(inf))
+        |  print(fmt(-inf))
+      """.stripMargin,
+      "x=nan\nx=inf\nx=-inf\n",
+    ),
 
     // ========================================================================
     // mut by-ref
@@ -2804,7 +2835,7 @@ object NexProgramCorpus:
     ),
     Case(
       "docs/examples",
-      "13-sum-types: Newton-solver describe()",
+      "13-sum-types: Newton-solver describe() with field interpolation",
       """
         |enum Solver =
         |  Converged(x: real)
@@ -2827,49 +2858,15 @@ object NexProgramCorpus:
         |
         |def describe(s: Solver): string =
         |  match s
-        |    case Converged(_)        => "converged"
-        |    case Diverged            => "diverged"
-        |    case MaxIters(iters, _)  => s"ran ${iters} iters"
+        |    case Converged(x)         => s"converged at x=${x}"
+        |    case Diverged             => "diverged"
+        |    case MaxIters(iters, x)   => s"ran ${iters} iters, last x=${x}"
         |
         |def main() =
         |  print(describe(newton(f, fp, 1.0,    1.0e-12, 50)))
         |  print(describe(newton(f, fp, 0.0,    1.0e-12, 50)))
         |  print(describe(newton(f, fp, 1.0e9,  1.0e-12, 3)))
       """.stripMargin,
-      "converged\ndiverged\nran 3 iters\n",
-    ),
-    Case(
-      "docs/examples",
-      "13-sum-types: root_or_zero extracts the converged value",
-      """
-        |enum Solver =
-        |  Converged(x: real)
-        |  Diverged
-        |  MaxIters(iters: integer, last: real)
-        |
-        |def newton(f: real -> real, fp: real -> real, x0: real, tol: real, max_iters: integer): Solver =
-        |  var x = x0
-        |  for i in 0..max_iters do
-        |    val fx = f(x)
-        |    if abs(fx) < tol then return Converged(x)
-        |    val d = fp(x)
-        |    if abs(d) < 1.0e-15 then return Diverged
-        |    x = x - fx / d
-        |  end for
-        |  MaxIters(max_iters, x)
-        |
-        |def f(x: real) : real = x^2 - 2.0
-        |def fp(x: real): real = 2.0 * x
-        |
-        |def root_or_zero(s: Solver): real =
-        |  match s
-        |    case Converged(x) => x
-        |    case _            => 0.0
-        |
-        |def main() =
-        |  print(root_or_zero(newton(f, fp, 1.0, 1.0e-12, 50)))
-        |  print(root_or_zero(newton(f, fp, 0.0, 1.0e-12, 50)))
-      """.stripMargin,
-      "1.4142135623730951\n0.0\n",
+      "converged at x=1.4142135623730951\ndiverged\nran 3 iters, last x=125000000.0\n",
     ),
   )

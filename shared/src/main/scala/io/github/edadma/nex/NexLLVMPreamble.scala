@@ -690,8 +690,14 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; through a runtime select.
         |
         |; Build a fresh string descriptor from a real (double). Mirrors
-        |; the interpreter's formatValue: whole numbers under 1e15 print
-        |; as "<lld>.0", everything else via %g.
+        |; the interpreter's formatValue exactly: whole numbers with
+        |; |v|<1e15 print as "<lld>.0"; everything else goes through the
+        |; same shortest-round-trip + Java post-processing path used by
+        |; [[__nex_print_real_shortest]] so that
+        |;   - `print(x)`              (direct print path)
+        |;   - `print(s"...${x}...")`  (per-part interpolated print path)
+        |;   - `val s = s"...${x}..."` (string-built-as-value path, this fn)
+        |; all produce byte-identical output for every double.
         |define ptr @__nex_str_from_double(double %v) {
         |entry:
         |  %f      = call double @floor(double %v)
@@ -711,13 +717,34 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %wig  = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %wd, i64 %wcap, ptr @.fmt_real_int, i64 %ll)
         |  ret ptr %wres
         |generic:
-        |  %glen = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr @.fmt_real_g, double %v)
-        |  %glen64 = sext i32 %glen to i64
-        |  %gres = call ptr @__nex_str_alloc(i64 %glen64)
-        |  %gdp  = getelementptr inbounds %nex_str, ptr %gres, i32 0, i32 2
-        |  %gd   = load ptr, ptr %gdp
-        |  %gcap = add i64 %glen64, 1
-        |  %gig  = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %gd, i64 %gcap, ptr @.fmt_real_g, double %v)
+        |  ; Reuse the precision-search strategy from
+        |  ; [[__nex_print_real_shortest]]: try `%.<p>g` for p = 1..17,
+        |  ; pick the first p whose output round-trips bit-equal through
+        |  ; strtod. 17 sig digits is always enough for IEEE 754 doubles;
+        |  ; NaN falls through naturally (fcmp oeq NaN, NaN = false), so
+        |  ; we land on p=17's "nan" buffer. Inf round-trips at p=1.
+        |  %buf  = alloca [40 x i8], align 1
+        |  %obuf = alloca [48 x i8], align 1
+        |  %fbuf = alloca [8 x i8], align 1
+        |  br label %loop.cond
+        |loop.cond:
+        |  %p = phi i32 [ 1, %generic ], [ %pn, %loop.body ]
+        |  %past = icmp sgt i32 %p, 17
+        |  br i1 %past, label %finalize, label %loop.body
+        |loop.body:
+        |  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fbuf, i64 8, ptr @.fmt_real_prec_g, i32 %p)
+        |  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %buf, i64 40, ptr %fbuf, double %v)
+        |  %r = call double @strtod(ptr %buf, ptr null)
+        |  %eq = fcmp oeq double %r, %v
+        |  %pn = add i32 %p, 1
+        |  br i1 %eq, label %finalize, label %loop.cond
+        |finalize:
+        |  call void @__nex_format_real_java(ptr %buf, ptr %obuf)
+        |  %olen   = call i64 @strlen(ptr %obuf)
+        |  %gres   = call ptr @__nex_str_alloc(i64 %olen)
+        |  %gdp    = getelementptr inbounds %nex_str, ptr %gres, i32 0, i32 2
+        |  %gd     = load ptr, ptr %gdp
+        |  %copied = call ptr @strcpy(ptr %gd, ptr %obuf)
         |  ret ptr %gres
         |}
         |

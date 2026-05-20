@@ -36,9 +36,9 @@ Each `return` site builds a value of the enum type. `Converged(x)` calls the fie
 ```nex
 def describe(s: Solver): string =
   match s
-    case Converged(_)        => "converged"
-    case Diverged            => "diverged"
-    case MaxIters(iters, _)  => s"ran ${iters} iters"
+    case Converged(x)         => s"converged at x=${x}"
+    case Diverged             => "diverged"
+    case MaxIters(iters, x)   => s"ran ${iters} iters, last x=${x}"
 
 def main() =
   print(describe(newton(f, fp, 1.0,    1.0e-12, 50)))
@@ -49,33 +49,16 @@ def main() =
 Output:
 
 ```
-converged
+converged at x=1.4142135623730951
 diverged
-ran 3 iters
+ran 3 iters, last x=125000000.0
 ```
 
 Three properties to notice:
 
 - **Exhaustiveness.** Every variant of `Solver` has its own arm. Drop one and the compiler refuses to build the program — there is no quiet "default fell through" path. A wildcard `case _ =>` arm is allowed when only some variants matter, but you opt in by writing it.
-- **Field binding.** `Converged(x)` extracts the `real` field into a name visible inside the arm body. `MaxIters(iters, _)` binds two patterns in declaration order, with `_` discarding the field we don't need.
+- **Field binding.** `Converged(x)` extracts the `real` field into a name visible inside the arm body. `MaxIters(iters, x)` binds two fields in declaration order, available throughout the arm body. Use `_` for any field you don't need (`case Continue(_) => ...`).
 - **One result type.** Every arm body must evaluate to the same type — here, `string`. The whole `match` expression is itself a `string`, so it can flow into `print`, into a binding, or into another expression.
-
-## Extracting the converged value
-
-When you actually want the `x` out of `Converged(x)`, the same machinery applies — `match` binds it and you compute with it:
-
-```nex
-def root_or_zero(s: Solver): real =
-  match s
-    case Converged(x) => x
-    case _            => 0.0
-
-def main() =
-  print(root_or_zero(newton(f, fp, 1.0, 1.0e-12, 50)))    // 1.4142135623730951
-  print(root_or_zero(newton(f, fp, 0.0, 1.0e-12, 50)))    // 0.0
-```
-
-The wildcard arm covers both `Diverged` and `MaxIters`, returning a sentinel `0.0`. In a real solver you'd usually surface the failure to the caller through a sum-typed return rather than collapsing it to a sentinel — but the option is there when a default is genuinely the right behavior.
 
 ## When to reach for a sum type
 
