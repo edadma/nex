@@ -47,29 +47,20 @@ def fft(x: [complex]): [complex] =
   val n = length(x)
   if n == 1 then return x
   val half = n div 2
-
-  // Split into even/odd-indexed sub-arrays (strided slices are
-  // deferred, so we walk the indices).
   var even = fill(half, 0.0 + 0i)
   var odd  = fill(half, 0.0 + 0i)
   for k in 0..half do
     even[k] = x[2 * k]
     odd[k]  = x[2 * k + 1]
-
   val ef = fft(even)
   val of = fft(odd)
-
-  // Twiddled odd half: t[k] = e^(-2πi k/n) · O[k].
-  var t = fill(half, 0.0 + 0i)
-  for k in 0..half do
-    val a = -2.0 * pi * to_real(k) / to_real(n)
-    t[k] = (cos(a) + sin(a) * i) * of[k]
-
-  // Stitch the two output halves with element-wise array ops + slice
-  // assignment — no per-index `y[k] = ...; y[k + half] = ...` shuffle.
   var y = fill(n, 0.0 + 0i)
-  y[0..half] = ef + t
-  y[half..n] = ef - t
+  for k in 0..half do
+    val w = cos(-2.0 * pi * to_real(k) / to_real(n)) +
+            sin(-2.0 * pi * to_real(k) / to_real(n)) * i
+    val t = w * of[k]
+    y[k]        = ef[k] + t
+    y[k + half] = ef[k] - t
   y
 
 def main() =
@@ -78,6 +69,8 @@ def main() =
   for k in 0..length(y) do
     print(y[k])
 [= /playground =]
+
+The slice-assignment / element-wise-array-arithmetic form appears in the [FFT example page](/examples/12-fft/) — the playground bundle (`/nex-playground.js`) is a checked-in static artifact that lags the rest of the toolchain by months, so the in-browser interpreter doesn't yet recognize those newer interpreter features. Regenerate the bundle from `sbt nexJS/fullLinkJS` to refresh it.
 
 ## Limitations
 
