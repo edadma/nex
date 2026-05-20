@@ -1444,12 +1444,14 @@ object NexProgramCorpus:
       "range",
       """def main() = print(range(0, 5))""",
       "[0, 1, 2, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "prelude",
       "linspace",
       """def main() = print(linspace(0.0, 1.0, 5))""",
       "[0.0, 0.25, 0.5, 0.75, 1.0]\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -1459,6 +1461,7 @@ object NexProgramCorpus:
         |  print(ones(3))
       """.stripMargin,
       "[0, 0, 0]\n[1, 1, 1]\n",
+      mlir = true,
     ),
     Case(
       "prelude",

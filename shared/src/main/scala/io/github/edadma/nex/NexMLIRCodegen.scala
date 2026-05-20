@@ -409,6 +409,20 @@ class NexMLIRCodegen:
         if s.kind == SymKind.Prelude && s.name == "abs" =>
       emitScalarAbs(emitExpr(x))
 
+    case TCall(TVarRef(s, _, _), List(TIntLit(lo, _, _), TIntLit(hi, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "range" =>
+      emitRangeCall(lo, hi)
+
+    case TCall(TVarRef(s, _, _), List(TIntLit(n, _, _)), _, _)
+        if s.kind == SymKind.Prelude && (s.name == "zeros" || s.name == "ones") =>
+      emitConstFill(s.name, n.toInt)
+
+    case TCall(TVarRef(s, _, _), List(loLit, hiLit, TIntLit(n, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "linspace" =>
+      val lo = realLitValue(loLit)
+      val hi = realLitValue(hiLit)
+      emitLinspaceCall(lo, hi, n.toInt)
+
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
@@ -864,6 +878,93 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : i1\n")
     out.append("    }\n")
     MlirVal(outR, outTy)
+
+  /** Literal `range(lo, hi)`: integer half-open range with statically
+    * known length. Length zero (when `hi <= lo`) lowers to an empty
+    * `tensor<0xi64>`. Otherwise we walk the iteration domain via
+    * `linalg.index` and add the loaded position to the literal `lo`.
+    */
+  private def emitRangeCall(lo: Long, hi: Long): MlirVal =
+    val len = math.max(0L, hi - lo).toInt
+    val ty  = MTensor(TyInteger, List(len))
+    if len == 0 then
+      val r = fresh("rng")
+      out.append(s"  $r = tensor.empty() : ${ty.text}\n")
+      return MlirVal(r, ty)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val loConst = fresh("lo")
+    out.append(s"  $loConst = arith.constant $lo : i64\n")
+    val outR = fresh("rng")
+    out.append(s"  $outR = linalg.map outs($initR : ${ty.text})\n")
+    out.append(s"    (%_o: i64) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val idxI  = fresh("idxi")
+    out.append(s"      $idxI = arith.index_castui $idxR : index to i64\n")
+    val sumR  = fresh("sum")
+    out.append(s"      $sumR = arith.addi $loConst, $idxI : i64\n")
+    out.append(s"      linalg.yield $sumR : i64\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
+
+  /** Literal `zeros(n)` / `ones(n)`. Always integer-typed per the
+    * elaborator (matches the interpreter; the spec's real-typed
+    * signature is a v0 divergence shared across backends). Emits a
+    * `linalg.fill` over a fresh empty tensor.
+    */
+  private def emitConstFill(name: String, n: Int): MlirVal =
+    val ty    = MTensor(TyInteger, List(n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val v     = if name == "zeros" then 0 else 1
+    val cR    = fresh("c")
+    out.append(s"  $cR = arith.constant $v : i64\n")
+    val outR  = fresh(name)
+    out.append(s"  $outR = linalg.fill ins($cR : i64) outs($initR : ${ty.text}) -> ${ty.text}\n")
+    MlirVal(outR, ty)
+
+  /** Literal `linspace(lo, hi, n)`: real array of length n with values
+    * `lo + i * (hi - lo) / (n - 1)`. We compute the step at codegen
+    * time and emit a `linalg.map` that yields `lo + step * i`. When
+    * `n == 1`, every element collapses to `lo` (`step` is a 0/0 NaN
+    * otherwise); special-case to avoid emitting NaN in the IR.
+    */
+  private def emitLinspaceCall(lo: Double, hi: Double, n: Int): MlirVal =
+    val ty    = MTensor(TyReal, List(n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val loC   = fresh("lo")
+    out.append(s"  $loC = arith.constant ${formatReal(lo)} : f64\n")
+    val step  = if n <= 1 then 0.0 else (hi - lo) / (n - 1)
+    val stepC = fresh("step")
+    out.append(s"  $stepC = arith.constant ${formatReal(step)} : f64\n")
+    val outR  = fresh("ls")
+    out.append(s"  $outR = linalg.map outs($initR : ${ty.text})\n")
+    out.append(s"    (%_o: f64) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val idxI  = fresh("idxi")
+    out.append(s"      $idxI = arith.index_castui $idxR : index to i64\n")
+    val idxF  = fresh("idxf")
+    out.append(s"      $idxF = arith.sitofp $idxI : i64 to f64\n")
+    val mulR  = fresh("mul")
+    out.append(s"      $mulR = arith.mulf $stepC, $idxF : f64\n")
+    val addR  = fresh("add")
+    out.append(s"      $addR = arith.addf $loC, $mulR : f64\n")
+    out.append(s"      linalg.yield $addR : f64\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
+
+  /** Pull a `Double` out of an `TIntLit` or `TRealLit`. Used by the
+    * `linspace` dispatch where the elaborator may leave `0` (int) or
+    * `0.0` (real) untouched on the lo/hi arguments — both meanings
+    * are valid sources.
+    */
+  private def realLitValue(e: TExpr): Double = e match
+    case TIntLit(v, _, _)  => v.toDouble
+    case TRealLit(v, _, _) => v
+    case other             => notYet(s"non-literal linspace bound: ${other.getClass.getSimpleName}")
 
   /** Predicate string for `arith.cmpi` / `arith.cmpf`. Integers use
     * signed predicates; reals use ordered (`oeq`, `olt`, …) for every
