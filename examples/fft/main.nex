@@ -37,22 +37,18 @@ def fft(x: [complex]): [complex] =
   val ef = fft(even)
   val of = fft(odd)
 
-  // Compute the two output halves as separate vectors. The butterfly
-  // stays in scalar-complex form — one twiddle per element.
-  var top    = fill(half, 0.0 + 0i)
-  var bottom = fill(half, 0.0 + 0i)
+  // Build the twiddled odd half as a vector: t[k] = e^(-2πi k/n) · O[k].
+  var t = fill(half, 0.0 + 0i)
   for k in 0..half do
     val angle = -2.0 * pi * to_real(k) / to_real(n)
-    val w     = cos(angle) + sin(angle) * i
-    val t     = w * of[k]
-    top[k]    = ef[k] + t
-    bottom[k] = ef[k] - t
+    t[k] = (cos(angle) + sin(angle) * i) * of[k]
 
-  // Stitch the halves into y with two slice assignments — no
-  // per-index `y[k] = ...; y[k + half] = ...` shuffle.
+  // Stitch the two output halves into y with element-wise array ops
+  // (`ef + t`, `ef - t` on `[complex]`) plus a slice assignment per
+  // half — no per-index `y[k] = ...; y[k + half] = ...` shuffle.
   var y = fill(n, 0.0 + 0i)
-  y[0..half] = top
-  y[half..n] = bottom
+  y[0..half] = ef + t
+  y[half..n] = ef - t
   y
 
 def main() =

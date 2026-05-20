@@ -2641,17 +2641,13 @@ object NexProgramCorpus:
         |    odd[k]  = x[2 * k + 1]
         |  val ef = fft(even)
         |  val of = fft(odd)
-        |  var top    = fill(half, 0.0 + 0i)
-        |  var bottom = fill(half, 0.0 + 0i)
+        |  var t = fill(half, 0.0 + 0i)
         |  for k in 0..half do
         |    val angle = -2.0 * pi * to_real(k) / to_real(n)
-        |    val w     = cos(angle) + sin(angle) * i
-        |    val t     = w * of[k]
-        |    top[k]    = ef[k] + t
-        |    bottom[k] = ef[k] - t
+        |    t[k] = (cos(angle) + sin(angle) * i) * of[k]
         |  var y = fill(n, 0.0 + 0i)
-        |  y[0..half] = top
-        |  y[half..n] = bottom
+        |  y[0..half] = ef + t
+        |  y[half..n] = ef - t
         |  y
         |
         |def main() =
