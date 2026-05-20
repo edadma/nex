@@ -41,6 +41,6 @@ The primary audience is the Fortran-using community: HPC, computational science,
 
 ## 1.4 Scope
 
-The language as currently specified is the minimum coherent slice that can run real numerical programs. It includes: scalar types, rank-1 and rank-2 arrays (vectors and matrices), expression-oriented control flow, multi-file folder modules, the mode system, ARC-based memory management, a small standard prelude with matrix operations, built-in unit testing, and both a reference interpreter and an AOT compiler.
+The language as currently specified is the minimum coherent slice that can run real numerical programs. It includes: scalar types, rank-1 and rank-2 arrays (vectors and matrices) with slice assignment, expression-oriented control flow, multi-file folder modules, the mode system, ARC-based memory management, a source-form standard prelude (the scalar transcendentals and their complex extensions live in `prelude/*.nex` and are auto-imported), built-in unit testing, and both a reference interpreter and an AOT compiler.
 
 Excluded (v1+): user-defined generics, sized numeric variants (`real32`, `integer32`, etc.), rank-3+ arrays / a shape language, structs with methods, sum types / pattern matching, operator definitions, modules with submodule interface/implementation split, FFI, parallel-for, and a package manager.

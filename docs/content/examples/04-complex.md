@@ -21,15 +21,18 @@ def main() =
 
 ```nex
 // Solve ax² + bx + c = 0; returns a pair of complex roots.
+// Parens around each tuple are required: comma binds looser than every
+// other operator (§4.3), so without them the comma would bind across
+// the surrounding `if` / `else`.
 def solve_quadratic(a: real, b: real, c: real) =
   val disc = b^2 - 4a*c
   if disc >= 0.0 then
     val sd = sqrt(disc)
-    (-b + sd) / (2a) + 0i, (-b - sd) / (2a) + 0i
+    ((-b + sd) / (2a) + 0i, (-b - sd) / (2a) + 0i)
   else
     val real_part = -b / (2a)
     val imag_part = sqrt(-disc) / (2a)
-    real_part + imag_part*i, real_part - imag_part*i
+    (real_part + imag_part*i, real_part - imag_part*i)
   end if
 
 def main() =

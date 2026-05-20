@@ -957,6 +957,60 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         emitAggIncHelper(t)
         emitAggDropHelper(t)
 
+  /** Register a top-level def as needing a closure-shape thunk. The
+    * thunk's name is returned (callers use it as the `fn-ptr` field of
+    * the `{ ptr, ptr }` closure literal). Thunks are emitted lazily
+    * after the main function loop by [[flushDefThunks]].
+    */
+  protected def requestDefThunk(s: Symbol): String =
+    defThunkNames.get(s.id) match
+      case Some(name) => name
+      case None =>
+        val name = s"${llvmFuncNameOf(s)}$$thunk"
+        defThunkNames(s.id)   = name
+        defThunkSymbols(s.id) = s
+        defThunkPending      += s.id
+        name
+
+  /** Emit every pending def thunk. Each thunk has signature
+    * `<retT>(ptr %env, <argTs...>)`, ignores `%env`, and tail-calls
+    * the underlying user function. The IR is emitted with `local_unnamed_addr`
+    * so the optimizer can fold/inline at -O1+ where the closure
+    * dispatch can be specialized.
+    */
+  protected def flushDefThunks(): Unit =
+    while defThunkPending.nonEmpty do
+      val id = defThunkPending.head
+      defThunkPending -= id
+      if !defThunkEmitted.contains(id) then
+        defThunkEmitted += id
+        val s    = defThunkSymbols(id)
+        val name = defThunkNames(id)
+        val (paramTs, retT) = s.tpe match
+          case TyFunc(ps, r) => (ps.map(_._1), r)
+          case other         =>
+            // Defensive — top-level defs should always carry a TyFunc.
+            notImpl(s"def-thunk for non-function symbol `${s.name}` of type $other")
+        val realName = llvmFuncNameOf(s)
+        val retLL    = llvmType(retT)
+        val argDecls = ("ptr %env" :: paramTs.zipWithIndex.map { case (t, i) =>
+          s"${llvmType(t)} %a$i"
+        }).mkString(", ")
+        val callArgs = paramTs.zipWithIndex.map { case (t, i) =>
+          s"${llvmType(t)} %a$i"
+        }.mkString(", ")
+        out.append(s"\n; thunk: closure-shape wrapper for top-level def `${s.name}`\n")
+        out.append(s"define $retLL @$name($argDecls) {\n")
+        out.append(s"entry:\n")
+        retT match
+          case TyUnit =>
+            out.append(s"  call void @$realName($callArgs)\n")
+            out.append(s"  ret void\n")
+          case _ =>
+            out.append(s"  %r = call $retLL @$realName($callArgs)\n")
+            out.append(s"  ret $retLL %r\n")
+        out.append("}\n")
+
   /** Return the (type, index) list of fields for an aggregate type.
     * Tuples are positional; structs use their declared field order.
     * Non-aggregates return Nil — emitters should guard with

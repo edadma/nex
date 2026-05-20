@@ -16,7 +16,7 @@ Note that *language* version and *compiler* version are tracked independently. A
 **Syntax / expressions:**
 - Literate programming via `.lnex` files (Markdown wrapper: column-0 prose, indented code, supports inline math, tables, and non-Nex code blocks)
 - View-style slicing (non-copying — returns a borrow into the source array)
-- Strided slice assignment (`a[lo..hi by k] = rhs`). The non-strided forms (`a[lo..hi] = rhs`, `m[i, lo..hi] = rhs`, full rank-2 sections) are shipped — see [§4.14](/spec/04-expressions/#414-indexing-and-slicing)
+- Strided slice assignment (`a[lo..hi by k] = rhs`). The non-strided forms (`a[lo..hi] = rhs`, `m[i, lo..hi] = rhs`, full rank-2 sections) are shipped — see [§4.15](/spec/04-expressions/#415-slice-assignment)
 - Negative indexing (`a[-1]`)
 - Default parameter values (`def f(x: real = 0.0) = ...`)
 - Named arguments at call sites (`f(x = 1.0, y = 2.0)`)

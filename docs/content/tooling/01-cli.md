@@ -22,6 +22,17 @@ nex compile [--backend B] <file>    # emit IR and invoke a backend toolchain to 
 - `llvm` (default) — emits LLVM IR text and invokes `clang -O1`. Covers the full language surface.
 - `mlir` — emits MLIR via `linalg` / `arith` / `scf` dialects and runs `mlir-opt` → `mlir-translate` → `clang -O1`. **Experimental** and currently limited to the milestones the parity suite covers (rank-1 / rank-2 array prints, element-wise binops, val-bindings, sum, matmul). Anything outside that subset raises a compile-time "not yet supported" diagnostic.
 
+## Locating the source prelude
+
+The scalar transcendentals plus their complex extensions live in a `prelude/*.nex` directory and are auto-imported on every elaboration (see [§10 of the spec](/spec/10-prelude/)). The CLI locates that directory at startup; the precedence order is:
+
+1. `--prelude-path <dir>` — an explicit CLI flag (highest priority).
+2. `NEX_HOME` environment variable — looks at `$NEX_HOME/lib/prelude/`.
+3. `-Dnex.prelude.path=<dir>` JVM system property. `build.sbt` sets this automatically so `sbt run` and `sbt test` use the in-repo `prelude/` with no extra wiring.
+4. Walk up from the current working directory — at each ancestor, check for a `prelude/` sibling and then `lib/prelude/`.
+
+If none of the four locate a directory, the compiler falls back to the compiler-built-in name table and proceeds silently. This was the design during the Stage 1/2 migration and remains the fallback today for environments without a sysroot.
+
 ## Running the CLI from sbt
 
 There is no shipped binary yet; the canonical entry point is sbt's `runMain`:

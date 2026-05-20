@@ -6,6 +6,8 @@ weight: 100
 
 The prelude is implicitly imported in every module. It contains the names available without any `import` statement.
 
+The scalar math layer (the libm transcendentals plus their complex extensions) lives as ordinary Nex source in the sysroot's `prelude/` directory and is auto-imported at every program's elaboration. The compiler still seeds a handful of names whose dispatch depends on return-type information (`abs`, `sign`, `min`, `max`, `conj`, `arg`) plus the array prelude and I/O — those will migrate to source as the relevant overload-resolution rules generalize. The split is invisible to users; either way the names are in scope.
+
 ## 10.1 Constants
 
 | Name | Type | Value |
@@ -25,11 +27,12 @@ sqrt, cbrt, abs, sign
 exp, log, log2, log10
 sin, cos, tan, asin, acos, atan, atan2
 sinh, cosh, tanh, asinh, acosh, atanh
+hypot
 floor, ceil, round, trunc
 min, max
 ```
 
-Each is overloaded over numeric types as appropriate. `sin`, `cos`, `exp`, `log`, `sqrt` apply to `real` and `complex`.
+Each is overloaded over numeric types as appropriate. `sqrt`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan` apply to both `real` and `complex` (the complex variants are source-level Nex `def`s in the prelude that compose the real-libm primitives — overload resolution picks the right one by argument type at the call site).
 
 ## 10.3 Complex-specific operations
 
@@ -106,7 +109,7 @@ shape(m: [[T]]): (integer, integer)     // (rows, cols)
 
 transpose(m: [[T]]): [[T]]              // m × n → n × m
 matmul(a: [[T]], b: [[T]]): [[T]]       // also available via the @ operator
-diag(m: [[T]]): [T]                     // diagonal as rank-1
+diag(d: [T]): [[T]]                     // n×n diagonal matrix with d on the diagonal
 
 reshape(a: [T], m: integer, n: integer): [[T]]   // length(a) must equal m * n
 flatten(m: [[T]]): [T]                  // column-major flatten
@@ -123,8 +126,8 @@ These are built-in: the compiler knows their types and lowers them with fusion-a
 **Rank-1:**
 
 ```nex
-zeros(n: integer): [real]
-ones(n: integer): [real]
+zeros(n: integer): [integer]
+ones(n: integer): [integer]
 fill(n: integer, x: T): [T]
 linspace(lo: real, hi: real, n: integer): [real]
 ```
@@ -132,13 +135,23 @@ linspace(lo: real, hi: real, n: integer): [real]
 **Rank-2:**
 
 ```nex
-zeros(m: integer, n: integer): [[real]]
-ones(m: integer, n: integer): [[real]]
-fill(m: integer, n: integer, x: T): [[T]]
-identity(n: integer): [[real]]          // n × n identity matrix
+zeros(shape: (integer, integer)): [[integer]]
+ones(shape: (integer, integer)): [[integer]]
+fill(shape: (integer, integer), x: T): [[T]]
+identity(n: integer): [[integer]]       // n × n identity matrix
 ```
 
-`zeros`, `ones`, and `fill` are arity-overloaded: with one integer argument they produce rank-1; with two, rank-2.
+`zeros`, `ones`, and `fill` dispatch on shape: a single `integer` argument produces rank-1, a `(integer, integer)` tuple produces rank-2.
+
+```nex
+zeros(5)                 // rank-1: [0, 0, 0, 0, 0]
+zeros((2, 3))            // rank-2: [[0, 0, 0], [0, 0, 0]]
+fill(4, 7.0)             // rank-1: [7.0, 7.0, 7.0, 7.0]
+fill((3, 2), 0.0)        // rank-2 reals
+identity(3)              // rank-2 integer identity matrix
+```
+
+`zeros`, `ones`, and `identity` return **integer** element type in v0. When you need a real-typed buffer, use `fill(n, 0.0)`, `fill(n, 1.0)`, or `linspace`; for a real identity, multiply by `1.0` (`identity(n) * 1.0`) or fill manually. A future refinement is expected once overload-by-return-type lands.
 
 ## 10.6 I/O
 

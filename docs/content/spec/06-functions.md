@@ -107,7 +107,18 @@ def first_negative(v: [real]) =
 
 A function's final expression provides its return value implicitly without `return`.
 
-## 6.9 Test functions
+## 6.9 `@intrinsic` declarations
+
+A bodyless `def` annotated with `@intrinsic("opId")` declares a function whose implementation is supplied by the compiler — typically a libm bridge or a runtime helper — rather than by Nex source. The `opId` string names the lowering: `@intrinsic("libm.sqrt")` lowers to a direct call to the host's libm `sqrt` primitive.
+
+```nex
+@intrinsic("libm.sqrt")
+def sqrt(x: real): real
+```
+
+This is how the standard prelude bridges the real-libm transcendentals (see the Prelude chapter); user code generally has no reason to write `@intrinsic` directly. The attribute is the only sanctioned escape hatch — any other bodyless `def` is a parse error.
+
+## 6.10 Test functions
 
 A function declared with the `@test` attribute is a unit test: it takes no arguments, returns `unit`, and is discovered automatically by the test runner.
 

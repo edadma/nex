@@ -324,29 +324,40 @@ m[:, :]              // full copy (rank-2)
 
 All slice forms return freshly-owned arrays. View-style slicing (returning a borrow into the source array without copying) is *deferred to v1+*.
 
-**Slice assignment** (Fortran-90 array-section assignment). Slice forms are also valid as l-values, letting you overwrite an entire sub-extent in one statement:
+## 4.15 Slice assignment
+
+Slice forms (the same shapes documented in §4.14) are also valid on the **left** of `=`. This is the Fortran-90 array-section assignment idiom: a single statement overwrites an entire sub-extent of a `var` array in place.
 
 ```nex
 var xs = [10, 20, 30, 40, 50]
-xs[1..4] = [200, 300, 400]        // xs = [10, 200, 300, 400, 50]
-xs[0..=2] = [1, 2, 3]             // xs = [1, 2, 3, 400, 50]
+xs[1..4]  = [200, 300, 400]                // xs = [10, 200, 300, 400, 50]
+xs[0..=2] = [1, 2, 3]                      // xs = [1, 2, 3, 400, 50]
 
 var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
-m[1, :]       = [40, 50, 60]      // replace row 1
-m[:, 0]       = [-1, -4, -7]      // replace column 0
-m[0..2, 0..2] = [[10, 20], [30, 40]]   // replace a 2×2 sub-matrix
+m[1, :]       = [40, 50, 60]               // replace row 1
+m[:, 0]       = [-1, -4, -7]               // replace column 0
+m[0..2, 0..2] = [[10, 20], [30, 40]]       // replace a 2×2 sub-matrix
 ```
 
-The right-hand side must be shape-conforming with the slice:
-- A rank-1 slice expects a rank-1 array of the same length.
-- A rank-2 slice with both axes preserved expects a rank-2 array of matching shape.
-- A rank-2 slice with one axis collapsed (`m[i, lo..hi]` / `m[:, j]`) expects a rank-1 array of matching length.
+**Shape conformance.** The right-hand side must match the slice's shape:
 
-Length / shape mismatches trap at runtime, as does any out-of-bounds slice bound. The underlying buffer is mutated in place — the array variable does not get a new identity, so the assignment is observable through every binding that aliases the same underlying array.
+- A rank-1 slice (`a[lo..hi]`, `a[lo..=hi]`) expects a rank-1 array of the same length.
+- A rank-2 slice with both axes preserved (`m[r1..r2, c1..c2]`, `m[:, :]`) expects a rank-2 array of matching shape.
+- A rank-2 slice with one axis collapsed (`m[i, c1..c2]`, `m[:, j]`, `m[i, :]`) expects a rank-1 array of matching length.
 
-Strided slice forms (`xs[lo..hi by k] = rhs`) are *deferred to v1+*.
+Length / shape mismatches trap at runtime, as does any out-of-bounds slice bound.
 
-## 4.15 Struct construction and access
+**In-place mutation.** The underlying buffer is rewritten — the `var` binding does not acquire a new identity. The assignment is observable through every binding that aliases the same underlying array, and no clone fires from this construct alone.
+
+**When to reach for slice assignment.** Three common cases:
+
+1. **Replacing a contiguous prefix / suffix / middle of a rank-1 buffer**, where you'd otherwise write an indexed loop.
+2. **Writing one row, column, or sub-block of a rank-2 matrix** that you've computed independently — `result[py, :] = row_vector` is the working v0 idiom (see the Mandelbrot example).
+3. **Avoiding a `mut` parameter** for "replace this region with that data" APIs, since slice assignment mutates a binding directly in its own scope without the auto-clone interaction that follows passing a `var` array to a `mut` parameter (§8.3).
+
+Strided slice forms (`xs[lo..hi by k] = rhs`) are *deferred to v0.1+*.
+
+## 4.16 Struct construction and access
 
 ```nex
 val p = Point(3.0, 4.0)
@@ -360,7 +371,7 @@ var p = Point(3.0, 4.0)
 p.x = 10.0                   // ok
 ```
 
-## 4.16 Tuple construction and access
+## 4.17 Tuple construction and access
 
 Tuples are constructed by **comma-separated expressions** (length ≥ 2). Parentheses are not required:
 
@@ -403,7 +414,7 @@ val (a, b): (integer, real) = 1, 2.0     // parens required when annotating type
 
 Single-element tuples do not exist; `1` is just `1`. The empty tuple `()` is already the unit literal (chapter 2) — there is no zero-arity tuple distinct from `unit`.
 
-## 4.17 Block expressions
+## 4.18 Block expressions
 
 A sequence of statements followed by a final expression is itself an expression with the type and value of the final expression. The block form arises from indentation:
 
