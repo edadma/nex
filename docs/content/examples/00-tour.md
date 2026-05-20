@@ -249,6 +249,23 @@ val AA = A @ A                       // [[7.0, 10.0], [15.0, 22.0]]  matrix-matr
 val d  = u @ u                       // 61.0           dot (rank-1 @ rank-1)
 ```
 
+## Slice assignment — Fortran-90 array sections
+
+A slice expression on the left of `=` overwrites the corresponding sub-extent of a `var` array in place. The buffer is mutated, not reallocated.
+
+```nex
+var xs = [10, 20, 30, 40, 50]
+xs[1..4] = [200, 300, 400]               // xs = [10, 200, 300, 400, 50]
+xs[0..=2] = [1, 2, 3]                    // xs = [1, 2, 3, 400, 50]
+
+var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+m[1, :]       = [40, 50, 60]             // replace row 1
+m[:, 0]       = [-1, -4, -7]             // replace column 0
+m[0..2, 0..2] = [[10, 20], [30, 40]]     // replace a 2×2 sub-matrix
+```
+
+The right-hand side must be shape-conforming with the slice; mismatches trap at runtime. See the [Slice assignment](/spec/04-expressions/#415-slice-assignment) section of the Expressions chapter for the full rules.
+
 ## Tuples
 
 ```nex
@@ -363,14 +380,10 @@ def scale_in_place(v: mut [real], factor: real) =
     v[i] = v[i] * factor
   end for
 
-// `@strict` disables auto-clone insertion in this function body — every
-// clone must then be written explicitly with .clone(). For performance-
-// critical paths where every allocation must be visible.
-@strict
-def hot_loop(a: [real]) =
-  val backup = a.clone()         // explicit clone required under @strict
-  // ... transformations on a and backup ...
-  backup
+// A planned `@strict` attribute will disable auto-clone insertion in
+// this function body — every clone must then be written explicitly
+// with .clone(). For performance-critical paths where every allocation
+// must be visible. (Parser-reserved today; deferred to v0.1+.)
 ```
 
 ## Higher-order functions
@@ -478,7 +491,7 @@ val M = [[1.0, 2.0],
 
 rows(M); cols(M); shape(M)                      // 3; 2; (3, 2)
 transpose(M)                                    // 2×3
-diag([[1.0, 0.0], [0.0, 2.0]])                  // [1.0, 2.0]
+diag([1.0, 2.0])                                // [[1.0, 0.0], [0.0, 2.0]]  — diagonal matrix
 reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3)   // 2×3
 flatten(M)                                      // [1.0, 3.0, 5.0, 2.0, 4.0, 6.0]  (column-major)
 
@@ -492,16 +505,20 @@ matmul(transpose(M), M)                         // 2×2; same as transpose(M) @ 
 ## Prelude — construction
 
 ```nex
-zeros(5)                                        // [0.0, 0.0, 0.0, 0.0, 0.0]
-ones(3)                                         // [1.0, 1.0, 1.0]
-fill(4, 7.0)                                    // [7.0, 7.0, 7.0, 7.0]
+zeros(5)                                        // [0, 0, 0, 0, 0]            — integer zeros (v0)
+ones(3)                                         // [1, 1, 1]                  — integer ones (v0)
+fill(4, 7.0)                                    // [7.0, 7.0, 7.0, 7.0]       — real, from x: real
+fill(5, 0.0)                                    // [0.0, 0.0, 0.0, 0.0, 0.0]  — real zeros via fill
 linspace(0.0, 1.0, 5)                           // [0.0, 0.25, 0.5, 0.75, 1.0]
 
-zeros(2, 3)                                     // 2×3 zero matrix
-ones(3, 3)                                      // 3×3 ones
-fill(2, 2, 9)                                   // 2×2 of integer 9
-identity(3)                                     // 3×3 identity matrix
+zeros((2, 3))                                   // 2×3 integer zero matrix
+ones((3, 3))                                    // 3×3 integer ones
+fill((2, 2), 9)                                 // 2×2 of integer 9
+fill((3, 2), 0.0)                               // 3×2 real zero matrix
+identity(3)                                     // 3×3 integer identity matrix
 ```
+
+Rank-2 construction takes a `(rows, cols)` tuple as the shape argument (single-integer arg = rank-1; tuple arg = rank-2). `zeros`/`ones`/`identity` return integer-element arrays in v0 — for real-typed initial buffers use `fill(n, 0.0)` / `fill((r, c), 0.0)` / `linspace`.
 
 ## Prelude — I/O
 
@@ -536,17 +553,18 @@ def test_approx_real() =
   assert_approx(0.1 + 0.2, 0.3, 1e-10)
 
 @test
-def test_approx_array() =
-  assert_approx([0.1 + 0.2, 0.7], [0.3, 0.7], 1e-10)
-
-@test
-def test_approx_complex() =
-  assert_approx((1.0 + 2i) * i, -2.0 + 1i, 1e-12)
-
-@test
 def test_traps_on_bad_division() =
-  assert_traps(() -> 1 // 0)
+  assert_traps(() -> 1 div 0)
+
+@test
+def test_trap_message_contains_substring() =
+  // The 2-arg form additionally checks that the trap's message
+  // contains the expected substring — useful for asserting a specific
+  // failure mode rather than "any trap fires".
+  assert_traps(() -> 1 div 0, "division by zero")
 ```
+
+(Array- and complex-valued `assert_approx` are *deferred to v0.1+* — for now compare element-wise yourself, or check `abs(diff)` against a scalar tolerance.)
 
 A whole module can be marked test-only:
 

@@ -28,7 +28,7 @@ Output is identical to what the interpreter produced.
 
 ## Verify parity
 
-The intended way to use Nex during development is to write code, run it under the interpreter for the fast edit/run cycle, then occasionally compile to native to confirm the AOT path produces the same output. Every commit to the compiler runs over a thousand unit tests that compare the two paths line-by-line on a representative corpus. The compiled binary's real-number printing matches Java's `Double.toString` byte-for-byte — non-whole reals like `0.1 + 0.2` print as `0.30000000000000004`, magnitudes like `1e20` print as `1.0E20`, and runtime traps (assertions, array-index OOB, division by zero, slice OOB) all carry the same human-readable messages as the interpreter so `assert_traps(fn, substring)` matches the same trap text on both sides.
+The intended way to use Nex during development is to write code, run it under the interpreter for the fast edit/run cycle, then occasionally compile to native to confirm the AOT path produces the same output. Every commit to the compiler runs the full unit-test suite (over two thousand tests on JVM today) plus an interpreter-vs-AOT parity sweep that compares the two paths byte-for-byte on a shared corpus. The compiled binary's real-number printing matches Java's `Double.toString` — non-whole reals like `0.1 + 0.2` print as `0.30000000000000004`, magnitudes like `1e20` print as `1.0E20`, and runtime traps (assertions, array-index OOB, division by zero, slice OOB) all carry the same human-readable messages as the interpreter so `assert_traps(fn, substring)` matches the same trap text on both sides.
 
 ## When you'd reach for which
 
@@ -40,6 +40,6 @@ The intended way to use Nex during development is to write code, run it under th
 
 You're done with the getting-started path. From here:
 
-- [Examples](/examples/) — sixteen complete programs from hello-world through a recursive FFT.
+- [Examples](/examples/) — a feature tour plus a dozen complete programs from hello-world through a recursive FFT.
 - [Specification](/spec/) — the chapter-by-chapter language reference.
 - [Tooling](/tooling/) — CLI details, verification model, supported targets.

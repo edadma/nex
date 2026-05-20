@@ -653,6 +653,59 @@ object NexProgramCorpus:
       """.stripMargin,
       "100\n",
     ),
+    Case(
+      "functions",
+      "top-level def passed as a function-value argument",
+      // Regression: passing a top-level `def` name through a HOF arg
+      // used to lower to `{ ptr, ptr } 0` in LLVM IR (clang rejected
+      // it: "integer constant must have integer type"). Codegen now
+      // materializes a closure-shape thunk per referenced def and
+      // builds `{ <thunk>, null }` so the indirect call site reads
+      // fn_ptr + env_ptr uniformly.
+      """
+        |def harmonic(t: real, y: [real]) = [y[1], -y[0]]
+        |
+        |def call_with(f: (real, [real]) -> [real], t: real, y: [real]) =
+        |  f(t, y)
+        |
+        |def main() =
+        |  print(call_with(harmonic, 0.0, [1.0, 0.0]))
+      """.stripMargin,
+      "[0.0, -1.0]\n",
+    ),
+    Case(
+      "functions",
+      "same top-level def passed twice in one expression",
+      // Two TVarRef sites to the same def should produce two closure
+      // literals sharing a single thunk emission (the request is
+      // memoized on symbol id).
+      """
+        |def neg(x: integer) = -x
+        |
+        |def apply2(f: integer -> integer, g: integer -> integer, x: integer) =
+        |  f(g(x))
+        |
+        |def main() =
+        |  print(apply2(neg, neg, 7))
+      """.stripMargin,
+      "7\n",
+    ),
+    Case(
+      "functions",
+      "top-level def bound to a val, then called via the binding",
+      // Mixed path: a `val f = top_level_def` binding stores the
+      // closure literal; calling `f(x)` then goes through
+      // `emitClosureCall` (indirect dispatch). Different from the
+      // pre-existing val-bound-lambda test above.
+      """
+        |def square(x: integer) = x * x
+        |
+        |def main() =
+        |  val f = square
+        |  print(f(9))
+      """.stripMargin,
+      "81\n",
+    ),
 
     // ========================================================================
     // arrays
@@ -798,6 +851,54 @@ object NexProgramCorpus:
         |  print(2xs)
       """.stripMargin,
       "[2, 4, 6]\n",
+    ),
+    Case(
+      "arrays",
+      "broadcast scalar-int * real-array promotes scalar before fmul",
+      // Regression: AOT codegen used to emit `fmul double 2, %t` (with
+      // the integer literal as a double operand), which clang rejects.
+      // `emitBroadcast` now lifts the scalar IR value to the array's
+      // element type via `liftScalarTo` before the per-element op.
+      """
+        |def main() =
+        |  val a = [1.0, 2.0, 3.0]
+        |  print(2 * a)
+        |  print(2a)
+        |  print(2 + a)
+        |  print(a - 1)
+      """.stripMargin,
+      "[2.0, 4.0, 6.0]\n[2.0, 4.0, 6.0]\n[3.0, 4.0, 5.0]\n[0.0, 1.0, 2.0]\n",
+    ),
+    Case(
+      "arrays",
+      "broadcast scalar-int < real-array promotes scalar before fcmp",
+      // Same fix path as the arithmetic-broadcast regression above —
+      // comparisons go through `emitScalarBinOp` with elem=TyReal as
+      // the op type, so the integer scalar needs sitofp first.
+      """
+        |def main() =
+        |  val a = [1.0, 2.0, 3.0]
+        |  print(a < 2)
+        |  print(2 < a)
+      """.stripMargin,
+      "[true, false, false]\n[false, false, true]\n",
+    ),
+    Case(
+      "arrays",
+      "elementwise [int] + [real] promotes both elements to real",
+      // Regression: when the two operand arrays have different element
+      // types, the codegen loaded each element at its native LLVM type
+      // (i64 vs double) and fed both to `add i64 ...`, mismatching the
+      // result element type. `emitElementWise` now promotes both
+      // loaded elements up to the result-element type before the op.
+      """
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  val b = [10.0, 20.0, 30.0]
+        |  print(a + b)
+        |  print(b + a)
+      """.stripMargin,
+      "[11.0, 22.0, 33.0]\n[11.0, 22.0, 33.0]\n",
     ),
     Case(
       "arrays",
@@ -1963,5 +2064,271 @@ object NexProgramCorpus:
         |def main() = print(s)
       """.stripMargin,
       "49\n",
+    ),
+
+    // ========================================================================
+    // docs/examples — programs lifted from docs/content/examples/. Each one
+    // is the body of the corresponding `def main()`-bearing snippet in a
+    // doc page, with output measured at the time the doc was last verified.
+    // Adding them here gives byte-exact interpreter/AOT parity coverage on
+    // every commit so the published docs cannot silently drift.
+    // ========================================================================
+
+    Case(
+      "docs/examples",
+      "01-hello: hypotenuse via sqrt and ^",
+      """
+        |def hypotenuse(a: real, b: real) = sqrt(a^2 + b^2)
+        |
+        |def main() =
+        |  print(s"hypotenuse(3, 4) = ${hypotenuse(3.0, 4.0)}")
+      """.stripMargin,
+      "hypotenuse(3, 4) = 5.0\n",
+    ),
+    Case(
+      "docs/examples",
+      "02-arrays: element-wise fusion + Point distance",
+      """
+        |struct Point
+        |  x: real
+        |  y: real
+        |end
+        |
+        |def distance(p1: Point, p2: Point) =
+        |  val dx = p1.x - p2.x
+        |  val dy = p1.y - p2.y
+        |  sqrt(dx^2 + dy^2)
+        |
+        |def main() =
+        |  val a = [1.0, 2.0, 3.0, 4.0, 5.0]
+        |  val b = [10.0, 20.0, 30.0, 40.0, 50.0]
+        |  val result = 2a + b - 1.0
+        |  print(result)
+        |
+        |  val origin = Point(0.0, 0.0)
+        |  val p = Point(3.0, 4.0)
+        |  print(distance(origin, p))
+      """.stripMargin,
+      "[11.0, 23.0, 35.0, 47.0, 59.0]\n5.0\n",
+    ),
+    Case(
+      "docs/examples",
+      "03-higher-order: map captures mean, fuses into sum",
+      """
+        |def main() =
+        |  val xs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        |  val n = to_real(length(xs))
+        |  val mean = sum(xs) / n
+        |  val variance: real = xs.map(x -> (x - mean)^2).sum() / n
+        |  val stddev = sqrt(variance)
+        |  print(s"mean = $mean, stddev = $stddev")
+      """.stripMargin,
+      "mean = 5.5, stddev = 2.8722813232690143\n",
+    ),
+    Case(
+      "docs/examples",
+      "04-complex: complex arithmetic + .abs / .re / .im",
+      """
+        |def main() =
+        |  val z1 = 1.0 + 2i
+        |  val z2 = 3.0 - 1i
+        |  print(s"z1 + z2 = ${z1 + z2}")
+        |  print(s"z1 * z2 = ${z1 * z2}")
+        |  print(s"|z1| = ${z1.abs()}")
+        |  print(s"z1.re = ${z1.re}, z1.im = ${z1.im}")
+      """.stripMargin,
+      "z1 + z2 = 4.0+1.0i\nz1 * z2 = 5.0+5.0i\n|z1| = 2.23606797749979\nz1.re = 1.0, z1.im = 2.0\n",
+    ),
+    Case(
+      "docs/examples",
+      "06-numerical-methods: Newton's method for sqrt",
+      """
+        |def newton_sqrt(x: real, tol: real) =
+        |  var guess = x / 2.0
+        |  var delta = guess
+        |  while abs(delta) > tol do
+        |    val next = (guess + x / guess) / 2.0
+        |    delta = next - guess
+        |    guess = next
+        |  end while
+        |  guess
+        |
+        |def main() =
+        |  print(newton_sqrt(2.0,    1.0e-12))
+        |  print(newton_sqrt(1000.0, 1.0e-9))
+      """.stripMargin,
+      "1.414213562373095\n31.622776601683793\n",
+    ),
+    Case(
+      "docs/examples",
+      "06-numerical-methods: RK4 one step over a harmonic oscillator (100 steps)",
+      """
+        |def rk4_step(f: (real, [real]) -> [real], t: real, y: [real], h: real) =
+        |  val k1 = f(t,       y)
+        |  val k2 = f(t + h/2, y + h/2 * k1)
+        |  val k3 = f(t + h/2, y + h/2 * k2)
+        |  val k4 = f(t + h,   y + h   * k3)
+        |  y + h/6 * (k1 + 2k2 + 2k3 + k4)
+        |
+        |def harmonic(t: real, y: [real]) =
+        |  [y[1], -y[0]]
+        |
+        |def main() =
+        |  var y = [1.0, 0.0]
+        |  var t = 0.0
+        |  val h = 0.01
+        |  val steps = 100
+        |
+        |  for k in 0..steps do
+        |    y = rk4_step(harmonic, t, y, h)
+        |    t = t + h
+        |  end for
+        |
+        |  print(s"position=${y[0]}, velocity=${y[1]}")
+      """.stripMargin,
+      "position=0.5403023059378852, velocity=-0.8414709847622888\n",
+    ),
+    Case(
+      "docs/examples",
+      "07-styles: three idioms — fused, explicit-loop, slice assignment",
+      """
+        |def normalize(v: [real]) =
+        |  val mag = sqrt(sum(v * v))
+        |  if mag == 0.0 then v
+        |  else v / mag
+        |
+        |def normalize_loop(v: [real]) =
+        |  val n = length(v)
+        |  val mag = sqrt(sum(v * v))
+        |  if mag == 0.0 then v
+        |  else
+        |    var out = fill(n, 0.0)
+        |    for i in 0..n do
+        |      out[i] = v[i] / mag
+        |    end for
+        |    out
+        |
+        |def main() =
+        |  val a = [3.0, 4.0]
+        |  val b = normalize(a)
+        |  print(b)
+        |
+        |  val c = normalize_loop([3.0, 4.0])
+        |  print(c)
+        |
+        |  var d = [9.0, 9.0, 9.0, 9.0]
+        |  d[0..2] = [0.6, 0.8]
+        |  print(d)
+      """.stripMargin,
+      "[0.6, 0.8]\n[0.6, 0.8]\n[0.6, 0.8, 9.0, 9.0]\n",
+    ),
+    Case(
+      "docs/examples",
+      "08-mandelbrot: per-row slice assignment of escape-time vector",
+      """
+        |def escape_iters(c: complex, max_iter: integer) =
+        |  var z = 0i
+        |  var k = 0
+        |  while k < max_iter and z.abs() <= 2.0 do
+        |    z = z*z + c
+        |    k = k + 1
+        |  end while
+        |  k
+        |
+        |def row_at(py: integer, width: integer, height: integer, max_iter: integer) =
+        |  var row = fill(width, 0)
+        |  for px in 0..width do
+        |    val x = -2.0 + 3.0 * to_real(px) / to_real(width)
+        |    val y = -1.5 + 3.0 * to_real(py) / to_real(height)
+        |    row[px] = escape_iters(x + y*i, max_iter)
+        |  end for
+        |  row
+        |
+        |def main() =
+        |  var result = fill((3, 8), 0)
+        |  for py in 0..3 do
+        |    result[py, :] = row_at(py, 8, 3, 20)
+        |  end for
+        |  for py in 0..3 do
+        |    print(max(result[py]))
+        |  end for
+      """.stripMargin,
+      "2\n20\n20\n",
+    ),
+    Case(
+      "docs/examples",
+      "09-sinusoids: three-term wave at four sample points",
+      """
+        |def wave(t: real) =
+        |  3sin(2pi*t) + 2cos(4pi*t) - sin(6pi*t)
+        |
+        |def main() =
+        |  print(s"wave(0.0)  = ${wave(0.0)}")
+        |  print(s"wave(0.25) = ${wave(0.25)}")
+        |  print(s"wave(0.5)  = ${wave(0.5)}")
+        |  print(s"wave(0.75) = ${wave(0.75)}")
+      """.stripMargin,
+      "wave(0.0)  = 2.0\nwave(0.25) = 2.0\nwave(0.5)  = 2.0\nwave(0.75) = -6.0\n",
+    ),
+    Case(
+      "docs/examples",
+      "10-power-iteration: dominant eigenvalue / eigenvector via @ and dot",
+      """
+        |def power_iteration(A: [[real]], iters: integer) =
+        |  val n = rows(A)
+        |  var v = fill(n, 1.0)
+        |  var lambda = 0.0
+        |
+        |  for k in 0..iters do
+        |    val Av = A @ v
+        |    val norm = sqrt(dot(Av, Av))
+        |    v = Av / norm
+        |    lambda = dot(v, A @ v)
+        |  end for
+        |
+        |  (lambda, v)
+        |
+        |def main() =
+        |  val A = [[3.0, 2.0],
+        |           [2.0, 3.0]]
+        |
+        |  val lambda, v = power_iteration(A, 50)
+        |
+        |  print(s"dominant eigenvalue ~ $lambda")
+        |  print(s"corresponding eigenvector ~ $v")
+      """.stripMargin,
+      "dominant eigenvalue ~ 4.999999999999999\ncorresponding eigenvector ~ [0.7071067811865475, 0.7071067811865475]\n",
+    ),
+    Case(
+      "docs/examples",
+      "12-fft: recursive radix-2 FFT on a 4-point step input",
+      """
+        |def fft(x: [complex]): [complex] =
+        |  val n = length(x)
+        |  if n == 1 then return x
+        |  val half = n div 2
+        |  var even = fill(half, 0.0 + 0i)
+        |  var odd  = fill(half, 0.0 + 0i)
+        |  for k in 0..half do
+        |    even[k] = x[2 * k]
+        |    odd[k]  = x[2 * k + 1]
+        |  val ef = fft(even)
+        |  val of = fft(odd)
+        |  var y = fill(n, 0.0 + 0i)
+        |  for k in 0..half do
+        |    val angle = -2.0 * pi * to_real(k) / to_real(n)
+        |    val w     = cos(angle) + sin(angle) * i
+        |    val t     = w * of[k]
+        |    y[k]        = ef[k] + t
+        |    y[k + half] = ef[k] - t
+        |  y
+        |
+        |def main() =
+        |  val x: [complex] = [1.0, 1.0, 0.0, 0.0]
+        |  val y = fft(x)
+        |  for k in 0..length(y) do
+        |    print(y[k])
+      """.stripMargin,
+      "2.0+0.0i\n1.0-1.0i\n0.0+0.0i\n0.9999999999999999+1.0i\n",
     ),
   )

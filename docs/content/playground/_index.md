@@ -75,6 +75,6 @@ def main() =
 - **Single-file programs only.** The playground bypasses the module loader; `import` won't work here. Use multiple `def`s in the same buffer.
 - **No file I/O, no stdin.** Output is whatever `print(...)` produces.
 - **No `nex compile` path.** This runs the interpreter; the AOT compile path needs `clang` and is JVM-only.
-- **Real precision.** Numbers print with Java's `Double.toString` shortest-round-trip here (matching the JVM interpreter exactly). The AOT binary uses `%g` 6-sig-fig — see the [Verification chapter](/tooling/02-verification/) for the documented divergence.
+- **Real precision.** Numbers print with Java's `Double.toString` shortest-round-trip here (matching the JVM interpreter exactly). The AOT binary uses an iterative shortest-round-trip helper that converges to the same byte sequence — see the [Verification chapter](/tooling/02-verification/) for the parity contract.
 
 A polished editor (CodeMirror + Nex syntax highlighting) is on the roadmap; the current textarea is intentionally minimal to validate the experience first.

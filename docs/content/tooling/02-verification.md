@@ -11,9 +11,9 @@ The Nex implementation runs two execution paths in parallel and treats their dis
 
 ## Three layers of testing
 
-- **Unit tests on every subsystem.** Lexer, parser, three elaborator stages, interpreter, codegen, prelude. Over a thousand tests, all of which pass on all three CLI targets (JVM, Scala.js, Scala Native); every commit runs the full suite.
+- **Unit tests on every subsystem.** Lexer, parser, three elaborator stages, interpreter, codegen, prelude. Over two thousand tests on JVM today; every commit runs the full suite on all three CLI targets (JVM, Scala.js, Scala Native). Backend-shelling tests (those that drive `clang` or the MLIR toolchain) run on JVM only; the cross-platform subset covers the parser, elaborator, and interpreter.
 - **IR pattern checks.** Codegen tests assert against expected LLVM IR fragments — both that the right instructions are emitted and that the fusion pass actually produced a single loop where it claimed to. This catches regressions where the IR drifts shape but still happens to execute correctly.
-- **End-to-end interpreter/AOT parity.** A program is run twice — once through the interpreter, once through the AOT binary — and the two stdouts are compared byte-for-byte. The AOT path emits reals via an iterative shortest-round-trip helper (`%.<p>g` + `strtod` for p = 1..17) plus a Java-`Double.toString`-style post-pass, so non-whole reals like `0.1 + 0.2` print as `0.30000000000000004` on both sides instead of `%g`'s 6-significant-figure approximation.
+- **End-to-end interpreter/AOT parity.** A shared corpus of programs (see `NexProgramCorpus`) is run twice — once through the interpreter, once through the AOT binary — and the two stdouts are compared byte-for-byte. A mutation-based fuzz harness (`NexMutations`) applies behaviour-preserving rewrites to each corpus program and reruns the comparison so silent miscompiles surface as parity failures. The AOT path emits reals via an iterative shortest-round-trip helper (`%.<p>g` + `strtod` for p = 1..17) plus a Java-`Double.toString`-style post-pass, so non-whole reals like `0.1 + 0.2` print as `0.30000000000000004` on both sides instead of `%g`'s 6-significant-figure approximation.
 
 ## Why this matters
 

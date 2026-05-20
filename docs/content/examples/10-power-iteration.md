@@ -9,7 +9,10 @@ weight: 100
 // Returns (eigenvalue, eigenvector).
 def power_iteration(A: [[real]], iters: integer) =
   val n = rows(A)
-  var v = ones(n)                    // initial guess
+  var v = fill(n, 1.0)               // initial guess — real-typed so subsequent
+                                     // reassignments stay [real]; in v0 `ones(n)`
+                                     // would give [integer] and the rebind would
+                                     // trip the type check.
   var lambda = 0.0
 
   for k in 0..iters do
@@ -19,7 +22,7 @@ def power_iteration(A: [[real]], iters: integer) =
     lambda = dot(v, A @ v)           // Rayleigh quotient
   end for
 
-  lambda, v
+  (lambda, v)
 
 def main() =
   // Symmetric matrix with eigenvalues 5 and 1

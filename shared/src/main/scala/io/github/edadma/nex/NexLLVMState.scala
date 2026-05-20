@@ -188,6 +188,23 @@ protected trait NexLLVMState:
     */
   protected val llvmFuncNames = mutable.Map.empty[Int, String]
 
+  /** Top-level `def`s that are used as function VALUES — passed to a
+    * higher-order function, stored in a binding, etc. The LLVM closure
+    * shape is `{ fn-ptr, env-ptr }` and the indirect-call path prepends
+    * an `env` argument; bare top-level defs don't take an env so we
+    * synthesize a thin **thunk** wrapper per referenced def that takes
+    * `(env_ptr, args...)`, ignores `env`, and tail-calls the real def.
+    *
+    * Symbol id → thunk LLVM name (also the IR symbol the closure literal
+    * stores). [[defThunkPending]] tracks which thunks still need
+    * emission; [[defThunkEmitted]] tracks which have been emitted.
+    * [[flushDefThunks]] drains pending after the main function loop.
+    */
+  protected val defThunkNames    = mutable.Map.empty[Int, String]
+  protected val defThunkPending  = mutable.Set.empty[Int]
+  protected val defThunkEmitted  = mutable.Set.empty[Int]
+  protected val defThunkSymbols  = mutable.Map.empty[Int, Symbol]
+
   /** Convert a list of param types into a stable, ASCII-only suffix for
     * use in overload-disambiguating LLVM function names. Mirrors the
     * shape NexMonomorphize already uses for kind-specialized clones.

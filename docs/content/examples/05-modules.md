@@ -27,8 +27,10 @@ def variance(xs: [real]) = central_moment(xs, 2)
 def stddev(xs: [real]) = sqrt(variance(xs))
 
 // Private to the `stats` module; other files in stats/ can call it
-// but importers cannot.
-private def central_moment(xs: [real], k: integer) =
+// but importers cannot. The explicit `: real` return type lets sibling
+// callers like `variance` see a concrete element type even when the
+// body's last expression composes generic prelude HOFs.
+private def central_moment(xs: [real], k: integer): real =
   val m = mean(xs)
   val n = to_real(length(xs))
   xs.map(x -> (x - m)^k).sum() / n

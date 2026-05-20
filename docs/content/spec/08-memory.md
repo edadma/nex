@@ -32,7 +32,7 @@ The compiler **automatically inserts clones** wherever needed to satisfy the uni
 2. If a `val` array is passed to a `mut` parameter, the compiler inserts a clone so the function receives a fresh mutable buffer.
 3. The clone-placement optimization pass picks the optimal point for each clone (e.g., clones the *earlier* use so the *later* use can be a move), and elides clones that are provably unnecessary.
 
-The `@strict` function attribute disables auto-clone insertion within the function body. Within `@strict` functions, every clone must be written explicitly as `.clone()`; missing clones become compile errors. This mode is intended for library authors and performance-critical code where every allocation must be visible.
+A planned `@strict` function attribute will disable auto-clone insertion within a function body — every clone must then be written explicitly as `.clone()`, and missing clones become compile errors. This mode is intended for library authors and performance-critical code where every allocation must be visible. The attribute is reserved at the parser level today; the enforcement pass is *deferred to v0.1+*.
 
 ## 8.4 Read-mode parameters need no clones
 

@@ -149,6 +149,13 @@ class NexLLVMCodegen
     // late-registered helpers land in the module too.
     flushDeepDecs()
 
+    // Flush per-top-level-def closure-shape thunks. A `def` used as a
+    // function value (passed to a HOF, stored in a binding, etc.)
+    // requested a wrapper that prepends an env arg the bare def
+    // doesn't declare; emit the bodies now that every user function
+    // is in the module.
+    flushDefThunks()
+
     out.toString
 
   // ---------------------------------------------------------------------------
@@ -445,6 +452,20 @@ class NexLLVMCodegen
           emitLine(s"  $c1 = insertvalue { double, double } $c0, double 1.0, 1\n")
           c1
         case other => notYet(s"prelude reference `$other`"); "0"
+
+    case TVarRef(s, _, _) if s.kind == SymKind.Function =>
+      // Top-level def used as a value (passed as argument, stored in a
+      // binding, returned, etc). Build the closure literal `{ thunk,
+      // null }` so the indirect-call path through `emitClosureCall`
+      // works uniformly — the thunk takes an env_ptr it ignores. The
+      // thunk itself is emitted by [[flushDefThunks]] after the main
+      // function loop completes.
+      val thunkName = requestDefThunk(s)
+      val c0 = newReg()
+      emitLine(s"  $c0 = insertvalue { ptr, ptr } undef, ptr @$thunkName, 0\n")
+      val c1 = newReg()
+      emitLine(s"  $c1 = insertvalue { ptr, ptr } $c0, ptr null, 1\n")
+      c1
 
     case TVarRef(s, _, t) =>
       // Lambda body: a free reference to an outer binding is captured.

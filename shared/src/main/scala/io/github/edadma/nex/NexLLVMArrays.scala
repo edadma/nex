@@ -275,6 +275,37 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $reg = $instr ${llvmType(opT)} $lv, $rv\n")
         reg
 
+  /** Promote a scalar IR value of type `from` up the numeric lattice to
+    * `to`. No-op when types match. The valid coercions follow the
+    * promotion order in spec §3.2: `integer → real → complex`. Used by
+    * the element-wise and broadcast lowerings so a mixed-numeric op
+    * (`int_scalar * real_array`, `[int] + [real]`) doesn't emit an IR
+    * shape mismatch (e.g. `fmul double 2, %t` where `2` is an integer
+    * literal).
+    */
+  protected def liftScalarTo(sv: String, from: Type, to: Type): String =
+    if from == to then sv
+    else (from, to) match
+      case (TyInteger, TyReal) =>
+        val r = newReg()
+        emitLine(s"  $r = sitofp i64 $sv to double\n")
+        r
+      case (TyInteger, TyComplex) =>
+        val r1 = newReg()
+        emitLine(s"  $r1 = sitofp i64 $sv to double\n")
+        val c0 = newReg()
+        emitLine(s"  $c0 = insertvalue { double, double } undef, double $r1, 0\n")
+        val c1 = newReg()
+        emitLine(s"  $c1 = insertvalue { double, double } $c0, double 0.0, 1\n")
+        c1
+      case (TyReal, TyComplex) =>
+        val c0 = newReg()
+        emitLine(s"  $c0 = insertvalue { double, double } undef, double $sv, 0\n")
+        val c1 = newReg()
+        emitLine(s"  $c1 = insertvalue { double, double } $c0, double 0.0, 1\n")
+        c1
+      case _ => sv
+
   /** Lower `lhs ⊙ rhs` element-wise when both sides are array-typed.
     * Allocates a fresh result of the same shape, iterates the flat
     * buffer, applies the scalar op per element. Both operands are
@@ -300,14 +331,29 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val rBuf = bufPtr(rv, rhs.tpe)
     val oBuf = bufPtr(desc, resultT)
 
+    // For mixed-element arrays (e.g. `[int] + [real]`), the per-element
+    // op runs on the result element type; promote each loaded element
+    // up the numeric lattice to that type before the binop. Comparisons
+    // are special — they keep operating on the common numeric type,
+    // never on bool, so promote to that common type instead of the
+    // result-element type (which would be TyBool).
+    val opElem =
+      if Set("==", "!=", "<", "<=", ">", ">=").contains(op) then
+        // Both sides are promoted to whichever is higher in the lattice.
+        if elemL == TyComplex || elemR == TyComplex then TyComplex
+        else if elemL == TyReal || elemR == TyReal then TyReal
+        else elemL
+      else resE
     emitCountingLoop(lenR, "ew") { i =>
       val lSlot = newReg()
       emitLine(s"  $lSlot = getelementptr inbounds $stL, ptr $lBuf, i64 $i\n")
-      val ll = loadElem(stL, lSlot, langL)
+      val ll0 = loadElem(stL, lSlot, langL)
       val rSlot = newReg()
       emitLine(s"  $rSlot = getelementptr inbounds $stR, ptr $rBuf, i64 $i\n")
-      val rr = loadElem(stR, rSlot, langR)
-      val out = emitScalarBinOp(op, ll, rr, elemL)
+      val rr0 = loadElem(stR, rSlot, langR)
+      val ll = liftScalarTo(ll0, elemL, opElem)
+      val rr = liftScalarTo(rr0, elemR, opElem)
+      val out = emitScalarBinOp(op, ll, rr, opElem)
       val oSlot = newReg()
       emitLine(s"  $oSlot = getelementptr inbounds $stRes, ptr $oBuf, i64 $i\n")
       storeElem(stRes, out, oSlot)
@@ -325,7 +371,13 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val stRes = storageType(resE)
     val langE = llvmType(elem)
 
-    val sv = emitExpr(scalar)
+    val sv0 = emitExpr(scalar)
+    // Promote the scalar IR value up to the array's element type if
+    // they differ (e.g. `int_literal * [real]` arrives with
+    // `scalar.tpe = TyInteger` and `elem = TyReal`; without this lift
+    // the per-element fmul receives an i64 immediate as a double
+    // operand and clang rejects the IR).
+    val sv = liftScalarTo(sv0, scalar.tpe, elem)
     val av = emitExpr(arr)
 
     val desc = allocLike(av, arr.tpe, resE)
