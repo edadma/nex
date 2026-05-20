@@ -884,6 +884,7 @@ object NexProgramCorpus:
         |  print(xs < 5)
       """.stripMargin,
       "[true, false, false]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -926,6 +927,7 @@ object NexProgramCorpus:
         |  print(2 < a)
       """.stripMargin,
       "[true, false, false]\n[false, false, true]\n",
+      mlir = true,
     ),
     Case(
       "arrays",

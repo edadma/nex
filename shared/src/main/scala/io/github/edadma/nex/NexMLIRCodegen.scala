@@ -81,6 +81,8 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_array_1d_f64(i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_i64(i64, i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_f64(i64, i64, i64)\n")
+    out.append("func.func private @nex_print_array_1d_bool(i64, i64)\n")
+    out.append("func.func private @nex_print_array_2d_bool(i64, i64, i64)\n")
     out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
     // libm bridges declared by the `@intrinsic` decls discovered above.
     // Two-argument libm fns (atan2, hypot, pow) get a (f64, f64) -> f64
@@ -210,8 +212,10 @@ class NexMLIRCodegen:
   private def arrayPrintHelper(elemT: Type, rank: Int): String = (elemT, rank) match
     case (TyInteger, 1) => "nex_print_array_1d_i64"
     case (TyReal,    1) => "nex_print_array_1d_f64"
+    case (TyBool,    1) => "nex_print_array_1d_bool"
     case (TyInteger, 2) => "nex_print_array_2d_i64"
     case (TyReal,    2) => "nex_print_array_2d_f64"
+    case (TyBool,    2) => "nex_print_array_2d_bool"
     case _              => notYet(s"array print helper for $elemT rank-$rank")
 
   /** The expression visitor. Every node that lowers must produce a
@@ -317,6 +321,15 @@ class NexMLIRCodegen:
       items.foreach(emitBlockItem)
       emitExpr(result)
 
+    case TElementWise(op, lhs, rhs, _, _) if isComparisonOp(op) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      (lv.ty, rv.ty) match
+        case (lt: MTensor, rt: MTensor) if lt.shape == rt.shape =>
+          emitElementWiseComparison(op, lv, rv, lt, rt)
+        case (lt, rt) =>
+          notYet(s"element-wise comparison $op on $lt and $rt")
+
     case TElementWise(op, lhs, rhs, _, _) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
@@ -325,6 +338,15 @@ class NexMLIRCodegen:
           emitElementWiseBinop(op, lv, rv, lt)
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
+
+    case TBroadcast(scalar, arr, op, scalarFirst, _, _) if isComparisonOp(op) =>
+      val sv = emitExpr(scalar)
+      val av = emitExpr(arr)
+      (sv.ty, av.ty) match
+        case (MScalar(st), t @ MTensor(et, _)) =>
+          emitBroadcastComparison(op, sv, av, t, scalarFirst, st, et)
+        case (sty, aty) =>
+          notYet(s"broadcast comparison $op on $sty and $aty")
 
     case TBroadcast(scalar, arr, op, scalarFirst, _, _) =>
       val sv = emitExpr(scalar)
@@ -735,6 +757,112 @@ class NexMLIRCodegen:
     out.append(s"      linalg.yield %s : $scalar\n")
     out.append("    }\n")
     MlirVal(outR, ty)
+
+  /** Element-wise comparison: `xs < ys`, `xs == ys`, etc. Output element
+    * type is always `i1`. Mixed-element-type inputs (`[int] < [real]`)
+    * are handled by promoting each loaded element up to the wider numeric
+    * type inside the region body, then dispatching to `arith.cmpi` /
+    * `arith.cmpf` with the same predicate scheme as scalar comparisons
+    * (ordered for everything except `!=`, which uses `une` so NaN-vs-NaN
+    * is correctly true).
+    */
+  private def emitElementWiseComparison(op: String, lv: MlirVal, rv: MlirVal, lt: MTensor, rt: MTensor): MlirVal =
+    val lElem    = lt.elem
+    val rElem    = rt.elem
+    val commonT  = if lElem == TyReal || rElem == TyReal then TyReal else TyInteger
+    val commonS  = scalarText(commonT)
+    val outTy    = MTensor(TyBool, lt.shape)
+    val initR    = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("ewcmp")
+    out.append(
+      s"  $outR = linalg.map ins(${lv.reg}, ${rv.reg} : ${lt.text}, ${rt.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(lElem)}, %b: ${scalarText(rElem)}, %_o: i1) {\n")
+    val aName = promoteInRegion("%a", lElem, commonT)
+    val bName = promoteInRegion("%b", rElem, commonT)
+    val pred  = comparisonPredicate(op, commonT)
+    val cmp   = if commonT == TyInteger then "arith.cmpi" else "arith.cmpf"
+    out.append(s"      %s = $cmp $pred, $aName, $bName : $commonS\n")
+    out.append(s"      linalg.yield %s : i1\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** Scalar-against-tensor comparison broadcast: `xs < 5`, `2 < xs`,
+    * etc. Output is a `tensor<...xi1>` with the tensor's shape. The
+    * scalar is promoted once outside the map body if its type doesn't
+    * match the common comparison type; the per-element promotion of
+    * the loaded tensor element happens inside the region body.
+    * `scalarFirst` carries through to the operand order of the cmp op
+    * — matters for non-symmetric predicates (`<`, `<=`, `>`, `>=`).
+    */
+  private def emitBroadcastComparison(
+      op: String,
+      sv: MlirVal,
+      av: MlirVal,
+      ty: MTensor,
+      scalarFirst: Boolean,
+      scalarElem: Type,
+      arrElem: Type,
+  ): MlirVal =
+    val commonT = if scalarElem == TyReal || arrElem == TyReal then TyReal else TyInteger
+    val commonS = scalarText(commonT)
+    val svPromoted =
+      if scalarElem == commonT then sv.reg
+      else
+        val r = fresh("ps")
+        out.append(s"  $r = arith.sitofp ${sv.reg} : ${scalarText(scalarElem)} to $commonS\n")
+        r
+    val outTy = MTensor(TyBool, ty.shape)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR = fresh("bccmp")
+    out.append(
+      s"  $outR = linalg.map ins(${av.reg} : ${ty.text}) outs($initR : ${outTy.text})\n",
+    )
+    out.append(s"    (%a: ${scalarText(arrElem)}, %_o: i1) {\n")
+    val elemName = promoteInRegion("%a", arrElem, commonT)
+    val pred     = comparisonPredicate(op, commonT)
+    val cmp      = if commonT == TyInteger then "arith.cmpi" else "arith.cmpf"
+    val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
+    out.append(s"      %s = $cmp $pred, $lhs, $rhs : $commonS\n")
+    out.append(s"      linalg.yield %s : i1\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** Predicate string for `arith.cmpi` / `arith.cmpf`. Integers use
+    * signed predicates; reals use ordered (`oeq`, `olt`, …) for every
+    * op except `!=`, where `une` makes `nan != nan` true — matching
+    * IEEE 754 and the spec §10.2.
+    */
+  private def comparisonPredicate(op: String, t: Type): String = (op, t) match
+    case ("==", TyInteger) => "eq"
+    case ("!=", TyInteger) => "ne"
+    case ("<",  TyInteger) => "slt"
+    case ("<=", TyInteger) => "sle"
+    case (">",  TyInteger) => "sgt"
+    case (">=", TyInteger) => "sge"
+    case ("==", TyReal)    => "oeq"
+    case ("!=", TyReal)    => "une"
+    case ("<",  TyReal)    => "olt"
+    case ("<=", TyReal)    => "ole"
+    case (">",  TyReal)    => "ogt"
+    case (">=", TyReal)    => "oge"
+    case _                 => notYet(s"comparison predicate $op on $t")
+
+  /** Emit a `sitofp` promotion inside a linalg.map / linalg.reduce
+    * region body (indented at the region depth) and return the new
+    * SSA name. Returns `srcName` unchanged when no promotion is
+    * needed.
+    */
+  private def promoteInRegion(srcName: String, fromT: Type, toT: Type): String =
+    if fromT == toT then srcName
+    else (fromT, toT) match
+      case (TyInteger, TyReal) =>
+        val r = fresh("pr")
+        out.append(s"      $r = arith.sitofp $srcName : i64 to f64\n")
+        r
+      case _ => notYet(s"in-region promote $fromT to $toT")
 
   /** Scalar binary `min` / `max`. Promotes mixed `int × real` operands
     * to real before dispatching to the matching `arith.{minsi, maxsi,

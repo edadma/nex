@@ -126,3 +126,37 @@ void nex_print_array_2d_f64(int64_t ptr_as_int, int64_t rows, int64_t cols) {
     }
     printf("]\n");
 }
+
+/* Bool array printers. MLIR's `tensor<NxI1>` lowers to a memref of i8 in
+ * LLVM dialect (one byte per packed-out element), so the data pointer
+ * is byte-strided. Each element is zero/non-zero in the low bit.
+ */
+
+static void nex_fmt_bool(int8_t v) {
+    printf(v ? "true" : "false");
+}
+
+void nex_print_array_1d_bool(int64_t ptr_as_int, int64_t len) {
+    int8_t* buf = (int8_t*)(intptr_t)ptr_as_int;
+    putchar('[');
+    for (int64_t i = 0; i < len; i++) {
+        if (i > 0) printf(", ");
+        nex_fmt_bool(buf[i]);
+    }
+    printf("]\n");
+}
+
+void nex_print_array_2d_bool(int64_t ptr_as_int, int64_t rows, int64_t cols) {
+    int8_t* buf = (int8_t*)(intptr_t)ptr_as_int;
+    putchar('[');
+    for (int64_t i = 0; i < rows; i++) {
+        if (i > 0) printf(", ");
+        putchar('[');
+        for (int64_t j = 0; j < cols; j++) {
+            if (j > 0) printf(", ");
+            nex_fmt_bool(buf[i * cols + j]);
+        }
+        putchar(']');
+    }
+    printf("]\n");
+}
