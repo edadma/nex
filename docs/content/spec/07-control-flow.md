@@ -72,7 +72,7 @@ Each control-flow body introduces a new scope. Bindings declared in a body are n
 
 ## 7.5 `match` expressions
 
-`match` inspects a sum-type value ([§3.6](/spec/03-types/#36-sum-types)) and dispatches on its variant. Each arm is a `case Pattern => body`:
+`match` inspects a sum-type value ([§3.6](/spec/03-types/#36-sum-types)) and dispatches on its variant. The scrutinee sits to the *left* of `match`; arms follow on indented lines, each `pattern -> body`:
 
 ```nex
 enum Solver =
@@ -81,13 +81,23 @@ enum Solver =
   MaxIters(iters: integer, last: real)
 
 def describe(s: Solver): real =
-  match s
-    case Converged(x)      => x
-    case Diverged          => -1.0
-    case MaxIters(n, last) => last
+  s match
+    Converged(x)      -> x
+    Diverged          -> -1.0
+    MaxIters(n, last) -> last
 ```
 
-The scrutinee follows the `match` keyword; arms are written on indented lines below. A `match` is an expression — all arm bodies must yield the same type, and the `match` itself evaluates to that type.
+A `match` is an expression — all arm bodies must yield the same type, and the `match` itself evaluates to that type.
+
+**Optional `end match`.** The block can be closed with an `end match` marker. The marker is purely visual; the parser doesn't enforce it, and the same indented `Dedent` boundary closes the block whether or not it appears:
+
+```nex
+c match
+  Red   -> "stop"
+  Green -> "go"
+  Blue  -> "wait"
+end match
+```
 
 **Patterns.**
 - `Variant` — matches a bare variant by name.
@@ -97,17 +107,17 @@ The scrutinee follows the `match` keyword; arms are written on indented lines be
 
 When used inside a variant pattern, sub-patterns are restricted to plain bindings or `_` — nested variant patterns are *deferred* until variant fields can carry aggregate types.
 
-**Exhaustiveness.** Every variant of the scrutinee's enum must be covered, either by an explicit `case Variant(...) =>` arm or by a catch-all (`case _ =>` or `case name =>`). The compiler rejects a match that leaves variants uncovered:
+**Exhaustiveness.** Every variant of the scrutinee's enum must be covered, either by an explicit `Variant(...) ->` arm or by a catch-all (`_ ->` or `name ->`). The compiler rejects a match that leaves variants uncovered:
 
 ```nex
 enum Color = Red; Green; Blue
 
 def isRed(c: Color): bool =
-  match c
-    case Red => true
-    case _   => false             // catch-all closes the set
+  c match
+    Red -> true
+    _   -> false             // catch-all closes the set
 ```
 
 Duplicate arms (two arms covering the same variant) and arms after a catch-all are also rejected. A non-exhaustive match without a catch-all is a compile error, not a runtime trap.
 
-**Restrictions.** The scrutinee must have an enum type — `match` on integers, reals, strings, structs, etc. is not supported. Guards (`case Variant(x) if x > 0 => ...`) are *deferred*.
+**Restrictions.** The scrutinee must have an enum type — `match` on integers, reals, strings, structs, etc. is not supported. Guards (`Variant(x) if x > 0 -> ...`) are *deferred*.

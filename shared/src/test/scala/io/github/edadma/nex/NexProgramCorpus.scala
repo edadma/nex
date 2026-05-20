@@ -2827,10 +2827,10 @@ object NexProgramCorpus:
         |  Blue
         |
         |def label(c: Color): string =
-        |  match c
-        |    case Red   => "stop"
-        |    case Green => "go"
-        |    case Blue  => "wait"
+        |  c match
+        |    Red   -> "stop"
+        |    Green -> "go"
+        |    Blue  -> "wait"
         |
         |def main() =
         |  print(label(Red))
@@ -2849,10 +2849,10 @@ object NexProgramCorpus:
         |  MaxIters(iters: integer, last: real)
         |
         |def describe(s: Solver): real =
-        |  match s
-        |    case Converged(x)       => x
-        |    case Diverged           => -1.0
-        |    case MaxIters(n, last)  => last
+        |  s match
+        |    Converged(x)       -> x
+        |    Diverged           -> -1.0
+        |    MaxIters(n, last)  -> last
         |
         |def main() =
         |  print(describe(Converged(3.14)))
@@ -2871,9 +2871,9 @@ object NexProgramCorpus:
         |  Blue
         |
         |def isRed(c: Color): bool =
-        |  match c
-        |    case Red => true
-        |    case _   => false
+        |  c match
+        |    Red -> true
+        |    _   -> false
         |
         |def main() =
         |  print(isRed(Red))
@@ -2891,9 +2891,9 @@ object NexProgramCorpus:
         |  Halt
         |
         |def kind(s: Step): string =
-        |  match s
-        |    case Continue(_) => "continue"
-        |    case Halt        => "halt"
+        |  s match
+        |    Continue(_) -> "continue"
+        |    Halt        -> "halt"
         |
         |def main() =
         |  print(kind(Continue(99)))
@@ -2911,9 +2911,9 @@ object NexProgramCorpus:
         |
         |def main() =
         |  val s: Step = Continue(7)
-        |  val v: integer = match s
-        |    case Continue(n) => n
-        |    case Done(t)     => t
+        |  val v: integer = s match
+        |    Continue(n) -> n
+        |    Done(t)     -> t
         |  print(v)
       """.stripMargin,
       "7\n",
@@ -2928,9 +2928,9 @@ object NexProgramCorpus:
         |
         |def main() =
         |  val c: Cmd = Echo("hello")
-        |  match c
-        |    case Echo(s) => print(s)
-        |    case Quit    => print("bye")
+        |  c match
+        |    Echo(s) -> print(s)
+        |    Quit    -> print("bye")
       """.stripMargin,
       "hello\n",
     ),
@@ -2943,9 +2943,9 @@ object NexProgramCorpus:
         |  Unset
         |
         |def show(f: Flag): bool =
-        |  match f
-        |    case Set(v) => v
-        |    case Unset  => false
+        |  f match
+        |    Set(v) -> v
+        |    Unset  -> false
         |
         |def main() =
         |  print(show(Set(true)))
@@ -2953,6 +2953,26 @@ object NexProgramCorpus:
         |  print(show(Unset))
       """.stripMargin,
       "true\nfalse\nfalse\n",
+    ),
+    Case(
+      "sum types (enums)",
+      "optional `end match` trailer closes the block",
+      """
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+        |
+        |def label(c: Color): string =
+        |  c match
+        |    Red   -> "stop"
+        |    Green -> "go"
+        |    Blue  -> "wait"
+        |  end match
+        |
+        |def main() = print(label(Green))
+      """.stripMargin,
+      "go\n",
     ),
     Case(
       "sum types (enums)",
@@ -2992,10 +3012,10 @@ object NexProgramCorpus:
         |def fp(x: real): real = 2.0 * x
         |
         |def describe(s: Solver): string =
-        |  match s
-        |    case Converged(x)         => s"converged at x=${x}"
-        |    case Diverged             => "diverged"
-        |    case MaxIters(iters, x)   => s"ran ${iters} iters, last x=${x}"
+        |  s match
+        |    Converged(x)         -> s"converged at x=${x}"
+        |    Diverged             -> "diverged"
+        |    MaxIters(iters, x)   -> s"ran ${iters} iters, last x=${x}"
         |
         |def main() =
         |  print(describe(newton(f, fp, 1.0,    1.0e-12, 50)))

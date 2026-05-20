@@ -35,10 +35,10 @@ Each `return` site builds a value of the enum type. `Converged(x)` calls the fie
 
 ```nex
 def describe(s: Solver): string =
-  match s
-    case Converged(x)         => s"converged at x=${x}"
-    case Diverged             => "diverged"
-    case MaxIters(iters, x)   => s"ran ${iters} iters, last x=${x}"
+  s match
+    Converged(x)         -> s"converged at x=${x}"
+    Diverged             -> "diverged"
+    MaxIters(iters, x)   -> s"ran ${iters} iters, last x=${x}"
 
 def main() =
   print(describe(newton(f, fp, 1.0,    1.0e-12, 50)))

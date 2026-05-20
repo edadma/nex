@@ -277,7 +277,7 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * that's the analyzer's job.
     */
   lazy val endMarker: PackratParser[Any] =
-    "end" ~> opt(ident | "if" | "for" | "while" | "do" | "def" | "struct" | "module")
+    "end" ~> opt(ident | "if" | "for" | "while" | "do" | "def" | "struct" | "module" | "match")
 
   /** End marker preceded by one or more Newlines. Used after a block whose
     * Dedent already emitted a Newline (since `newlineAfterDedent = true`).
@@ -422,8 +422,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   /** An expression at the level where commas are NOT consumed (used inside
     * function arguments, array literals, etc.). Lambdas, `or`, `and`, ...
     * down through application sit below this.
+    *
+    * A postfix `match` may follow any non-tuple expression (spec §7.5).
+    * The trailer is optional; without it the underlying `arrowExpr`
+    * flows through unchanged. With it, the trailer wraps the whole
+    * left-hand side in a [[MatchExpr]] scrutinee.
     */
-  lazy val exprNoTuple: PackratParser[ExprAST] = arrowExpr
+  lazy val exprNoTuple: PackratParser[ExprAST] =
+    arrowExpr ~ opt(("match" ~> matchCases) ~ opt(trailingEnd)) ^^ {
+      case e ~ None              => e
+      case e ~ Some(cs ~ _)      => MatchExpr(e, cs)
+    }
 
   /** Lambdas — `param-shape -> body`. Right-associative: `x -> y -> z`
     * parses as `x -> (y -> z)`. Body may be a single expression OR a
@@ -591,7 +600,6 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   lazy val primaryExpr: PackratParser[ExprAST] =
     ifExpr                                                       |
-    matchExpr                                                    |
     forExpr                                                      |
     whileExpr                                                    |
     returnExpr                                                   |
@@ -661,29 +669,26 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   // --- match expression --------------------------------------------------
   //
-  // Surface form:
+  // Surface form (postfix):
   //
-  //   match s
-  //     case Converged(x)      => x
-  //     case Diverged          => -1.0
-  //     case MaxIters(n, last) => last
+  //   s match
+  //     Converged(x)      -> x
+  //     Diverged          -> -1.0
+  //     MaxIters(n, last) -> last
+  //   end match            // optional
   //
-  // Arms live on indented lines after the scrutinee. Each arm body is
-  // either an inline expression (after `=>`) or — if the inline expr is
-  // omitted — a Newline-Indent block. A trailing `case _ => ...` covers
-  // the otherwise-unhandled cases; the elaborator only requires one if
+  // The scrutinee sits to the LEFT of the `match` keyword (Scala 3 / Kotlin
+  // / Rust trailing-form). Arms live on indented lines after `match`. Each
+  // arm is `pattern -> body` — body is either an inline expression or an
+  // indented block via `branchBody`. A trailing `_ -> ...` covers the
+  // otherwise-unhandled cases; the elaborator only requires one if
   // explicit variant coverage is incomplete.
-
-  lazy val matchExpr: PackratParser[ExprAST] =
-    ("match" ~> exprNoTuple) ~ matchCases ~ opt(trailingEnd) ^^ {
-      case s ~ cs ~ _ => MatchExpr(s, cs)
-    }
 
   lazy val matchCases: PackratParser[List[MatchCase]] =
     Newline ~> Indent ~> rep1sep(matchCase, stmtSep) <~ stmtSepOpt <~ Dedent
 
   lazy val matchCase: PackratParser[MatchCase] =
-    positioned(("case" ~> casePattern) ~ ("=>" ~> branchBody) ^^ {
+    positioned(casePattern ~ ("->" ~> branchBody) ^^ {
       case p ~ b => MatchCase(p, b)
     })
 
