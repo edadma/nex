@@ -172,6 +172,13 @@ protected trait NexLLVMState:
 
   protected def emitPreludeCall(name: String, args: List[TExpr], resultT: Type): String
 
+  /** Lower an arbitrary-typed expression to a %nex_str descriptor.
+    * Concrete impl lives in [[NexLLVMCodegen]]; declared here so other
+    * traits (Prelude / Print) can route values through it without a
+    * trait-dependency cycle.
+    */
+  protected def emitValueToString(e: TExpr): String
+
   protected def emitLambdaConstruct(lam: TLambda): String
   protected def emitClosureCall(callee: TExpr, args: List[TExpr], retT: Type): String
   protected def emitLambdaFunctions(): Unit
@@ -391,7 +398,8 @@ protected trait NexLLVMState:
     case TyBool           => 1
     case TyString         => 8
     case TyComplex        => 16 // { double, double }
-    case TyArray(_, _)    => 8 // ptr to descriptor
+    case TyArray(_, _)    => 8  // ptr to descriptor
+    case TyFunc(_, _)     => 16 // closure value is { fn_ptr, env_ptr }
     case TyTuple(es)      => es.map(aggregateFieldSize).sum
     case TyStruct(_, fs)  => fs.map(f => aggregateFieldSize(f._2)).sum
     case _                => 8
@@ -660,7 +668,7 @@ protected trait NexLLVMState:
       case (">",  TyInteger) => ("icmp sgt", "i1")
       case (">=", TyInteger) => ("icmp sge", "i1")
       case ("==", TyReal) => ("fcmp oeq", "i1")
-      case ("!=", TyReal) => ("fcmp one", "i1")
+      case ("!=", TyReal) => ("fcmp une", "i1") // IEEE: NaN != NaN is true; `une` = unordered OR not-equal
       case ("<",  TyReal) => ("fcmp olt", "i1")
       case ("<=", TyReal) => ("fcmp ole", "i1")
       case (">",  TyReal) => ("fcmp ogt", "i1")

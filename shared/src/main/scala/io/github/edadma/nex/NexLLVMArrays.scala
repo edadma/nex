@@ -98,8 +98,37 @@ protected trait NexLLVMArrays extends NexLLVMState:
         val slot = newReg()
         emitLine(s"  $slot = call ptr @__nex_arr2_slot(ptr $arrV, i64 $iv, i64 $jv, i64 $esz)\n")
         loadElem(stT, slot, llvmType(elem))
+      case (2, List(i)) =>
+        // Spec §4.14: `m[i]` on a rank-2 array returns row `i` as a
+        // freshly-owned rank-1 array. Mirrors the interpreter's
+        // `VArray1(b.slice(i*c, (i+1)*c))`. Bounds-checked against
+        // rows; out-of-range routes through the OOB trap.
+        val iv      = emitExpr(i)
+        val rows    = newReg(); emitLine(s"  $rows = call i64 @__nex_arr2_rows(ptr $arrV)\n")
+        val cols    = newReg(); emitLine(s"  $cols = call i64 @__nex_arr2_cols(ptr $arrV)\n")
+        val negI    = newReg(); emitLine(s"  $negI = icmp slt i64 $iv, 0\n")
+        val geRows  = newReg(); emitLine(s"  $geRows = icmp sge i64 $iv, $rows\n")
+        val bad     = newReg(); emitLine(s"  $bad = or i1 $negI, $geRows\n")
+        val okL     = freshLabel("row.ok")
+        val flL     = freshLabel("row.fail")
+        emitTerminator(s"  br i1 $bad, label %$flL, label %$okL\n")
+        startBlock(flL)
+        emitLine(s"  call void @__nex_trap_with(ptr @.slice_oob_msg)\n")
+        emitTerminator(s"  unreachable\n")
+        startBlock(okL)
+        // Allocate the row + memcpy from the source row's flat offset.
+        val desc   = newReg()
+        emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $cols, i64 $esz)\n")
+        val srcBuf = bufPtr(arrV, arr.tpe)
+        val dstBuf = bufPtr(desc, resultT)
+        val flat   = newReg(); emitLine(s"  $flat = mul i64 $iv, $cols\n")
+        val srcRow = newReg()
+        emitLine(s"  $srcRow = getelementptr inbounds $stT, ptr $srcBuf, i64 $flat\n")
+        val bytes  = newReg(); emitLine(s"  $bytes = mul i64 $cols, $esz\n")
+        emitLine(s"  call void @llvm.memcpy.p0.p0.i64(ptr $dstBuf, ptr $srcRow, i64 $bytes, i1 false)\n")
+        desc
       case (r, ixs) =>
-        notYet(s"index of rank $r with ${ixs.size} indices"); "0"
+        notImpl(s"index of rank $r with ${ixs.size} indices")
     // When the element is itself refcounted (string, nested array), the
     // loaded value is a borrowed share from the slot. Inc so the caller
     // has its own owning share — without this, a `print(arr[i])` would

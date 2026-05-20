@@ -145,6 +145,56 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare i64 @llabs(i64)
         |declare double @copysign(double, double)
         |declare double @hypot(double, double)
+        |declare double @pow(double, double)
+        |
+        |; Integer exponentiation by squaring. Matches the interpreter's
+        |; `intPow`: result = base^exp for exp >= 0 (mirroring spec §4.4's
+        |; integer-power semantics — `2 ^ 10 == 1024`). Negative exponents
+        |; should never reach here because the elaborator forces the
+        |; result type to TyReal when either operand could be negative;
+        |; we return 0 defensively if e < 0 to avoid an infinite loop.
+        |define i64 @__nex_ipow(i64 %base, i64 %exp) {
+        |entry:
+        |  %neg = icmp slt i64 %exp, 0
+        |  br i1 %neg, label %nonpos, label %init
+        |nonpos:
+        |  ret i64 0
+        |init:
+        |  %rslot = alloca i64
+        |  %bslot = alloca i64
+        |  %eslot = alloca i64
+        |  store i64 1, ptr %rslot
+        |  store i64 %base, ptr %bslot
+        |  store i64 %exp,  ptr %eslot
+        |  br label %cond
+        |cond:
+        |  %e = load i64, ptr %eslot
+        |  %live = icmp sgt i64 %e, 0
+        |  br i1 %live, label %body, label %done
+        |body:
+        |  %bit = and i64 %e, 1
+        |  %odd = icmp eq i64 %bit, 1
+        |  br i1 %odd, label %mul, label %shift
+        |mul:
+        |  %r1 = load i64, ptr %rslot
+        |  %b1 = load i64, ptr %bslot
+        |  %r2 = mul i64 %r1, %b1
+        |  store i64 %r2, ptr %rslot
+        |  br label %shift
+        |shift:
+        |  %e1 = lshr i64 %e, 1
+        |  store i64 %e1, ptr %eslot
+        |  %more = icmp sgt i64 %e1, 0
+        |  br i1 %more, label %sq, label %cond
+        |sq:
+        |  %b2 = load i64, ptr %bslot
+        |  %b3 = mul i64 %b2, %b2
+        |  store i64 %b3, ptr %bslot
+        |  br label %cond
+        |done:
+        |  %r = load i64, ptr %rslot
+        |  ret i64 %r
+        |}
         |
         |; Trap messages mirror the interpreter's `NexTrap.msg` so a
         |; cross-backend `assert_traps(fn, "substring")` finds the same
@@ -733,6 +783,32 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %lp = getelementptr inbounds %nex_str, ptr %s, i32 0, i32 1
         |  %l  = load i64, ptr %lp
         |  ret i64 %l
+        |}
+        |
+        |declare i32 @memcmp(ptr, ptr, i64)
+        |
+        |; Equality of two string descriptors — same length AND same bytes.
+        |; Used by the AOT lowering of `==` / `!=` on TyString operands;
+        |; mirrors the interpreter's value-level string comparison. Doesn't
+        |; affect refcounts (the caller still owns both shares).
+        |define i1 @__nex_str_eq(ptr %a, ptr %b) {
+        |entry:
+        |  %lap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 1
+        |  %la  = load i64, ptr %lap
+        |  %lbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 1
+        |  %lb  = load i64, ptr %lbp
+        |  %sl  = icmp eq i64 %la, %lb
+        |  br i1 %sl, label %check, label %neq
+        |check:
+        |  %dap = getelementptr inbounds %nex_str, ptr %a, i32 0, i32 2
+        |  %da  = load ptr, ptr %dap
+        |  %dbp = getelementptr inbounds %nex_str, ptr %b, i32 0, i32 2
+        |  %db  = load ptr, ptr %dbp
+        |  %cmp = call i32 @memcmp(ptr %da, ptr %db, i64 %la)
+        |  %eq  = icmp eq i32 %cmp, 0
+        |  ret i1 %eq
+        |neq:
+        |  ret i1 false
         |}
         |
         |; Pointer to the NUL-terminated data buffer.

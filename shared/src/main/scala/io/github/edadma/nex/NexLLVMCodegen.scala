@@ -138,6 +138,15 @@ class NexLLVMCodegen
   // `mem2reg` at `-O1+` collapses the indirection back to SSA.
   // ---------------------------------------------------------------------------
 
+  /** Read the parameter-mode list out of a function's declared TyFunc.
+    * Defaults to Read for every position if the sym's type isn't a
+    * TyFunc (shouldn't happen post-elaboration, but defensive).
+    */
+  private def paramModesOf(f: TFunDecl): List[ParamMode] =
+    f.sym.tpe match
+      case TyFunc(ps, _) if ps.size == f.params.size => ps.map(_._2)
+      case _                                          => List.fill(f.params.size)(ParamMode.Read)
+
   private def emitFunction(f: TFunDecl): Unit =
     regCounter   = 0
     labelCounter = 0
@@ -152,17 +161,22 @@ class NexLLVMCodegen
     currentReturnType = f.returnType
     currentIsMain     = isMain
 
-    // Array-typed params get `noalias` because Nex's uniqueness type
-    // system (§8) guarantees `[T]` references don't alias each other.
-    // Telling LLVM unlocks more aggressive load/store reordering and
-    // auto-vectorization. Safe even for the ARC regime: the descriptor
-    // pointer is per-binding, so two array params with the same
-    // underlying buffer would have failed the uniqueness analysis.
+    // Mut params take a `ptr` to the caller's slot so callee writes
+    // flow back to the caller's binding. Array-typed read params get
+    // `noalias` because Nex's uniqueness type system (§8) guarantees
+    // `[T]` references don't alias each other; telling LLVM unlocks
+    // more aggressive load/store reordering. Mut params can't carry
+    // noalias because the by-ref ptr can alias other arguments
+    // through pointer chasing.
+    val modes = paramModesOf(f)
     val paramSig =
       f.params.zipWithIndex
         .map { case (p, i) =>
-          val attr = if isArrayType(p.tpe) then " noalias" else ""
-          s"${llvmType(p.tpe)}$attr %arg$i"
+          modes(i) match
+            case ParamMode.Mut  => s"ptr %arg$i"
+            case ParamMode.Read =>
+              val attr = if isArrayType(p.tpe) then " noalias" else ""
+              s"${llvmType(p.tpe)}$attr %arg$i"
         }
         .mkString(", ")
 
@@ -176,17 +190,25 @@ class NexLLVMCodegen
     if isMain && globalBindings.nonEmpty then
       emitLine("  call void @__nex_init_globals()\n")
 
-    // Spill each param to an alloca so TVarRef loads work uniformly.
-    // Array-typed params arrive already inc'd by the caller (per the
-    // owned-everywhere convention); the slot takes ownership and the
-    // function-exit dec releases it.
+    // Bind each param to a slot pointer for uniform TVarRef load/store.
+    //  - Read mode: spill the SSA value into a fresh alloca; the slot
+    //    takes ownership of any refcounted share the caller inc'd.
+    //  - Mut mode: %arg is already the caller's slot ptr — use it
+    //    directly, no alloca, no copy. Refcount lifecycles on mut
+    //    params stay with the caller, so they DON'T get registered
+    //    into arrayLocalSlots (the function-exit dec would over-
+    //    release).
     for ((p, i) <- f.params.zipWithIndex) do
-      val ty   = llvmType(p.tpe)
-      val slot = newReg()
-      emitLine(s"  $slot = alloca $ty\n")
-      emitLine(s"  store $ty %arg$i, ptr $slot\n")
-      locals(p.id) = slot
-      if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
+      modes(i) match
+        case ParamMode.Mut =>
+          locals(p.id) = s"%arg$i"
+        case ParamMode.Read =>
+          val ty   = llvmType(p.tpe)
+          val slot = newReg()
+          emitLine(s"  $slot = alloca $ty\n")
+          emitLine(s"  store $ty %arg$i, ptr $slot\n")
+          locals(p.id) = slot
+          if isRefCountedType(p.tpe) then arrayLocalSlots(p.id) = (slot, p.tpe)
 
     f.body match
       case TIntrinsic(opId, _, _, _) =>
@@ -484,6 +506,31 @@ class NexLLVMCodegen
     case TBinOp("..", lo, hi, _, _)  => emitRangeValue(lo, hi, inclusive = false)
     case TBinOp("..=", lo, hi, _, _) => emitRangeValue(lo, hi, inclusive = true)
 
+    case TBinOp("^", l, r, _, TyInteger) =>
+      // Integer power: exponentiation by squaring via the runtime
+      // helper. Matches the interpreter's `intPow` for exp >= 0.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val reg = newReg()
+      emitLine(s"  $reg = call i64 @__nex_ipow(i64 $lv, i64 $rv)\n")
+      reg
+
+    case TBinOp("^", l, r, _, TyReal) =>
+      // Real power: route through libm `pow`. Integer operands get
+      // sitofp-lifted to double first, matching how the interpreter
+      // promotes via `asReal`.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val ld = if l.tpe == TyInteger then
+        val r2 = newReg(); emitLine(s"  $r2 = sitofp i64 $lv to double\n"); r2
+      else lv
+      val rd = if r.tpe == TyInteger then
+        val r2 = newReg(); emitLine(s"  $r2 = sitofp i64 $rv to double\n"); r2
+      else rv
+      val reg = newReg()
+      emitLine(s"  $reg = call double @pow(double $ld, double $rd)\n")
+      reg
+
     case TBinOp("+", l, r, _, TyString) =>
       // String concat. Both operands are owning %nex_str descriptor
       // pointers (TVarRef inc'd a share at load, or they're already-
@@ -507,6 +554,23 @@ class NexLLVMCodegen
       val (lre, lim) = toComplex(lv, l.tpe)
       val (rre, rim) = toComplex(rv, r.tpe)
       emitComplexArith(op, lre, lim, rre, rim)
+
+    case TBinOp(op @ ("==" | "!="), l, r, _, TyBool) if l.tpe == TyString && r.tpe == TyString =>
+      // String equality: descriptor-level memcmp via the runtime
+      // helper. Mirrors the interpreter's value-equality on strings.
+      // Both source shares are released — emitExpr handed them to us
+      // with refcount inc'd and the comparison is read-only.
+      val lv  = emitExpr(l)
+      val rv  = emitExpr(r)
+      val eq  = newReg()
+      emitLine(s"  $eq = call i1 @__nex_str_eq(ptr $lv, ptr $rv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $lv)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $rv)\n")
+      if op == "==" then eq
+      else
+        val neg = newReg()
+        emitLine(s"  $neg = xor i1 $eq, 1\n")
+        neg
 
     case TBinOp("==", l, r, _, TyBool) if l.tpe == TyComplex || r.tpe == TyComplex =>
       // Complex equality: both real and imaginary parts must match.
@@ -1358,9 +1422,64 @@ class NexLLVMCodegen
   // ---------------------------------------------------------------------------
 
   private def emitUserCall(callee: Symbol, calleeT: Type, args: List[TExpr]): String =
-    val argList = args.map { a =>
-      val v = emitExpr(a)
-      s"${llvmType(a.tpe)} $v"
+    // Pull modes off whichever type carried the TyFunc signature —
+    // call-site's `calleeT` (post-elaboration push-down) wins, with
+    // callee.tpe as the fallback. Default to all-Read so we don't
+    // crash if the elaborator left the signature blank.
+    val modes: List[ParamMode] = calleeT match
+      case TyFunc(ps, _) if ps.size == args.size => ps.map(_._2)
+      case _ => callee.tpe match
+        case TyFunc(ps, _) if ps.size == args.size => ps.map(_._2)
+        case _                                      => List.fill(args.size)(ParamMode.Read)
+
+    val argList = args.zip(modes).map { case (a, m) =>
+      m match
+        case ParamMode.Mut =>
+          // Pass the address of the caller's slot so callee writes
+          // flow back. Elaborator's checkCallSiteModes (NexElabLowering)
+          // guarantees mut args are var-rooted lvalues; we currently
+          // resolve direct TVarRef bindings only (struct-field /
+          // array-element mut args fall back to by-value, matching the
+          // interpreter's same-shape limitation).
+          a match
+            case TVarRef(s, _, _) =>
+              // Three resolution paths, in priority order:
+              //  1. ByRef-captured var inside a lambda body — the env
+              //     stores a ptr to the parent's alloca; load it and
+              //     pass directly so callee writes reach the parent.
+              //  2. Local alloca in the surrounding function — the
+              //     alloca's SSA reg IS the slot ptr.
+              //  3. Module-level global — pass the global symbol's
+              //     ptr directly.
+              lambdaCaptures.get(s.id) match
+                case Some((idx, _, CaptureMode.ByRef)) =>
+                  val pslot = newReg()
+                  emitLine(s"  $pslot = getelementptr inbounds $lambdaEnvTy, ptr %env, i32 0, i32 $idx\n")
+                  val pp = newReg()
+                  emitLine(s"  $pp = load ptr, ptr $pslot\n")
+                  s"ptr $pp"
+                case Some(_) =>
+                  notImpl(s"mut-arg captured ByVal `${s.name}` — captured copy can't propagate writes back")
+                case None =>
+                  locals.get(s.id) match
+                    case Some(slot) => s"ptr $slot"
+                    case None if globalBindings.contains(s.id) => s"ptr @${s.name}"
+                    case None =>
+                      notImpl(s"mut-arg passes unbound `${s.name}`")
+            case _ =>
+              // Compute the value, spill to a temporary alloca, pass
+              // its address. Mutations land in the temp and are lost —
+              // matches the interpreter's by-value fallback for non-
+              // TVarRef mut args.
+              val v    = emitExpr(a)
+              val tmp  = newReg()
+              val ty   = llvmType(a.tpe)
+              emitLine(s"  $tmp = alloca $ty\n")
+              emitLine(s"  store $ty $v, ptr $tmp\n")
+              s"ptr $tmp"
+        case ParamMode.Read =>
+          val v = emitExpr(a)
+          s"${llvmType(a.tpe)} $v"
     }.mkString(", ")
 
     val retT = calleeT match
