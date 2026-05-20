@@ -1166,6 +1166,56 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "elementwise [complex] + - * / via componentwise lowering",
+      // Regression: `emitScalarBinOp` used to route TyComplex through
+      // the generic `binOpInst` path and emit `add { double, double }`
+      // (invalid IR; clang rejects). Element-wise + broadcast over
+      // `[complex]` now route through `emitComplexArith`, the same
+      // helper the scalar TBinOp path already uses.
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  val b: [complex] = [10.0 + 20i, 30.0 + 40i]
+        |  print(a + b)
+        |  print(a - b)
+        |  print(a * b)
+        |  print(b / a)
+      """.stripMargin,
+      "[11.0+22.0i, 33.0+44.0i]\n[-9.0-18.0i, -27.0-36.0i]\n[-30.0+40.0i, -70.0+240.0i]\n[10.0+0.0i, 10.0+0.0i]\n",
+    ),
+    Case(
+      "arrays",
+      "elementwise [complex] == / != via componentwise compare + and/or",
+      // Same fix path for comparisons: complex equality folds
+      // `(re == re) and (im == im)`, `!=` folds the unordered-or-
+      // not-equal variant via `or`. Result is `[bool]`.
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  val b: [complex] = [1.0 + 2i, 0.0 + 0i]
+        |  print(a == b)
+        |  print(a != b)
+      """.stripMargin,
+      "[true, false]\n[false, true]\n",
+    ),
+    Case(
+      "arrays",
+      "scalar-complex * [complex] broadcast",
+      // Broadcast routes through the same `emitScalarBinOp` so it gets
+      // the same complex fix. Real and integer scalars promote up the
+      // numeric lattice to complex inside the loop body via
+      // `liftScalarTo` (broadcast already does this for arithmetic).
+      """
+        |def main() =
+        |  val a: [complex] = [1.0 + 2i, 3.0 + 4i]
+        |  print((1.0 + 1i) * a)
+        |  print(2.0 * a)
+        |  print(a + (10.0 + 0i))
+      """.stripMargin,
+      "[-1.0+3.0i, -1.0+7.0i]\n[2.0+4.0i, 6.0+8.0i]\n[11.0+2.0i, 13.0+4.0i]\n",
+    ),
+    Case(
+      "arrays",
       "rank-2 literal + transpose",
       """
         |def main() =

@@ -257,8 +257,11 @@ protected trait NexLLVMArrays extends NexLLVMState:
 
   /** Emit `op` between two scalar values of the same Nex type, returning
     * the SSA register of the result. Reuses the existing [[binOpInst]]
-    * table. Result type is implied by the operands (same as the
-    * elementwise spec — Stage 2 lifts only valid op/operand combos).
+    * table for the integer / real / bool cases; complex operands route
+    * through the component-decomposition path
+    * ([[toComplex]] / [[emitComplexArith]] / [[packComplex]]) so we
+    * don't emit invalid IR like `fadd { double, double } ...`. Result
+    * type is implied by the operands (same as the elementwise spec).
     */
   protected def emitScalarBinOp(op: String, lv: String, rv: String, opT: Type): String =
     op match
@@ -269,6 +272,35 @@ protected trait NexLLVMArrays extends NexLLVMState:
         val instr = if op == "and" then "and" else "or"
         emitLine(s"  $reg = $instr i1 $lv, $rv\n")
         reg
+      case _ if opT == TyComplex =>
+        // Complex elements need componentwise arithmetic / comparison.
+        // The scalar TBinOp emission path already does this for
+        // top-level binops; element-wise + broadcast over `[complex]`
+        // now share the same lowering so the per-element op produces
+        // valid IR.
+        val (lre, lim) = toComplex(lv, TyComplex)
+        val (rre, rim) = toComplex(rv, TyComplex)
+        op match
+          case "+" | "-" | "*" | "/" =>
+            emitComplexArith(op, lre, lim, rre, rim)
+          case "==" =>
+            // (lre == rre) and (lim == rim). Real `==` on complex
+            // components: IEEE `oeq` (NaN comparisons fail, matching
+            // the scalar real path in `binOpInst`).
+            val reEq = newReg(); emitLine(s"  $reEq = fcmp oeq double $lre, $rre\n")
+            val imEq = newReg(); emitLine(s"  $imEq = fcmp oeq double $lim, $rim\n")
+            val both = newReg(); emitLine(s"  $both = and i1 $reEq, $imEq\n")
+            both
+          case "!=" =>
+            // Negate the equality fold: any-component-differs. Use
+            // `une` to match real-`!=` semantics (NaN-aware).
+            val reNe = newReg(); emitLine(s"  $reNe = fcmp une double $lre, $rre\n")
+            val imNe = newReg(); emitLine(s"  $imNe = fcmp une double $lim, $rim\n")
+            val any  = newReg(); emitLine(s"  $any = or i1 $reNe, $imNe\n")
+            any
+          case other =>
+            notYet(s"complex elementwise `$other`")
+            packComplex("0.0", "0.0")
       case _ =>
         val (instr, _) = binOpInst(op, opT)
         val reg = newReg()
