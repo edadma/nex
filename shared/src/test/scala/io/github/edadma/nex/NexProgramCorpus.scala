@@ -1831,6 +1831,76 @@ object NexProgramCorpus:
     ),
     Case(
       "prelude",
+      "assert_approx on complex (component-wise distance)",
+      """
+        |def main() =
+        |  assert_approx(1.0 + 2.0i, 1.0 + 2.0i + 1.0e-13 * i, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 real array",
+      """
+        |def main() =
+        |  assert_approx([1.0, 2.0, 3.0], [1.0 + 1.0e-13, 2.0, 3.0 - 1.0e-13], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 complex array",
+      """
+        |def main() =
+        |  assert_approx([1.0 + 0i, 0.0 + 1.0i], [1.0 + 0i, 0.0 + 1.0i], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 integer array (lifted)",
+      """
+        |def main() =
+        |  assert_approx([1, 2, 3], [1, 2, 3], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when an array element exceeds the tolerance",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([1.0, 2.0, 3.0], [1.0, 5.0, 3.0], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on length mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([1.0, 2.0], [1.0, 2.0, 3.0], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when the complex distance exceeds the tolerance",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx(1.0 + 0i, 1.0 + 5.0i, 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
       "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
       "nan\n",

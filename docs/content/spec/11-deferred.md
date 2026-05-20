@@ -18,7 +18,7 @@ The features deferred from the current language are split into two tiers by scop
 - Open-ended slice bounds (`a[-3..]`, `a[..-1]`). Closed-form slices `a[lo..hi]` with negative bounds (`a[-3..length(a)]`, `a[0..-1]`) are shipped — see [§4.14](/spec/04-expressions/#414-indexing-and-slicing)
 - Function calls in `const` expressions (compile-time evaluation of pure-function calls)
 - Formatted output: positional `{}` substitution in `format()`, plus precision / padding / hex specifiers (`f"..."` literals and `format()` directives)
-- Array and complex overloads of `assert_approx` — currently the scalar `assert_approx(real, real, real)` is the only form; element-wise array forms and the complex-valued form are useful for testing numeric code at higher rank
+- Rank-2 element-wise overloads of `assert_approx` — rank-1 element-wise `[T]` and scalar `complex` overloads ship (see [§10.5](/spec/10-prelude/#105-assertions))
 
 ## 11.2 Long-term work
 

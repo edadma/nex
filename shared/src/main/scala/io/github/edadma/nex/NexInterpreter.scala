@@ -555,6 +555,22 @@ class NexInterpreter:
         case _ => trap(s"assert_eq expects 2 args", None)
     case "assert_approx" =>
       args match
+        case List(VArray1(as), VArray1(bs), eps) =>
+          val tol = asReal(eps)
+          if as.size != bs.size then
+            trap(s"assert_approx: array length mismatch: ${as.size} vs ${bs.size}", None)
+          var i = 0
+          while i < as.size do
+            val d = elementWiseDistance(as(i), bs(i))
+            if d > tol then
+              trap(s"assert_approx: element $i: |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
+            i += 1
+          VUnit
+        case List(VComplex(ar, ai), VComplex(br, bi), eps) =>
+          val tol  = asReal(eps)
+          val dist = math.hypot(ar - br, ai - bi)
+          if dist <= tol then VUnit
+          else trap(s"assert_approx: |${formatValue(VComplex(ar, ai))} - ${formatValue(VComplex(br, bi))}| = $dist > $tol", None)
         case List(a, b, eps) =>
           val diff = math.abs(asReal(a) - asReal(b))
           if diff <= asReal(eps) then VUnit
@@ -1456,6 +1472,16 @@ class NexInterpreter:
     case VReal(x)       => x
     case VComplex(r, 0) => r
     case _              => throw new NexTrap(s"expected numeric, got ${formatValue(v)}", None)
+
+  /** Euclidean distance between two scalar / complex values, treating
+    * integers and reals as points on the real line and complex values
+    * as points in the plane. Used by `assert_approx` over arrays so a
+    * mixed-element-type array still yields a sensible per-element
+    * distance.
+    */
+  private def elementWiseDistance(a: Value, b: Value): Double = (a, b) match
+    case (VComplex(ar, ai), VComplex(br, bi)) => math.hypot(ar - br, ai - bi)
+    case _                                    => math.abs(asReal(a) - asReal(b))
 
   // --------------------------------------------------------------------------
   // Element-wise and broadcast
