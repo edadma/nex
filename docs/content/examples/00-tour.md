@@ -183,6 +183,16 @@ not true         // false
 // Element-wise on arrays:
 val v = [1, 2, 3, 4]
 val mask = v < 3                          // [true, true, false, false]
+
+// Chained comparisons read like the math — `0 <= i < n` desugars to
+// `(0 <= i) and (i < n)` with the middle operand evaluated at most
+// once and only when the previous compare held:
+val i = 3
+val n = 10
+val in_range = 0 <= i < n                 // true
+
+// Any number of comparisons may be chained; operators can be mixed.
+val tight = 1 < i <= 3 < n                // true
 ```
 
 ## Juxtaposition multiplication
