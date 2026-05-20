@@ -19,14 +19,12 @@ headingShift = 0
 # files at the URLs we publish.
 htmlDir = ""
 
-# Brand assets.
-favicon = "/nex-logo.png"
-
-# Site-supplied CSS loaded AFTER the bundled theme stylesheet so it can
-# override anything. See docs/static/site.css for the current overrides
-# (hero-logo aspect ratio); the head partial picks the list up via
-# `.site.customCSS`.
-customCSS = ["/site.css"]
+# Brand assets. `favicon` is the browser-tab icon (square or near-square
+# works best); `[juicerdocs] icon` is the wordmark-free variant the
+# topbar inlines next to the brand name. `[juicerdocs] logo` is the
+# bigger logo with the "nex" wordmark — that's what the landing splash
+# hero shows.
+favicon = "/nex-icon.png"
 
 # Recompile theme CSS/JS on every build via sass/esbuild. Falls back to a
 # verbatim copy when those aren't on PATH.
@@ -48,3 +46,4 @@ minify = true
 version    = "v0.0.1"
 getStarted = true
 logo       = "/nex-logo.png"
+icon       = "/nex-icon.png"
