@@ -708,6 +708,34 @@ object NexProgramCorpus:
         |  print(m[0][1])
       """.stripMargin,
       "[1, 2]\n[3, 4]\n3\n2\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "rank-2 two-integer index returns a scalar element",
+      """
+        |def main() =
+        |  val m = [[10, 20, 30], [40, 50, 60]]
+        |  print(m[0, 0])
+        |  print(m[0, 2])
+        |  print(m[1, 1])
+        |  print(m[1, 2])
+      """.stripMargin,
+      "10\n30\n50\n60\n",
+      mlir = true,
+    ),
+    Case(
+      "control flow",
+      "rank-2 indexing through a computed integer expression",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  val i = 1
+        |  val j = 1 + 1
+        |  print(m[i, j])
+      """.stripMargin,
+      "6\n",
+      mlir = true,
     ),
 
     // ========================================================================
