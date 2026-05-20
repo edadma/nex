@@ -326,6 +326,15 @@ class NexMLIRCodegen:
         case (lt, rt) =>
           notYet(s"element-wise $op on $lt and $rt")
 
+    case TBroadcast(scalar, arr, op, scalarFirst, _, _) =>
+      val sv = emitExpr(scalar)
+      val av = emitExpr(arr)
+      (sv.ty, av.ty) match
+        case (MScalar(st), t @ MTensor(et, _)) if st == et =>
+          emitBroadcast(op, sv, av, t, scalarFirst)
+        case (sty, aty) =>
+          notYet(s"broadcast $op on $sty and $aty")
+
     case TBinOp("^", lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
@@ -640,6 +649,32 @@ class NexMLIRCodegen:
     val sumR = fresh("sum")
     out.append(s"  $sumR = tensor.extract $sumTR[] : ${outTy.text}\n")
     MlirVal(sumR, MScalar(elemT))
+
+  /** Scalar-against-tensor broadcast for arithmetic ops. Emits one
+    * `linalg.map` over the tensor; the body closes over the scalar
+    * SSA value from the parent scope (MLIR's dominance rules let
+    * region bodies reference parent-scope values). `scalarFirst`
+    * matters for non-commutative ops: `100 - xs` and `xs - 100`
+    * differ.
+    */
+  private def emitBroadcast(op: String, sv: MlirVal, av: MlirVal, ty: MTensor, scalarFirst: Boolean): MlirVal =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val opName = scalarBinop(op, elemT)
+    val initR  = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${ty.text}\n")
+    val outR = fresh("bc")
+    out.append(
+      s"  $outR = linalg.map ins(${av.reg} : ${ty.text}) outs($initR : ${ty.text})\n",
+    )
+    out.append(s"    (%a: $scalar, %_o: $scalar) {\n")
+    if scalarFirst then
+      out.append(s"      %s = $opName ${sv.reg}, %a : $scalar\n")
+    else
+      out.append(s"      %s = $opName %a, ${sv.reg} : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
+    out.append("    }\n")
+    MlirVal(outR, ty)
 
   /** Scalar binary `min` / `max`. Promotes mixed `int × real` operands
     * to real before dispatching to the matching `arith.{minsi, maxsi,
