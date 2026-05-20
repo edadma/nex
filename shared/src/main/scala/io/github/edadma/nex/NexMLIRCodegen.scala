@@ -425,6 +425,13 @@ class NexMLIRCodegen:
       val hi = realLitValue(hiLit)
       emitLinspaceCall(lo, hi, n.toInt)
 
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "transpose" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(rows, cols)) => emitTranspose(av.reg, t, rows, cols)
+        case other                            => notYet(s"transpose on $other")
+
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
@@ -935,6 +942,22 @@ class NexMLIRCodegen:
     out.append(s"      %s = $cmp $pred, $lhs, $rhs : $commonS\n")
     out.append(s"      linalg.yield %s : i1\n")
     out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** Rank-2 `.transpose()` / `transpose(m)`. Output shape swaps the
+    * row and column dimensions; element type is unchanged. Lowers to
+    * a single `linalg.transpose` with permutation `[1, 0]`, which
+    * `--convert-linalg-to-loops` reduces to a nested counting loop
+    * that does `out[j, i] = in[i, j]`.
+    */
+  private def emitTranspose(srcReg: String, ty: MTensor, rows: Int, cols: Int): MlirVal =
+    val outTy = MTensor(ty.elem, List(cols, rows))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("tr")
+    out.append(
+      s"  $outR = linalg.transpose ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) permutation = [1, 0]\n",
+    )
     MlirVal(outR, outTy)
 
   /** Literal `range(lo, hi)`: integer half-open range with statically

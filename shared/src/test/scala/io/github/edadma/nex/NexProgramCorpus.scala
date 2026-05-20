@@ -1039,6 +1039,7 @@ object NexProgramCorpus:
         |  print(m.transpose())
       """.stripMargin,
       "[[1, 4], [2, 5], [3, 6]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
