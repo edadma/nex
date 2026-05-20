@@ -239,12 +239,14 @@ object NexProgramCorpus:
       "and short-circuits",
       """def main() = print(false and (1 / 0 == 0))""",
       "false\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
       "or short-circuits",
       """def main() = print(true or (1 / 0 == 0))""",
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -297,6 +299,7 @@ object NexProgramCorpus:
         |  print(x != x)
       """.stripMargin,
       "false\nfalse\nfalse\nfalse\nfalse\ntrue\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -309,6 +312,7 @@ object NexProgramCorpus:
         |  print(x > 0.0)
       """.stripMargin,
       "true\nfalse\nfalse\n",
+      mlir = true,
     ),
 
     // ========================================================================

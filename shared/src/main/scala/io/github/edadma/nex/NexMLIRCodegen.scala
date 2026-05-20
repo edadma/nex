@@ -298,6 +298,18 @@ class NexMLIRCodegen:
       out.append(s"  $r = tensor.from_elements ${vals.map(_.reg).mkString(", ")} : ${ty.text}\n")
       MlirVal(r, ty)
 
+    case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "nan" =>
+      // Compiler-built-in NaN constant. MLIR's `arith.constant` accepts
+      // the IEEE 754 bit pattern as a hex literal on an `f64` attribute.
+      val r = fresh("nan")
+      out.append(s"  $r = arith.constant 0x7FF8000000000000 : f64\n")
+      MlirVal(r, MScalar(TyReal))
+
+    case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "inf" =>
+      val r = fresh("inf")
+      out.append(s"  $r = arith.constant 0x7FF0000000000000 : f64\n")
+      MlirVal(r, MScalar(TyReal))
+
     case TVarRef(sym, _, _) =>
       env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))
 
@@ -318,6 +330,9 @@ class NexMLIRCodegen:
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
       emitScalarPower(lv, rv, resultTy)
+
+    case TBinOp("and", lhs, rhs, _, _) => emitShortCircuit(lhs, rhs, isAnd = true)
+    case TBinOp("or",  lhs, rhs, _, _) => emitShortCircuit(lhs, rhs, isAnd = false)
 
     case TBinOp(op, lhs, rhs, _, _) if isComparisonOp(op) =>
       val lv = emitExpr(lhs)
@@ -484,6 +499,44 @@ class NexMLIRCodegen:
         MlirVal(r, MScalar(TyBool))
       case (lt, rt) =>
         notYet(s"comparison $op on $lt and $rt")
+
+  /** Short-circuit `and` / `or` via `scf.if`. The lhs is evaluated
+    * eagerly; the rhs is emitted *inside* one branch of the if so it
+    * is only executed when the lhs doesn't already pin the result.
+    * `--convert-scf-to-cf` (already in the pass pipeline) lowers the
+    * `scf.if` to plain branches afterwards.
+    *
+    * Layout:
+    *   `a and b` → `scf.if a then yield b else yield false`
+    *   `a or  b` → `scf.if a then yield true else yield b`
+    *
+    * MLIR text is bracket-delimited, so the rhs's ops textually live
+    * inside the region region even though `out` is a single
+    * StringBuilder shared with the parent block. MLIR's dominance
+    * rules let region bodies reference parent-scope SSA values, so
+    * any vals captured by the rhs continue to work.
+    */
+  private def emitShortCircuit(lhs: TExpr, rhs: TExpr, isAnd: Boolean): MlirVal =
+    val lv = emitExpr(lhs)
+    val r  = fresh(if isAnd then "and" else "or")
+    out.append(s"  $r = scf.if ${lv.reg} -> (i1) {\n")
+    if isAnd then
+      val rv = emitExpr(rhs)
+      out.append(s"    scf.yield ${rv.reg} : i1\n")
+    else
+      val tConst = fresh("scTrue")
+      out.append(s"    $tConst = arith.constant 1 : i1\n")
+      out.append(s"    scf.yield $tConst : i1\n")
+    out.append("  } else {\n")
+    if isAnd then
+      val fConst = fresh("scFalse")
+      out.append(s"    $fConst = arith.constant 0 : i1\n")
+      out.append(s"    scf.yield $fConst : i1\n")
+    else
+      val rv = emitExpr(rhs)
+      out.append(s"    scf.yield ${rv.reg} : i1\n")
+    out.append("  }\n")
+    MlirVal(r, MScalar(TyBool))
 
   /** Call a libm bridge declared in the prologue. All arguments are
     * promoted to f64 (sign-extending integer operands as needed) and
