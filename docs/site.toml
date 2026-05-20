@@ -19,12 +19,13 @@ headingShift = 0
 # files at the URLs we publish.
 htmlDir = ""
 
-# Brand assets. `favicon` is the browser-tab icon (square or near-square
-# works best); `[juicerdocs] icon` is the wordmark-free variant the
-# topbar inlines next to the brand name. `[juicerdocs] logo` is the
-# bigger logo with the "nex" wordmark — that's what the landing splash
-# hero shows.
-favicon = "/nex-icon.png"
+# Brand assets. `favicon` is the browser-tab icon — browsers render it
+# at 16x16 / 32x32 and distort non-square sources, so we ship a square
+# variant (the icon centered on a transparent square canvas).
+# `[juicerdocs] icon` is the wordmark-free variant the topbar inlines
+# next to the brand name. `[juicerdocs] logo` is the bigger logo with
+# the "nex" wordmark — that's what the landing splash hero shows.
+favicon = "/nex-favicon.png"
 
 # Recompile theme CSS/JS on every build via sass/esbuild. Falls back to a
 # verbatim copy when those aren't on PATH.
