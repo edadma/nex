@@ -415,6 +415,13 @@ class NexMLIRCodegen:
         case other      => notYet(s"sum over $other")
 
     case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "product" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t: MTensor => emitProductReduce(av.reg, t)
+        case other      => notYet(s"product over $other")
+
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
       val av = emitExpr(arr)
       av.ty match
@@ -471,6 +478,17 @@ class NexMLIRCodegen:
       av.ty match
         case t @ MTensor(_, List(_, _)) => emitSumAxis(av, t, axis.toInt)
         case other                      => notYet(s"sum_axis on $other")
+
+    case TCall(TVarRef(s, _, _), List(arr), _, _)
+        if s.kind == SymKind.Prelude && s.name == "diag" =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(n)) => emitDiag(av, t, n)
+        case other                   => notYet(s"diag on $other")
+
+    case TCall(TVarRef(s, _, _), List(TIntLit(n, _, _)), _, _)
+        if s.kind == SymKind.Prelude && s.name == "identity" =>
+      emitIdentity(n.toInt)
 
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
@@ -1256,6 +1274,100 @@ class NexMLIRCodegen:
     val (lhs, rhs) = if scalarFirst then (svPromoted, elemName) else (elemName, svPromoted)
     out.append(s"      %s = $cmp $pred, $lhs, $rhs : $commonS\n")
     out.append(s"      linalg.yield %s : i1\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** `product(arr)` (spec §10.4): rank-N multiplicative reduction.
+    * Same shape as `emitSumReduce` but seeds the accumulator with 1
+    * and uses the type-specific multiply op (`muli` for int, `mulf`
+    * for real). Walks every element regardless of rank.
+    */
+  private def emitProductReduce(srcReg: String, ty: MTensor): MlirVal =
+    val elemT  = ty.elem
+    val scalar = scalarText(elemT)
+    val outTy  = MTensor(elemT, Nil)
+    val oneR   = fresh("init_e")
+    val oneLit = elemT match
+      case TyInteger => "1"
+      case TyReal    => "1.0"
+      case other     => notYet(s"one literal for $other")
+    out.append(s"  $oneR = arith.constant $oneLit : $scalar\n")
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.from_elements $oneR : ${outTy.text}\n")
+    val dims  = ty.shape.indices.mkString(", ")
+    val prodTR = fresh("prod_t")
+    out.append(
+      s"  $prodTR = linalg.reduce ins($srcReg : ${ty.text}) outs($initR : ${outTy.text}) dimensions = [$dims]\n",
+    )
+    out.append(s"    (%in: $scalar, %acc: $scalar) {\n")
+    out.append(s"      %s = ${scalarBinop("*", elemT)} %in, %acc : $scalar\n")
+    out.append(s"      linalg.yield %s : $scalar\n")
+    out.append("    }\n")
+    val prodR = fresh("prod")
+    out.append(s"  $prodR = tensor.extract $prodTR[] : ${outTy.text}\n")
+    MlirVal(prodR, MScalar(elemT))
+
+  /** `diag(arr)` (rank-1 → rank-2): build an n×n matrix with `arr` on
+    * the diagonal and zeros elsewhere. Lowers to `linalg.fill` of 0
+    * over a fresh n×n tensor, then a `linalg.map` over a rank-1
+    * sequence of [0..n) that scatters `arr[i]` to position `(i, i)`
+    * via `tensor.insert`. Output is a fresh tensor.
+    *
+    * Implemented as a `linalg.map` over the n×n output that uses
+    * `linalg.index` to recover (i, j) and `arith.cmpi eq` plus
+    * `arith.select` to either pick `arr[i]` or zero.
+    */
+  private def emitDiag(av: MlirVal, srcTy: MTensor, n: Int): MlirVal =
+    val elemT = srcTy.elem
+    val s     = scalarText(elemT)
+    val zero  = zeroLit(elemT)
+    val outTy = MTensor(elemT, List(n, n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("diag")
+    out.append(s"  $outR = linalg.map outs($initR : ${outTy.text})\n")
+    out.append(s"    (%_o: $s) {\n")
+    val iR    = fresh("i")
+    out.append(s"      $iR = linalg.index 0 : index\n")
+    val jR    = fresh("j")
+    out.append(s"      $jR = linalg.index 1 : index\n")
+    val cmpR  = fresh("eq")
+    out.append(s"      $cmpR = arith.cmpi eq, $iR, $jR : index\n")
+    val zR    = fresh("z")
+    out.append(s"      $zR = arith.constant $zero : $s\n")
+    val eltR  = fresh("elt")
+    out.append(s"      $eltR = tensor.extract ${av.reg}[$iR] : ${srcTy.text}\n")
+    val selR  = fresh("sel")
+    out.append(s"      $selR = arith.select $cmpR, $eltR, $zR : $s\n")
+    out.append(s"      linalg.yield $selR : $s\n")
+    out.append("    }\n")
+    MlirVal(outR, outTy)
+
+  /** `identity(n)`: n×n integer identity matrix. Same shape as `diag`
+    * but the diagonal value is the constant 1. Element type is
+    * integer (matches the interpreter — the spec says real-typed but
+    * v0 has a known divergence).
+    */
+  private def emitIdentity(n: Int): MlirVal =
+    val outTy = MTensor(TyInteger, List(n, n))
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("id")
+    out.append(s"  $outR = linalg.map outs($initR : ${outTy.text})\n")
+    out.append(s"    (%_o: i64) {\n")
+    val iR    = fresh("i")
+    out.append(s"      $iR = linalg.index 0 : index\n")
+    val jR    = fresh("j")
+    out.append(s"      $jR = linalg.index 1 : index\n")
+    val cmpR  = fresh("eq")
+    out.append(s"      $cmpR = arith.cmpi eq, $iR, $jR : index\n")
+    val oneR  = fresh("one")
+    out.append(s"      $oneR = arith.constant 1 : i64\n")
+    val zR    = fresh("z")
+    out.append(s"      $zR = arith.constant 0 : i64\n")
+    val selR  = fresh("sel")
+    out.append(s"      $selR = arith.select $cmpR, $oneR, $zR : i64\n")
+    out.append(s"      linalg.yield $selR : i64\n")
     out.append("    }\n")
     MlirVal(outR, outTy)
 

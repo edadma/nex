@@ -1513,6 +1513,40 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "product of an integer array",
+      """def main() = print(product([2, 3, 4]))""",
+      "24\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "product of a real array",
+      """def main() = print(product([1.5, 2.0, 0.5]))""",
+      "1.5\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "diag(arr) builds a square matrix with arr on the diagonal",
+      """
+        |def main() =
+        |  print(diag([1, 2, 3]))
+      """.stripMargin,
+      "[[1, 0, 0], [0, 2, 0], [0, 0, 3]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "identity(n) is the n×n integer identity matrix",
+      """
+        |def main() =
+        |  print(identity(3))
+      """.stripMargin,
+      "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
       "rank-1 slice with half-open range (spec §4.14)",
       """
         |def main() =
