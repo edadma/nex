@@ -99,6 +99,7 @@ object NexProgramCorpus:
         |def main() = print(true)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "top-level bindings + print",
@@ -217,18 +218,21 @@ object NexProgramCorpus:
       "==",
       """def main() = print(3 == 3)""",
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
       "!=",
       """def main() = print(3 != 4)""",
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
       "<",
       """def main() = print(3 < 4)""",
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -247,6 +251,7 @@ object NexProgramCorpus:
       "not",
       """def main() = print(not false)""",
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",

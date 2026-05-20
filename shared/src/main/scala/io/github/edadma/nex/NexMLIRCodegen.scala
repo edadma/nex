@@ -57,6 +57,7 @@ class NexMLIRCodegen:
 
     out.append("func.func private @nex_print_i64(i64)\n")
     out.append("func.func private @nex_print_f64(f64)\n")
+    out.append("func.func private @nex_print_bool(i1)\n")
     out.append("func.func private @nex_print_array_1d_i64(i64, i64)\n")
     out.append("func.func private @nex_print_array_1d_f64(i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_i64(i64, i64, i64)\n")
@@ -125,6 +126,8 @@ class NexMLIRCodegen:
         out.append(s"  func.call @nex_print_i64(${v.reg}) : (i64) -> ()\n")
       case MScalar(TyReal) =>
         out.append(s"  func.call @nex_print_f64(${v.reg}) : (f64) -> ()\n")
+      case MScalar(TyBool) =>
+        out.append(s"  func.call @nex_print_bool(${v.reg}) : (i1) -> ()\n")
       case t @ MTensor(elemT, List(n)) =>
         val ptrReg = emitTensorPointer(v.reg, t)
         val lenReg = fresh("len")
@@ -188,6 +191,11 @@ class NexMLIRCodegen:
       out.append(s"  $r = arith.constant ${formatReal(v)} : f64\n")
       MlirVal(r, MScalar(TyReal))
 
+    case TBoolLit(v, _, _) =>
+      val r = fresh("cb")
+      out.append(s"  $r = arith.constant ${if v then 1 else 0} : i1\n")
+      MlirVal(r, MScalar(TyBool))
+
     case TUnaryOp("-", inner, _, _) =>
       foldLiteralNeg(inner) match
         case Some(lit) => emitExpr(lit)
@@ -206,6 +214,18 @@ class NexMLIRCodegen:
               MlirVal(r, MScalar(TyReal))
             case other =>
               notYet(s"unary minus on $other")
+
+    case TUnaryOp("not", inner, _, _) =>
+      val v = emitExpr(inner)
+      v.ty match
+        case MScalar(TyBool) =>
+          val one = fresh("one")
+          val r   = fresh("not")
+          out.append(s"  $one = arith.constant 1 : i1\n")
+          out.append(s"  $r = arith.xori ${v.reg}, $one : i1\n")
+          MlirVal(r, MScalar(TyBool))
+        case other =>
+          notYet(s"`not` on $other")
 
     case TArrayLit(elems, _, TyArray(elemT, 1)) if elems.nonEmpty =>
       val vals = elems.map(emitExpr)
@@ -259,6 +279,11 @@ class NexMLIRCodegen:
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
       emitScalarPower(lv, rv, resultTy)
+
+    case TBinOp(op, lhs, rhs, _, _) if isComparisonOp(op) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      emitComparison(op, lv, rv)
 
     case TBinOp(op, lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
@@ -349,6 +374,57 @@ class NexMLIRCodegen:
     val r = fresh("pr")
     out.append(s"  $r = arith.sitofp ${v.reg} : i64 to f64\n")
     MlirVal(r, MScalar(TyReal))
+
+  private def isComparisonOp(op: String): Boolean =
+    op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+
+  /** Scalar comparison `< <= > >= == !=` on matching int/int or
+    * real/real operands. Integer ops use `arith.cmpi` with signed
+    * predicates. Real ops use `arith.cmpf` with **ordered** predicates
+    * (`oeq` / `olt` / etc.) — these return false whenever NaN is on
+    * either side, matching the spec §10.2 / NexInterpreter semantics
+    * where every relational op against NaN is false. `!=` is the
+    * exception: it uses the **unordered** predicate `une`, so
+    * `nan != nan` correctly returns true.
+    */
+  private def emitComparison(op: String, lv: MlirVal, rv: MlirVal): MlirVal =
+    val (lp, rp) = (lv.ty, rv.ty) match
+      case (MScalar(TyInteger), MScalar(TyReal))    => (promoteIntToReal(lv), rv)
+      case (MScalar(TyReal),    MScalar(TyInteger)) => (lv, promoteIntToReal(rv))
+      case _                                        => (lv, rv)
+    (lp.ty, rp.ty) match
+      case (MScalar(TyInteger), MScalar(TyInteger)) =>
+        val pred = op match
+          case "==" => "eq"
+          case "!=" => "ne"
+          case "<"  => "slt"
+          case "<=" => "sle"
+          case ">"  => "sgt"
+          case ">=" => "sge"
+        val r = fresh("cmp")
+        out.append(s"  $r = arith.cmpi $pred, ${lp.reg}, ${rp.reg} : i64\n")
+        MlirVal(r, MScalar(TyBool))
+      case (MScalar(TyReal), MScalar(TyReal)) =>
+        val pred = op match
+          case "==" => "oeq"
+          case "!=" => "une"
+          case "<"  => "olt"
+          case "<=" => "ole"
+          case ">"  => "ogt"
+          case ">=" => "oge"
+        val r = fresh("cmp")
+        out.append(s"  $r = arith.cmpf $pred, ${lp.reg}, ${rp.reg} : f64\n")
+        MlirVal(r, MScalar(TyBool))
+      case (MScalar(TyBool), MScalar(TyBool)) =>
+        val pred = op match
+          case "==" => "eq"
+          case "!=" => "ne"
+          case _    => notYet(s"ordering $op on bool")
+        val r = fresh("cmp")
+        out.append(s"  $r = arith.cmpi $pred, ${lp.reg}, ${rp.reg} : i1\n")
+        MlirVal(r, MScalar(TyBool))
+      case (lt, rt) =>
+        notYet(s"comparison $op on $lt and $rt")
 
   /** Scalar `^` (power). `int ^ int` dispatches to the C runtime's
     * `nex_ipow` (exponentiation by squaring), matching the LLVM
@@ -447,6 +523,7 @@ class NexMLIRCodegen:
   private def scalarText(t: Type): String = t match
     case TyInteger => "i64"
     case TyReal    => "f64"
+    case TyBool    => "i1"
     case other     => notYet(s"scalar text for $other")
 
   private def zeroLit(t: Type): String = t match

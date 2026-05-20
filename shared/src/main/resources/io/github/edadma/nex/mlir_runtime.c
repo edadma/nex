@@ -40,6 +40,14 @@ void nex_print_f64(double v) {
     putchar('\n');
 }
 
+/* Bool printer. Lowering passes the value as `i1`; clang ABI-promotes
+ * it to a full int, so a plain `_Bool` parameter is portable enough.
+ * Output matches NexInterpreter.formatValue: lowercase "true"/"false".
+ */
+void nex_print_bool(_Bool v) {
+    printf(v ? "true\n" : "false\n");
+}
+
 /* Integer exponentiation by squaring, mirroring NexLLVMPreamble's
  * @__nex_ipow. Result = base^exp for exp >= 0 (spec §4.4); returns 0
  * defensively for negative exponents — the elaborator forces a
