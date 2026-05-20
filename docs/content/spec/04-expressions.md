@@ -301,7 +301,7 @@ Arrays may also be constructed from ranges via the `range` function (rank-1) and
 
 Array indexing is **0-based**. Out-of-bounds indexing traps.
 
-**Negative indices** count from the end of the axis: `a[-1]` is the last element, `a[-2]` is the second-to-last, and so on. The wrap is `i + length` for `i < 0`; the bounds check then runs against the wrapped value, so `a[-10]` on a 3-element array still traps. Negative indices apply to both axes of a rank-2 index (`m[-1, -1]` is the bottom-right element) and to the single-index row form (`m[-1]` is the last row). Negative indices in *slice bounds* (`a[-3..]`) are not yet supported.
+**Negative indices** count from the end of the axis: `a[-1]` is the last element, `a[-2]` is the second-to-last, and so on. The wrap is `i + length` for `i < 0`; the bounds check then runs against the wrapped value, so `a[-10]` on a 3-element array still traps. Negative indices apply to both axes of a rank-2 index (`m[-1, -1]` is the bottom-right element), to the single-index row form (`m[-1]` is the last row), AND to slice and axis-range bounds (`a[-3..length(a)]` is the last 3 elements; `m[:, -1]` is the last column).
 
 **Rank-1 indexing** with a single integer:
 

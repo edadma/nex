@@ -1094,6 +1094,54 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "negative bounds on rank-1 slice (`a[-3..length(a)]`, `a[0..-1]`)",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[-3..length(a)])
+        |  print(a[0..-1])
+        |  print(a[-3..-1])
+        |  print(a[0..=-1])
+      """.stripMargin,
+      "[30, 40, 50]\n[10, 20, 30, 40]\n[30, 40]\n[10, 20, 30, 40, 50]\n",
+    ),
+    Case(
+      "arrays",
+      "negative bounds on rank-2 slice axes",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[-1, :])
+        |  print(m[:, -1])
+        |  print(m[-2..length(m), -2..length(m)])
+      """.stripMargin,
+      "[7, 8, 9]\n[3, 6, 9]\n[[5, 6], [8, 9]]\n",
+    ),
+    Case(
+      "arrays",
+      "negative bounds in slice-assign target",
+      """
+        |def main() =
+        |  var v = [100, 200, 300, 400, 500]
+        |  v[-3..length(v)] = [33, 44, 55]
+        |  print(v)
+      """.stripMargin,
+      "[100, 200, 33, 44, 55]\n",
+    ),
+    Case(
+      "arrays",
+      "over-negative slice bound traps",
+      """
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  assert_traps(() -> print(a[-10..2]), "out of bounds")
+        |  assert_traps(() -> print(a[0..-10]), "out of bounds")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))

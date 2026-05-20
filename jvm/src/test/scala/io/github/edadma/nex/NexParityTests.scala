@@ -2398,14 +2398,19 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
       """.stripMargin,
       "caught\n",
     )
-    "rank-1 slice with negative lo traps" in parityCheck(
+    "rank-1 slice with negative lo wraps from the end (spec §4.14)" in parityCheck(
+      // `xs[-1..2]` on `[10, 20, 30]`: lo=-1 wraps to len-1=2, hi=2 →
+      // empty half-open slice [2, 2). Over-negative bounds (e.g.
+      // `xs[-10..2]`) still trap because the wrap leaves the value
+      // negative — see the `over-negative slice bound traps` corpus
+      // case for that.
       """
         |def main() =
         |  val xs = [10, 20, 30]
-        |  assert_traps(() -> print(xs[-1..2]), "out of bounds")
-        |  print("caught")
+        |  print(xs[-1..2])
+        |  print(xs[-2..length(xs)])
       """.stripMargin,
-      "caught\n",
+      "[]\n[20, 30]\n",
     )
     "rank-1 slice with hi < lo traps" in parityCheck(
       """

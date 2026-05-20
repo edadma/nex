@@ -141,6 +141,22 @@ protected trait NexLLVMArrays extends NexLLVMState:
     emitArrDec(arrV, arr.tpe)
     result
 
+  /** Negative-index wrap for a slice / axis bound (spec §4.14). If
+    * `raw < 0`, returns `raw + extent`; otherwise returns `raw`
+    * unchanged. The caller's bounds check runs against the wrapped
+    * value, so an over-negative input (e.g. `lo = -10` on a 3-element
+    * array → wrapped to -7) still trips the negative-bound clause and
+    * traps. Mirrors the interpreter's `wrapNeg` helper.
+    */
+  protected def wrapNegBound(raw: String, extent: String): String =
+    val isNeg = newReg()
+    emitLine(s"  $isNeg = icmp slt i64 $raw, 0\n")
+    val wrapped = newReg()
+    emitLine(s"  $wrapped = add i64 $raw, $extent\n")
+    val out = newReg()
+    emitLine(s"  $out = select i1 $isNeg, i64 $wrapped, i64 $raw\n")
+    out
+
   /** Store a value of LLVM type `t` (the *language* type) into a buffer slot
     * whose stored type is `storageT`. For bool, the i1 value is widened to
     * an i8 on store. Otherwise this is a straight `store T v, ptr slot`.
@@ -447,16 +463,21 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val langE = llvmType(elem)
     val esz  = elemSize(elem)
 
-    val av  = emitExpr(arr)
-    val loV = emitExpr(lo)
-    val hiV = emitExpr(hi)
+    val av    = emitExpr(arr)
+    val loRaw = emitExpr(lo)
+    val hiRaw = emitExpr(hi)
+
+    val srcLen = newReg()
+    emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val loV = wrapNegBound(loRaw, srcLen)
+    val hiV = wrapNegBound(hiRaw, srcLen)
 
     // Bounds check: lo < 0, hi < lo, or hi exceeds size (for
     // exclusive: hi > size; for inclusive: hi >= size). The trap
     // routes through __nex_trap_with so an enclosing assert_traps
-    // catches.
-    val srcLen = newReg()
-    emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    // catches. The check runs against the wrapped values so an over-
+    // negative input (e.g. lo=-10 on a 3-element array → wrapped to
+    // -7) still trips the `lo < 0` clause.
     val negLo = newReg()
     emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
     val hiLtLo = newReg()
@@ -529,7 +550,8 @@ protected trait NexLLVMArrays extends NexLLVMState:
     def axis(spec: TAxisSpec, total: String, label: String): (String, String, Boolean, Option[String]) = spec match
       case TAxisAll => ("0", total, true, None)
       case TAxisIndex(idx) =>
-        val iv = emitExpr(idx)
+        val ivRaw = emitExpr(idx)
+        val iv    = wrapNegBound(ivRaw, total)
         val neg = newReg()
         emitLine(s"  $neg = icmp slt i64 $iv, 0\n")
         val ge  = newReg()
@@ -547,8 +569,10 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false, Some(iv))
       case TAxisRange(lo, hi, inclusive) =>
-        val loV = emitExpr(lo)
-        val hiV = emitExpr(hi)
+        val loRaw = emitExpr(lo)
+        val hiRaw = emitExpr(hi)
+        val loV = wrapNegBound(loRaw, total)
+        val hiV = wrapNegBound(hiRaw, total)
         val negLo = newReg()
         emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
         val hiLtLo = newReg()
@@ -664,13 +688,15 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val langE = llvmType(elem)
     val esz   = elemSize(elem)
 
-    val av  = emitExpr(arr)
-    val loV = emitExpr(lo)
-    val hiV = emitExpr(hi)
-    val rv  = emitExpr(value)
+    val av    = emitExpr(arr)
+    val loRaw = emitExpr(lo)
+    val hiRaw = emitExpr(hi)
+    val rv    = emitExpr(value)
 
     val dstLen = newReg()
     emitLine(s"  $dstLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val loV = wrapNegBound(loRaw, dstLen)
+    val hiV = wrapNegBound(hiRaw, dstLen)
     val negLo = newReg()
     emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
     val hiLtLo = newReg()
@@ -754,7 +780,8 @@ protected trait NexLLVMArrays extends NexLLVMState:
     def axis(spec: TAxisSpec, total: String, label: String): (String, String, Boolean) = spec match
       case TAxisAll => ("0", total, true)
       case TAxisIndex(idx) =>
-        val iv = emitExpr(idx)
+        val ivRaw = emitExpr(idx)
+        val iv    = wrapNegBound(ivRaw, total)
         val neg = newReg()
         emitLine(s"  $neg = icmp slt i64 $iv, 0\n")
         val ge  = newReg()
@@ -772,8 +799,10 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false)
       case TAxisRange(lo, hi, inclusive) =>
-        val loV = emitExpr(lo)
-        val hiV = emitExpr(hi)
+        val loRaw = emitExpr(lo)
+        val hiRaw = emitExpr(hi)
+        val loV   = wrapNegBound(loRaw, total)
+        val hiV   = wrapNegBound(hiRaw, total)
         val negLo = newReg()
         emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
         val hiLtLo = newReg()

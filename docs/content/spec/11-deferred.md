@@ -15,7 +15,7 @@ The features deferred from the current language are split into two tiers by scop
 - Literate programming via `.lnex` files (Markdown wrapper: column-0 prose, indented code, supports inline math, tables, and non-Nex code blocks)
 - View-style slicing (non-copying — returns a borrow into the source array)
 - Strided slice assignment (`a[lo..hi by k] = rhs`). The non-strided forms (`a[lo..hi] = rhs`, `m[i, lo..hi] = rhs`, full rank-2 sections) are shipped — see [§4.15](/spec/04-expressions/#415-slice-assignment)
-- Negative indices in slice bounds (`a[-3..]`, `a[..-1]`). Scalar negative indices (`a[-1]`, `m[-1, -1]`) are shipped — see [§4.14](/spec/04-expressions/#414-indexing-and-slicing)
+- Open-ended slice bounds (`a[-3..]`, `a[..-1]`). Closed-form slices `a[lo..hi]` with negative bounds (`a[-3..length(a)]`, `a[0..-1]`) are shipped — see [§4.14](/spec/04-expressions/#414-indexing-and-slicing)
 - Function calls in `const` expressions (compile-time evaluation of pure-function calls)
 - Formatted output: positional `{}` substitution in `format()`, plus precision / padding / hex specifiers (`f"..."` literals and `format()` directives)
 - Array and complex overloads of `assert_approx` — currently the scalar `assert_approx(real, real, real)` is the only form; element-wise array forms and the complex-valued form are useful for testing numeric code at higher rank
