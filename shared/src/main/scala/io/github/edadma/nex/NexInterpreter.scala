@@ -201,62 +201,9 @@ class NexInterpreter:
   private def preludeFn(name: String): List[Value] => Value = args => name match
     case "print"  => doPrint(args); VUnit
     case "format" => VString(formatArgs(args))
-    case "sqrt"   => unary1(args, "sqrt")(sqrtV)
     case "cbrt"   => unary1(args, "cbrt")(v => VReal(math.cbrt(asReal(v))))
     case "abs"    => unary1(args, "abs")(absV)
     case "sign"   => unary1(args, "sign")(signV)
-    // Spec §10.2 line 32: sin, cos, exp, log, sqrt apply to real and
-    // complex. The complex branches use the standard analytic
-    // extensions; reals fall through to the libm path unchanged.
-    case "exp"    =>
-      unary1(args, "exp") {
-        case VComplex(re, im) =>
-          val s = math.exp(re)
-          VComplex(s * math.cos(im), s * math.sin(im))
-        case v => VReal(math.exp(asReal(v)))
-      }
-    case "log"    =>
-      unary1(args, "log") {
-        case VComplex(re, im) =>
-          VComplex(0.5 * math.log(re * re + im * im), math.atan2(im, re))
-        case v => VReal(math.log(asReal(v)))
-      }
-    case "log2"   =>
-      unary1(args, "log2") {
-        case VComplex(re, im) =>
-          val ln2 = math.log(2)
-          VComplex(0.5 * math.log(re * re + im * im) / ln2, math.atan2(im, re) / ln2)
-        case v => VReal(math.log(asReal(v)) / math.log(2))
-      }
-    case "log10"  =>
-      unary1(args, "log10") {
-        case VComplex(re, im) =>
-          val ln10 = math.log(10)
-          VComplex(0.5 * math.log(re * re + im * im) / ln10, math.atan2(im, re) / ln10)
-        case v => VReal(math.log10(asReal(v)))
-      }
-    case "sin"    =>
-      unary1(args, "sin") {
-        case VComplex(re, im) =>
-          VComplex(math.sin(re) * math.cosh(im), math.cos(re) * math.sinh(im))
-        case v => VReal(math.sin(asReal(v)))
-      }
-    case "cos"    =>
-      unary1(args, "cos") {
-        case VComplex(re, im) =>
-          VComplex(math.cos(re) * math.cosh(im), -math.sin(re) * math.sinh(im))
-        case v => VReal(math.cos(asReal(v)))
-      }
-    case "tan"    =>
-      unary1(args, "tan") {
-        case VComplex(re, im) =>
-          // tan(z) = sin(z)/cos(z), expanded for stability across small |im|.
-          val sr = math.sin(re); val cr = math.cos(re)
-          val sh = math.sinh(im); val ch = math.cosh(im)
-          val denom = cr * cr * ch * ch + sr * sr * sh * sh
-          VComplex((sr * cr) / denom, (sh * ch) / denom)
-        case v => VReal(math.tan(asReal(v)))
-      }
     case "asin"   => unary1(args, "asin")(v => VReal(math.asin(asReal(v))))
     case "acos"   => unary1(args, "acos")(v => VReal(math.acos(asReal(v))))
     case "atan"   => unary1(args, "atan")(v => VReal(math.atan(asReal(v))))
@@ -986,6 +933,20 @@ class NexInterpreter:
       // adds an entry per kind they admit).
       "libm.sqrt$real"    -> realUnary("libm.sqrt$real", math.sqrt),
       "libm.sqrt$complex" -> complexUnary("libm.sqrt$complex", sqrtComplexPair),
+      "libm.exp$real"     -> realUnary("libm.exp$real",  math.exp),
+      "libm.exp$complex"  -> complexUnary("libm.exp$complex", expComplexPair),
+      "libm.log$real"     -> realUnary("libm.log$real",  math.log),
+      "libm.log$complex"  -> complexUnary("libm.log$complex", logComplexPair),
+      "libm.log2$real"    -> realUnary("libm.log2$real", x => math.log(x) / math.log(2.0)),
+      "libm.log2$complex" -> complexUnary("libm.log2$complex", log2ComplexPair),
+      "libm.log10$real"   -> realUnary("libm.log10$real", math.log10),
+      "libm.log10$complex" -> complexUnary("libm.log10$complex", log10ComplexPair),
+      "libm.sin$real"     -> realUnary("libm.sin$real",  math.sin),
+      "libm.sin$complex"  -> complexUnary("libm.sin$complex", sinComplexPair),
+      "libm.cos$real"     -> realUnary("libm.cos$real",  math.cos),
+      "libm.cos$complex"  -> complexUnary("libm.cos$complex", cosComplexPair),
+      "libm.tan$real"     -> realUnary("libm.tan$real",  math.tan),
+      "libm.tan$complex"  -> complexUnary("libm.tan$complex", tanComplexPair),
     )
 
   /** Bridge a unary real → real libm function into the intrinsic
@@ -1020,10 +981,10 @@ class NexInterpreter:
         case _ =>
           trap(s"$opId: expected complex argument, got ${args.map(formatValue).mkString(", ")}", p)
 
-  /** Principal-branch complex square root in (re, im) form. Matches
-    * [[sqrtV]]'s VComplex arm — the shared formula lifted out so the
-    * intrinsic dispatcher and the legacy `sqrt` prelude entry agree on
-    * the branch cut at the negative real axis.
+  /** Principal-branch complex square root in (re, im) form. Branch cut
+    * along the negative real axis. The LLVM helper `__nex_csqrt` uses
+    * the same formula; both backends share this implementation by
+    * construction so parity tests don't surface formula drift.
     */
   private def sqrtComplexPair(re: Double, im: Double): (Double, Double) =
     val mag  = math.hypot(re, im)
@@ -1032,6 +993,46 @@ class NexInterpreter:
       if im == 0 && re < 0 then math.sqrt(-re)
       else math.signum(im) * math.sqrt((mag - re) / 2)
     (rOut, iOut)
+
+  /** Complex exponential. exp(re + im·i) = exp(re) · (cos(im) + sin(im)·i). */
+  private def expComplexPair(re: Double, im: Double): (Double, Double) =
+    val s = math.exp(re)
+    (s * math.cos(im), s * math.sin(im))
+
+  /** Principal-branch complex natural log: log(z) = ln|z| + i·arg(z),
+    * computed as (log(hypot(re,im)), atan2(im, re)).
+    */
+  private def logComplexPair(re: Double, im: Double): (Double, Double) =
+    (math.log(math.hypot(re, im)), math.atan2(im, re))
+
+  /** Complex log base 2 — both components of the natural log scaled by
+    * 1/ln(2). One multiplication per component, cheaper than dividing.
+    */
+  private def log2ComplexPair(re: Double, im: Double): (Double, Double) =
+    val inv = 1.0 / math.log(2.0)
+    val (lr, li) = logComplexPair(re, im)
+    (lr * inv, li * inv)
+
+  /** Complex log base 10 — natural log scaled by 1/ln(10). */
+  private def log10ComplexPair(re: Double, im: Double): (Double, Double) =
+    val inv = 1.0 / math.log(10.0)
+    val (lr, li) = logComplexPair(re, im)
+    (lr * inv, li * inv)
+
+  /** Complex sin: sin(re + im·i) = sin(re)·cosh(im) + cos(re)·sinh(im)·i. */
+  private def sinComplexPair(re: Double, im: Double): (Double, Double) =
+    (math.sin(re) * math.cosh(im), math.cos(re) * math.sinh(im))
+
+  /** Complex cos: cos(re + im·i) = cos(re)·cosh(im) − sin(re)·sinh(im)·i. */
+  private def cosComplexPair(re: Double, im: Double): (Double, Double) =
+    (math.cos(re) * math.cosh(im), -math.sin(re) * math.sinh(im))
+
+  /** Complex tan via sin(z)/cos(z) expanded for stability across small |im|. */
+  private def tanComplexPair(re: Double, im: Double): (Double, Double) =
+    val sr = math.sin(re);  val cr = math.cos(re)
+    val sh = math.sinh(im); val ch = math.cosh(im)
+    val denom = cr * cr * ch * ch + sr * sr * sh * sh
+    ((sr * cr) / denom, (sh * ch) / denom)
 
   /** Mode-aware user-function call. For each `mut` parameter whose
     * call-site argument is a [[TVarRef]] (or projection thereof) the
@@ -1474,16 +1475,6 @@ class NexInterpreter:
     case VInt(x)  => VInt(java.lang.Long.signum(x).toLong)
     case VReal(x) => VReal(math.signum(x))
     case _        => trap(s"sign: non-numeric", None)
-
-  private def sqrtV(v: Value): Value = v match
-    case VComplex(r, i) =>
-      val mag = math.hypot(r, i)
-      val real = math.sqrt((mag + r) / 2)
-      val imag = math.signum(i) * math.sqrt((mag - r) / 2)
-      VComplex(real, if i == 0 && r < 0 then math.sqrt(-r) else imag)
-    case _ =>
-      val x = asReal(v)
-      if x < 0 then VComplex(0.0, math.sqrt(-x)) else VReal(math.sqrt(x))
 
   private def mapArray(arr: Value, fn: VFunc): Value = arr match
     case VArray1(b)       => VArray1(b.map(x => callFunction(fn, List(x), None)))

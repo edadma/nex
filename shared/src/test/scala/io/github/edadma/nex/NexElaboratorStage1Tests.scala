@@ -806,4 +806,53 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       ti.opId shouldBe "libm.sqrt$complex"
       ti.typeRefs shouldBe Nil
     }
+
+    // Stage 3-δ piece 2 — `Inexact` constraint covers IEEE-754
+    // continuous numbers (real + complex). Integer arguments promote
+    // to real at the call site so existing `sqrt(8)`-shape code
+    // continues to type-check.
+    "parser accepts [T: Inexact] and elaborator binds KindConstraint.Inexact" in {
+      val tp = elab("def f[T: Inexact](x: T): T = x", runMonomorph = false)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Inexact)
+      fn.returnType shouldBe TyKindVar("T", KindConstraint.Inexact)
+    }
+
+    "Inexact admits real and complex; integer is promoted, not directly admitted" in {
+      KindConstraint.Inexact.admits(TyReal)    shouldBe true
+      KindConstraint.Inexact.admits(TyComplex) shouldBe true
+      KindConstraint.Inexact.admits(TyInteger) shouldBe false
+    }
+
+    "Inexact-constrained call with integer arg specializes as $real (via int→real promote)" in {
+      val tp = elab("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Inexact](x: T): T
+        |def use(): real = gsqrt(8)
+      """.stripMargin)
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      // Generic template dropped; integer arg specialized as if real.
+      funDecls.exists(_.sym.name == "gsqrt")          shouldBe false
+      funDecls.exists(_.sym.name == "gsqrt$real")     shouldBe true
+      funDecls.exists(_.sym.name == "gsqrt$integer")  shouldBe false
+    }
+
+    "Inexact-constrained call with complex arg specializes as $complex" in {
+      val tp = elab("""
+        |@intrinsic("libm.sqrt", T)
+        |def gsqrt[T: Inexact](x: T): T
+        |def use(): complex = gsqrt(1.0 + 0i)
+      """.stripMargin)
+      val funDecls = tp.decls.collect { case f: TFunDecl => f }
+      val clone    = funDecls.find(_.sym.name == "gsqrt$complex").get
+      clone.body.asInstanceOf[TIntrinsic].opId shouldBe "libm.sqrt$complex"
+    }
+
+    "Float still rejects integer (no promotion for strict-real constraints)" in {
+      val errs = elabExpect("""
+        |def sq[T: Float](x: T): T = x
+        |def use() = print(sq(2))
+      """.stripMargin)
+      errs.exists(e => e.contains("`T`") && e.contains("Float")) shouldBe true
+    }
   }

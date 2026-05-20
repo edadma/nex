@@ -60,12 +60,19 @@ enum KindConstraint:
   case Real
   case Float
   case Complex
+  case Inexact
 
   /** The concrete types this constraint admits, in the current v0 type
     * world. `real`/`real64` are the same physical type until split-precision
     * types (real32, real128) land; the constraint set anticipates that
     * future widening by being expressed as a membership predicate rather
     * than tied to a single canonical type.
+    *
+    * `Inexact` covers the IEEE-754 continuous-number types — real and
+    * complex — without admitting integer. Used by the elementary functions
+    * sqrt/log/exp/sin/cos/tan that the spec extends to both. Integer
+    * arguments at the call site promote to real before the unifier sees
+    * them; see `unifyKindVars`.
     */
   def admits(t: Type): Boolean = (this, t) match
     case (Any,     _)         => true
@@ -76,6 +83,8 @@ enum KindConstraint:
     case (Real,    TyReal)    => true
     case (Float,   TyReal)    => true
     case (Complex, TyComplex) => true
+    case (Inexact, TyReal)    => true
+    case (Inexact, TyComplex) => true
     case _                    => false
 
 // ============================================================================

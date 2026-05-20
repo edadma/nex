@@ -15,10 +15,15 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include regex """call double @sqrt\(double 0x4030000000000000\)"""
     }
 
-    "integer arg to sqrt is sitofp-lifted before the libm call" in {
+    "integer arg to sqrt promotes to real via the kind-generic call path" in {
+      // `sqrt: [T: Inexact]` does not admit integer directly; the
+      // elaborator promotes the int literal to a real before unifying T,
+      // and synthCoerce folds `TIntLit(4)` to `TRealLit(4.0)` at compile
+      // time — so the IR carries the hex literal directly instead of a
+      // runtime sitofp + load.
       val ir = compile("def main() = print(sqrt(4))")
-      ir should include regex """sitofp i64 4 to double"""
-      ir should include regex """call double @sqrt\(double %t\d+\)"""
+      ir should include regex """call double @sqrt\(double 0x4010000000000000\)"""
+      ir should not include "sitofp i64 4 to double"
     }
 
     "all unary trig functions emit their libm bridge" in {
@@ -503,20 +508,28 @@ class NexLLVMPreludeTests extends AnyWordSpec with NexCodegenTestBase:
       ir should include("call double @cosh(double")
     }
 
-    "cos(complex) negates the imag-part product (cos·cosh − sin·sinh)" in {
+    "cos(complex) routes the call site through the __nex_ccos helper" in {
+      // The Stage 3-δ pipeline emits a single `__nex_ccos` call at the
+      // user's call site; the formula
+      //   cos(re + im·i) = cos(re)·cosh(im) − sin(re)·sinh(im)·i
+      // lives in the preamble's helper body, where the libm bridges
+      // appear verbatim. Both checks together prove the call routes
+      // through the helper AND that the helper still bridges to libm.
       val ir = compile("def main() = print(cos(0.5 + 0.5 * i))")
+      ir should include regex """call \{ double, double \} @__nex_ccos\(\{ double, double \}"""
       ir should include("call double @sin(double")
       ir should include("call double @cos(double")
       ir should include("call double @sinh(double")
       ir should include("call double @cosh(double")
-      // The `−sin · sinh` term emits an fneg.
-      ir should include regex """fneg double"""
     }
 
-    "sqrt(complex) uses copysign for the imag sign transfer" in {
+    "sqrt(complex) routes the call site through __nex_csqrt" in {
+      // Principal-branch complex sqrt: branch cut at the negative real
+      // axis. The helper body uses hypot for magnitude and selects for
+      // the branch-cut special case; both are in the preamble.
       val ir = compile("def main() = print(sqrt(-1.0 + 0.0 * i))")
-      ir should include("declare double @copysign(double, double)")
-      ir should include("call double @copysign(double")
+      ir should include regex """call \{ double, double \} @__nex_csqrt\(\{ double, double \}"""
+      ir should include("call double @hypot(double")
       ir should include("call double @sqrt(double")
     }
 

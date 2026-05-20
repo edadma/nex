@@ -963,6 +963,74 @@ class NexParityTests extends AnyWordSpec with NexParityBase:
     )
   }
 
+  // ==========================================================================
+  // Stage 3-δ piece 2 — sqrt / exp / log / log2 / log10 / sin / cos / tan
+  // are bodyless `[T: Inexact]` decls in `prelude/scalar.nex`. The decl
+  // monomorph clones each into a `$real` and a `$complex` variant; the
+  // call site picks whichever the argument type admits. Integer args
+  // promote to real at the unifier so `sqrt(8)` still type-checks under
+  // the new pipeline.
+  // ==========================================================================
+
+  "Inexact-kind source-prelude scalars (Stage 3-δ piece 2)" should {
+    "sqrt(real) bridges to libm.sqrt$real" in parityCheck(
+      "def main() = print(sqrt(4.0))",
+      "2.0\n",
+    )
+    "sqrt(integer) promotes to real before the call" in parityCheck(
+      "def main() = print(sqrt(9))",
+      "3.0\n",
+    )
+    "sqrt(complex) takes the complex arm" in parityCheck(
+      "def main() = print(sqrt(0.0 + 4i))",
+      "1.4142135623730951+1.4142135623730951i\n",
+    )
+    "exp(real) uses libm.exp$real" in parityCheck(
+      "def main() = print(exp(0.0))",
+      "1.0\n",
+    )
+    "exp(complex) returns the analytic extension" in parityCheck(
+      "def main() = print(exp(0.0 + 0i))",
+      "1.0+0.0i\n",
+    )
+    "log(real positive) uses libm.log$real" in parityCheck(
+      "def main() = print(log(1.0))",
+      "0.0\n",
+    )
+    "log(complex 1+0i) is 0+0i" in parityCheck(
+      "def main() = print(log(1.0 + 0i))",
+      "0.0+0.0i\n",
+    )
+    "log2(real) returns the binary log" in parityCheck(
+      "def main() = print(log2(8.0))",
+      "3.0\n",
+    )
+    "log10(real) returns the decimal log" in parityCheck(
+      "def main() = print(log10(1000.0))",
+      "3.0\n",
+    )
+    "sin(0) is 0" in parityCheck(
+      "def main() = print(sin(0.0))",
+      "0.0\n",
+    )
+    "cos(0) is 1" in parityCheck(
+      "def main() = print(cos(0.0))",
+      "1.0\n",
+    )
+    "tan(0) is 0" in parityCheck(
+      "def main() = print(tan(0.0))",
+      "0.0\n",
+    )
+    "sin(complex 0+0i) is 0+0i" in parityCheck(
+      "def main() = print(sin(0.0 + 0i))",
+      "0.0+0.0i\n",
+    )
+    "cos(complex 0+0i) is 1+0i" in parityCheck(
+      "def main() = print(cos(0.0 + 0i))",
+      "1.0+0.0i\n",
+    )
+  }
+
   "rank-1 prelude reductions" should {
     "sum of integers"   in parityCheck("def main() = print(sum([1, 2, 3, 4]))",          "10\n")
     "sum of reals"      in parityCheck("def main() = print(sum([1.0, 2.5, 3.5]))",       "7.0\n")

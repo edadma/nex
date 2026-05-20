@@ -953,8 +953,8 @@ class NexInterpreterTests extends AnyWordSpec with Matchers:
       runOut("""def main() = print(sqrt(9.0))""") shouldBe "3.0\n"
     }
 
-    "sqrt of negative → complex" in {
-      runOut("""def main() = print(sqrt(-4.0))""") shouldBe "0.0+2.0i\n"
+    "sqrt of negative complex → complex" in {
+      runOut("""def main() = print(sqrt(-4.0 + 0i))""") shouldBe "0.0+2.0i\n"
     }
 
     "abs" in {

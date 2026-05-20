@@ -43,8 +43,14 @@ object NexIntrinsics:
     // dispatch on the suffixed name directly — there is no "stem"
     // lookup. Each kind a constraint admits requires its entry here
     // and in every backend dispatch table.
-    "libm.sqrt$real",
-    "libm.sqrt$complex",
+    "libm.sqrt$real",   "libm.sqrt$complex",
+    "libm.exp$real",    "libm.exp$complex",
+    "libm.log$real",    "libm.log$complex",
+    "libm.log2$real",   "libm.log2$complex",
+    "libm.log10$real",  "libm.log10$complex",
+    "libm.sin$real",    "libm.sin$complex",
+    "libm.cos$real",    "libm.cos$complex",
+    "libm.tan$real",    "libm.tan$complex",
   )
 
   /** Throw if `opId` is not a known intrinsic. Use this at the top of each

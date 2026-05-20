@@ -291,10 +291,10 @@ class NexLLVMCodegen
         emitLine(s"  $reg = call double @${libmUnaryName(opId)}(double $xv)\n")
         reg
 
-      case "libm.sqrt$complex" =>
+      case _ if cmplxHelperName.isDefinedAt(opId) =>
         val zv  = emitExpr(args.head)
         val reg = newReg()
-        emitLine(s"  $reg = call { double, double } @__nex_csqrt({ double, double } $zv)\n")
+        emitLine(s"  $reg = call { double, double } @${cmplxHelperName(opId)}({ double, double } $zv)\n")
         reg
 
       case "libm.atan2" =>
@@ -345,10 +345,32 @@ class NexLLVMCodegen
     case "libm.tanh"  => "tanh"
     case "libm.log2"  => "log2"
     case "libm.log10" => "log10"
-    // Stage 3-γ specialized libm unaries. Each concrete kind that a
-    // `@intrinsic` decl admits gets its own entry — the `$<type>`
+    // Stage 3-γ / 3-δ specialized libm unaries. Each concrete kind that
+    // a `@intrinsic` decl admits gets its own entry — the `$<type>`
     // suffix selects which libm symbol the call site bridges to.
-    case "libm.sqrt$real" => "sqrt"
+    case "libm.sqrt$real"   => "sqrt"
+    case "libm.exp$real"    => "exp"
+    case "libm.log$real"    => "log"
+    case "libm.log2$real"   => "log2"
+    case "libm.log10$real"  => "log10"
+    case "libm.sin$real"    => "sin"
+    case "libm.cos$real"    => "cos"
+    case "libm.tan$real"    => "tan"
+
+  /** Mapping from a `$complex`-suffixed opId to the runtime helper that
+    * computes its analytic extension. Each helper takes and returns a
+    * `{ double, double }` aggregate matching Nex's complex value layout
+    * — see NexLLVMPreamble for the formulas.
+    */
+  private val cmplxHelperName: PartialFunction[String, String] =
+    case "libm.sqrt$complex"  => "__nex_csqrt"
+    case "libm.exp$complex"   => "__nex_cexp"
+    case "libm.log$complex"   => "__nex_clog"
+    case "libm.log2$complex"  => "__nex_clog2"
+    case "libm.log10$complex" => "__nex_clog10"
+    case "libm.sin$complex"   => "__nex_csin"
+    case "libm.cos$complex"   => "__nex_ccos"
+    case "libm.tan$complex"   => "__nex_ctan"
 
   /** Same shape as NexLLVMPrelude.liftToReal but visible from
     * [[emitIntrinsicCall]]. The sibling helper is `private`; rather than

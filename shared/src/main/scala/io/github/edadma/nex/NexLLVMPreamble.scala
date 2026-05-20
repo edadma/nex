@@ -266,6 +266,131 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ret { double, double } %r1
         |}
         |
+        |; Complex exp:  exp(re + im·i) = exp(re) · (cos(im) + sin(im)·i)
+        |define { double, double } @__nex_cexp({ double, double } %z) {
+        |entry:
+        |  %re   = extractvalue { double, double } %z, 0
+        |  %im   = extractvalue { double, double } %z, 1
+        |  %s    = call double @exp(double %re)
+        |  %ci   = call double @cos(double %im)
+        |  %si   = call double @sin(double %im)
+        |  %or   = fmul double %s, %ci
+        |  %oi   = fmul double %s, %si
+        |  %r0   = insertvalue { double, double } undef, double %or, 0
+        |  %r1   = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex natural log: principal branch
+        |;   log(z) = log(hypot(re, im)) + atan2(im, re)·i
+        |; Branch cut along the negative real axis; matches the interpreter.
+        |define { double, double } @__nex_clog({ double, double } %z) {
+        |entry:
+        |  %re   = extractvalue { double, double } %z, 0
+        |  %im   = extractvalue { double, double } %z, 1
+        |  %mag  = call double @hypot(double %re, double %im)
+        |  %or   = call double @log(double %mag)
+        |  %oi   = call double @atan2(double %im, double %re)
+        |  %r0   = insertvalue { double, double } undef, double %or, 0
+        |  %r1   = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex log base 2: log(z) / ln(2). Both components scale by the
+        |; reciprocal of ln(2) — cheaper than two separate divisions.
+        |define { double, double } @__nex_clog2({ double, double } %z) {
+        |entry:
+        |  %re      = extractvalue { double, double } %z, 0
+        |  %im      = extractvalue { double, double } %z, 1
+        |  %mag     = call double @hypot(double %re, double %im)
+        |  %lr      = call double @log(double %mag)
+        |  %li      = call double @atan2(double %im, double %re)
+        |  %inv_ln2 = fdiv double 1.0, 0x3FE62E42FEFA39EF
+        |  %or      = fmul double %lr, %inv_ln2
+        |  %oi      = fmul double %li, %inv_ln2
+        |  %r0      = insertvalue { double, double } undef, double %or, 0
+        |  %r1      = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex log base 10: log(z) / ln(10).
+        |define { double, double } @__nex_clog10({ double, double } %z) {
+        |entry:
+        |  %re       = extractvalue { double, double } %z, 0
+        |  %im       = extractvalue { double, double } %z, 1
+        |  %mag      = call double @hypot(double %re, double %im)
+        |  %lr       = call double @log(double %mag)
+        |  %li       = call double @atan2(double %im, double %re)
+        |  %inv_ln10 = fdiv double 1.0, 0x40026BB1BBB55516
+        |  %or       = fmul double %lr, %inv_ln10
+        |  %oi       = fmul double %li, %inv_ln10
+        |  %r0       = insertvalue { double, double } undef, double %or, 0
+        |  %r1       = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex sin:  sin(re + im·i) = sin(re)·cosh(im) + cos(re)·sinh(im)·i
+        |define { double, double } @__nex_csin({ double, double } %z) {
+        |entry:
+        |  %re   = extractvalue { double, double } %z, 0
+        |  %im   = extractvalue { double, double } %z, 1
+        |  %sr   = call double @sin(double %re)
+        |  %cr   = call double @cos(double %re)
+        |  %chi  = call double @cosh(double %im)
+        |  %shi  = call double @sinh(double %im)
+        |  %or   = fmul double %sr, %chi
+        |  %oi   = fmul double %cr, %shi
+        |  %r0   = insertvalue { double, double } undef, double %or, 0
+        |  %r1   = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex cos:  cos(re + im·i) = cos(re)·cosh(im) − sin(re)·sinh(im)·i
+        |define { double, double } @__nex_ccos({ double, double } %z) {
+        |entry:
+        |  %re   = extractvalue { double, double } %z, 0
+        |  %im   = extractvalue { double, double } %z, 1
+        |  %sr   = call double @sin(double %re)
+        |  %cr   = call double @cos(double %re)
+        |  %chi  = call double @cosh(double %im)
+        |  %shi  = call double @sinh(double %im)
+        |  %or   = fmul double %cr, %chi
+        |  %t1   = fmul double %sr, %shi
+        |  %oi   = fsub double 0.0, %t1
+        |  %r0   = insertvalue { double, double } undef, double %or, 0
+        |  %r1   = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
+        |; Complex tan via the stable form sin(z)/cos(z) expanded out:
+        |;   denom = cos²(re)·cosh²(im) + sin²(re)·sinh²(im)
+        |;   tan(z) = (sin(re)·cos(re)/denom,  sinh(im)·cosh(im)/denom)
+        |; Mirrors the interpreter's formula so parity holds bit-for-bit on
+        |; values where libm sin/cos/sinh/cosh agree.
+        |define { double, double } @__nex_ctan({ double, double } %z) {
+        |entry:
+        |  %re    = extractvalue { double, double } %z, 0
+        |  %im    = extractvalue { double, double } %z, 1
+        |  %sr    = call double @sin(double %re)
+        |  %cr    = call double @cos(double %re)
+        |  %shi   = call double @sinh(double %im)
+        |  %chi   = call double @cosh(double %im)
+        |  %cr2   = fmul double %cr, %cr
+        |  %chi2  = fmul double %chi, %chi
+        |  %sr2   = fmul double %sr, %sr
+        |  %shi2  = fmul double %shi, %shi
+        |  %a     = fmul double %cr2, %chi2
+        |  %b     = fmul double %sr2, %shi2
+        |  %denom = fadd double %a, %b
+        |  %src   = fmul double %sr, %cr
+        |  %shc   = fmul double %shi, %chi
+        |  %or    = fdiv double %src, %denom
+        |  %oi    = fdiv double %shc, %denom
+        |  %r0    = insertvalue { double, double } undef, double %or, 0
+        |  %r1    = insertvalue { double, double } %r0, double %oi, 1
+        |  ret { double, double } %r1
+        |}
+        |
         |; Print a real value without a trailing newline. Matches the
         |; interpreter's formatValue: if v is a whole number with |v| < 1e15,
         |; print "<lld>.0"; otherwise route through the shortest-round-trip

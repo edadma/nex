@@ -168,6 +168,15 @@ class NexMonomorphize(symbols: SymbolTable):
       case _           => ()
     }
 
+    // Track which generic templates came from auxDecls so each generic's
+    // specialized clones land back in the same list. Source-prelude
+    // generics (in auxDecls) keep their clones out of user-visible
+    // decls — structural test assertions like `tp.decls.size shouldBe 1`
+    // stay accurate after monomorph runs over a prelude call.
+    val auxGenericIds = p.auxDecls.collect {
+      case f: TFunDecl if isGenericDecl(f) => f.sym.id
+    }.toSet
+
     // Walk non-generic decls. Each TCall to a generic registers a
     // specialization (lazily minted) and rewrites callee.sym to point
     // at the specialized clone. Generic templates are dropped from
@@ -178,16 +187,20 @@ class NexMonomorphize(symbols: SymbolTable):
     // Drain the worklist. Each iteration specializes one (gid, args)
     // body, which may queue more specializations through nested
     // generic calls.
+    val auxEmitted  = mutable.ListBuffer.empty[TFunDecl]
+    val userEmitted = mutable.ListBuffer.empty[TFunDecl]
     while worklist.nonEmpty do
       val (gid, typeArgs) = worklist.dequeue()
       val generic = templates(gid)
       val specSym = specs((gid, typeArgs))
       val specDecl = specializeBody(generic, typeArgs, specSym)
       emitted += specDecl
+      if auxGenericIds.contains(gid) then auxEmitted += specDecl
+      else userEmitted += specDecl
 
     p.copy(
-      decls    = rewrittenDecls ++ emitted.toList,
-      auxDecls = rewrittenAuxDecls,
+      decls    = rewrittenDecls ++ userEmitted.toList,
+      auxDecls = rewrittenAuxDecls ++ auxEmitted.toList,
     )
 
   /** Get-or-mint the specialized symbol for `(gid, typeArgs)`. First

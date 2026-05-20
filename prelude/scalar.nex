@@ -1,15 +1,52 @@
 module prelude
 
-// Scalar math intrinsics — real-only declarations bridged to the host's
-// libm (or wrappers thereof) via the `@intrinsic("libm.<name>")`
-// attribute. Each declaration is bodyless: the elaborator stamps a
-// TIntrinsic body and every backend dispatches by opId.
+// Scalar math intrinsics bridged to the host's libm via the
+// `@intrinsic("libm.<name>", T)` attribute. Each declaration is
+// bodyless; the elaborator stamps a TIntrinsic body and every backend
+// dispatches by opId.
 //
-// Overloaded entries (sqrt, log, exp, sin, cos, tan — which the spec
-// extends to complex arguments — plus abs / sign / min / max, which
-// vary their return type by argument type) remain in the compiler's
-// `registerPrelude` for now. They land in source after overload-by-
-// input-type lands in a follow-up stage.
+// Two shapes appear below:
+//
+//   - **Real-only declarations** (cbrt, floor, ceil, ..., asinh, acosh,
+//     atanh) take a `real` argument and return `real`. Integer arguments
+//     promote via the standard scalar widening lattice.
+//
+//   - **Inexact-kind declarations** (sqrt, exp, log, log2, log10, sin,
+//     cos, tan) accept either `real` or `complex` and return the same
+//     type. The `Inexact` constraint admits both. Integer arguments
+//     promote to `real` at the call site so `sqrt(8)` still type-checks.
+//     Monomorphization clones each decl once per concrete kind reached,
+//     and the per-kind clones carry `$real` / `$complex` opIds that
+//     backend dispatch tables key on (libm wrappers for `$real`,
+//     analytic complex extensions for `$complex`).
+//
+// Entries that vary their return type by argument type (abs / sign /
+// min / max / conj) still live in the compiler's `registerPrelude`
+// pending a richer type-driven dispatch mechanism.
+
+@intrinsic("libm.sqrt", T)
+def sqrt[T: Inexact](x: T): T
+
+@intrinsic("libm.exp", T)
+def exp[T: Inexact](x: T): T
+
+@intrinsic("libm.log", T)
+def log[T: Inexact](x: T): T
+
+@intrinsic("libm.log2", T)
+def log2[T: Inexact](x: T): T
+
+@intrinsic("libm.log10", T)
+def log10[T: Inexact](x: T): T
+
+@intrinsic("libm.sin", T)
+def sin[T: Inexact](x: T): T
+
+@intrinsic("libm.cos", T)
+def cos[T: Inexact](x: T): T
+
+@intrinsic("libm.tan", T)
+def tan[T: Inexact](x: T): T
 
 @intrinsic("libm.cbrt")
 def cbrt(x: real): real
@@ -55,9 +92,3 @@ def acosh(x: real): real
 
 @intrinsic("libm.atanh")
 def atanh(x: real): real
-
-@intrinsic("libm.log2")
-def log2(x: real): real
-
-@intrinsic("libm.log10")
-def log10(x: real): real

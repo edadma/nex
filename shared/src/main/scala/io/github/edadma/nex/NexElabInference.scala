@@ -1023,8 +1023,12 @@ protected trait NexElabInference extends NexElabState:
             if c.admits(t) then
               subs(name) = t
               UnifyOk
-            else
-              UnifyConstraintViolation(name, c, t)
+            else promoteForConstraint(t, c) match
+              case Some(p) =>
+                subs(name) = p
+                UnifyOk
+              case None =>
+                UnifyConstraintViolation(name, c, t)
           case Some(prev) =>
             if prev == t then UnifyOk
             else if isNumeric(prev) && isNumeric(t) then
@@ -1033,7 +1037,15 @@ protected trait NexElabInference extends NexElabState:
                   subs(name) = joined
                   UnifyOk
                 case _ => UnifyInconsistent(name, prev, t)
-            else UnifyInconsistent(name, prev, t)
+            else promoteForConstraint(t, c) match
+              case Some(p) if p == prev   => UnifyOk
+              case Some(p) if isNumeric(prev) =>
+                promote(prev, p) match
+                  case Some(joined) if c.admits(joined) =>
+                    subs(name) = joined
+                    UnifyOk
+                  case _ => UnifyInconsistent(name, prev, t)
+              case _ => UnifyInconsistent(name, prev, t)
       case (TyArray(e1, r1), TyArray(e2, r2)) if r1 == r2 =>
         unifyKindVars(e1, e2, subs)
       case (TyTuple(es1), TyTuple(es2)) if es1.size == es2.size =>
@@ -1057,6 +1069,20 @@ protected trait NexElabInference extends NexElabState:
         UnifyOk
       case (a, b) => UnifyShapeMismatch(a, b)
 
+  /** If `t` is a narrower numeric type the constraint promotes upward,
+    * return the widened type. Lets `sqrt(8)` against a `[T: Inexact]`
+    * parameter pick `T = real` and route through the int→real coercion
+    * already in `coerceTo`. Promotion is opt-in per constraint:
+    * `Inexact` widens integer to real because elementary functions are
+    * naturally defined on the reals; strict constraints like `Float`
+    * stay strict so user code that asks for `[T: Float]` still gets a
+    * compile-time error for an integer argument.
+    */
+  protected def promoteForConstraint(t: Type, c: KindConstraint): Option[Type] =
+    (t, c) match
+      case (TyInteger, KindConstraint.Inexact) => Some(TyReal)
+      case _ => None
+
   /** Render a `KindConstraint` for a user-facing diagnostic. */
   protected def constraintLabel(c: KindConstraint): String = c match
     case KindConstraint.Any     => "Any"
@@ -1064,6 +1090,7 @@ protected trait NexElabInference extends NexElabState:
     case KindConstraint.Real    => "Real"
     case KindConstraint.Float   => "Float"
     case KindConstraint.Complex => "Complex"
+    case KindConstraint.Inexact => "Inexact"
 
   protected def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr =
     callee match
@@ -1176,15 +1203,12 @@ protected trait NexElabInference extends NexElabState:
     "length"         -> TyInteger,
     "rows"           -> TyInteger,
     "cols"           -> TyInteger,
-    // §10.2 scalar math — entries still routed by name through the
-    // legacy SymKind.Prelude path. The unambiguous real-only siblings
-    // (cbrt, floor, ceil, round, trunc, asin, acos, atan, atan2,
-    // sinh, cosh, tanh, asinh, acosh, atanh, log2, log10) live in
-    // `prelude/scalar.nex` and arrive as TyFunc-typed Function symbols
-    // — they no longer need an entry here.
-    "sqrt" -> TyReal,
-    "exp"  -> TyReal, "log"  -> TyReal,
-    "sin"  -> TyReal, "cos"  -> TyReal, "tan"  -> TyReal,
+    // §10.2 scalar math — the real-only siblings (cbrt, floor, ceil,
+    // round, trunc, asin, acos, atan, atan2, sinh, cosh, tanh, asinh,
+    // acosh, atanh) and the Inexact-kind overloaded ones (sqrt, exp,
+    // log, log2, log10, sin, cos, tan) all live in `prelude/scalar.nex`
+    // and arrive as TyFunc-typed Function symbols. They route through
+    // the generic-call path, not this fallback table.
     // §10.3 complex
     "arg"  -> TyReal,
   ).withDefaultValue(TyUnknown)
@@ -1216,18 +1240,10 @@ protected trait NexElabInference extends NexElabState:
           case Some(TyComplex) => TyComplex
           case Some(t)         => t
           case None            => TyUnknown
-      // Spec §10.2 line 32: sin, cos, exp, log, sqrt apply to real
-      // AND complex. The complex case returns complex; everything
-      // else returns real (with sqrt(negative real) handled by the
-      // interpreter at runtime).
-      case "sin" | "cos" | "tan" | "exp" | "log" | "log2" | "log10" if args.size == 1 =>
-        args.head.tpe match
-          case TyComplex => TyComplex
-          case _         => TyReal
-      case "sqrt" | "cbrt" if args.size == 1 =>
-        args.head.tpe match
-          case TyComplex => TyComplex
-          case _         => TyReal
+      // Spec §10.2 sqrt / exp / log / log2 / log10 / sin / cos / tan
+      // live in `prelude/scalar.nex` as `[T: Inexact]` decls — they
+      // route through inferGenericCall and never reach this fallback.
+      case "cbrt" if args.size == 1 => TyReal
       // §10.5 construction. `fill(n, v)` shape depends on n's type:
       //   - `n: integer`            → `[T]`  where T = v.tpe
       //   - `n: (integer, integer)` → `[[T]]`
