@@ -34,7 +34,7 @@ Operators, in order from highest to lowest precedence:
 | 12 | `->` | right | function / lambda |
 | 13 | `,` | right | tuple constructor (§4.16) |
 
-User-defined operators are *deferred to v1+*.
+User-defined operators are *deferred*.
 
 Comma binds looser than every other operator. That means `if cond then a else b, c` parses as `(if cond then a else b), c` — a 2-tuple. Use parentheses if you meant the comma inside an `else` branch: `if cond then (a, c) else (b, c)`.
 
@@ -129,7 +129,25 @@ The operators `==`, `!=`, `<`, `<=`, `>`, `>=` produce `bool`. Comparison is def
 - Element-wise array comparison: `[T] op [T] → [bool]` (same broadcast rules as §4.5)
 - `string == string`, `string != string` (no ordered comparison on string)
 
-Comparison operators are non-associative: `a < b < c` is a syntax error.
+### Chained comparisons
+
+Two or more comparison operators in a row form a chained comparison:
+
+```nex
+0 <= i < n
+lo < x <= hi
+a < b < c <= d
+```
+
+`a OP1 b OP2 c ... OPn z` is equivalent to
+
+```nex
+(a OP1 b) and (b OP2 c) and ... and (y OPn z)
+```
+
+with the additional guarantee that **every inner operand is evaluated at most once and only if every earlier comparison succeeded**. Concretely, `0 < f() < 10` calls `f()` exactly once when `0 < f()` is true, and not at all when it is false. The operators may be mixed freely — `0 <= i < n` and `a < b == c` are both well-formed — and any number of comparisons may be chained.
+
+Each pairwise comparison must independently satisfy the type rules above; in particular a chain that mixes ordered and equality operators on values for which the relevant pairwise comparison isn't defined is rejected by the type checker.
 
 ## 4.7 Logical operators
 
@@ -322,7 +340,7 @@ m[0..2, 1..3]        // sub-matrix (rank-2)
 m[:, :]              // full copy (rank-2)
 ```
 
-All slice forms return freshly-owned arrays. View-style slicing (returning a borrow into the source array without copying) is *deferred to v1+*.
+All slice forms return freshly-owned arrays. View-style slicing (returning a borrow into the source array without copying) is *deferred*.
 
 ## 4.15 Slice assignment
 
@@ -352,10 +370,10 @@ Length / shape mismatches trap at runtime, as does any out-of-bounds slice bound
 **When to reach for slice assignment.** Three common cases:
 
 1. **Replacing a contiguous prefix / suffix / middle of a rank-1 buffer**, where you'd otherwise write an indexed loop.
-2. **Writing one row, column, or sub-block of a rank-2 matrix** that you've computed independently — `result[py, :] = row_vector` is the working v0 idiom (see the Mandelbrot example).
+2. **Writing one row, column, or sub-block of a rank-2 matrix** that you've computed independently — `result[py, :] = row_vector` is the working idiom (see the Mandelbrot example).
 3. **Avoiding a `mut` parameter** for "replace this region with that data" APIs, since slice assignment mutates a binding directly in its own scope without the auto-clone interaction that follows passing a `var` array to a `mut` parameter (§8.3).
 
-Strided slice forms (`xs[lo..hi by k] = rhs`) are *deferred to v0.1+*.
+Strided slice forms (`xs[lo..hi by k] = rhs`) are *deferred*.
 
 ## 4.16 Struct construction and access
 

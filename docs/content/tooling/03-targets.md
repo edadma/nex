@@ -20,6 +20,6 @@ The Nex compiler is cross-compiled to three targets via Scala 3, and the full un
 
 ## Planned
 
-- GPU / accelerator targets — *deferred to v1+*.
+- GPU / accelerator targets — *deferred*.
 - Linux x86_64 / arm64 — likely to be folded into CI once a runner is available; no language work required.
 - WebAssembly — possible via a future LLVM IR → wasm backend; no concrete plan yet.

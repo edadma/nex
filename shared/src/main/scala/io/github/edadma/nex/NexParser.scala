@@ -416,11 +416,22 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       case f ~ rs => rs.foldLeft(f)((acc, r) => BinOpExpr("and", acc, r))
     }
 
-  /** Comparison is non-associative: `a < b < c` is a parse error. */
+  /** Comparison is chained: `a <op1> b <op2> c ...` parses as one
+    * `ChainedCmpExpr` for two or more comparisons in a row, and as a
+    * plain `BinOpExpr` for the single-comparison case. The elaborator
+    * lowers chained forms to `(a OP1 b) and (b OP2 c) and ...` with
+    * each inner operand evaluated exactly once.
+    */
   lazy val cmpExpr: PackratParser[ExprAST] =
-    rangeExpr ~ opt(cmpOp ~ rangeExpr) ^^ {
-      case e ~ None           => e
-      case e ~ Some(op ~ rhs) => BinOpExpr(op, e, rhs)
+    rangeExpr ~ rep(cmpOp ~ rangeExpr) ^^ {
+      case e ~ Nil =>
+        e
+      case e ~ List(op ~ r) =>
+        BinOpExpr(op, e, r)
+      case e ~ rest =>
+        val ops      = rest.map { case op ~ _ => op }
+        val operands = e :: rest.map { case _ ~ r => r }
+        ChainedCmpExpr(operands, ops)
     }
 
   lazy val cmpOp: PackratParser[String] =

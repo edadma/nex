@@ -13,7 +13,7 @@ def main() =
 
   // Lambda captures `mean` from the enclosing scope. The intermediate
   // from .map fuses into the .sum reduction. The explicit `: real`
-  // annotation pins the binding's type — v0 elaborator does not yet
+  // annotation pins the binding's type — the elaborator does not yet
   // infer return types through `.map(lambda).sum()` chains, so the
   // downstream `sqrt(variance)` overload-resolution needs the hint.
   val variance: real = xs.map(x -> (x - mean)^2).sum() / n

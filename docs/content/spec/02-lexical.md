@@ -18,7 +18,7 @@ letter      ::=  'a'..'z' | 'A'..'Z'
 digit       ::=  '0'..'9'
 ```
 
-Unicode identifiers are *deferred to v1+*.
+Unicode identifiers are *deferred*.
 
 ## 2.3 Keywords
 
@@ -108,7 +108,7 @@ Rules:
 
 Each interpolated value is converted to its string form (the same conversion `print` uses). Interpolated strings have type `string`.
 
-Format-string interpolation with precision specifiers (`f"x = $x%.3f"`) is *deferred to v1+*.
+Format-string interpolation with precision specifiers (`f"x = $x%.3f"`) is *deferred*.
 
 **Unit literal:** `()`. The single value of type `unit`.
 

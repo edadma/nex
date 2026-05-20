@@ -112,16 +112,21 @@ class NexParserTests extends AnyWordSpec with Matchers:
       parseExpr("7 div 3") shouldBe
         BinOpExpr("div", IntLitExpr(7), IntLitExpr(3))
     }
-    "parse comparison (non-associative)" in {
+    "parse single comparison as plain BinOpExpr" in {
       parseExpr("a == b") shouldBe BinOpExpr("==", VarRefExpr("a"), VarRefExpr("b"))
       parseExpr("a < b")  shouldBe BinOpExpr("<",  VarRefExpr("a"), VarRefExpr("b"))
     }
-    "reject chained comparison (spec §4.6 non-assoc)" in {
-      // `a < b < c` must NOT parse as `(a < b) < c` (a bool compared to an
-      // integer) — spec says it's a syntax error.
-      new NexParser().parseProgram("def main() = print(a < b < c)") match
-        case Left(_)  => succeed
-        case Right(_) => fail("expected parse error for chained comparison `a < b < c`")
+    "parse 3-way chained comparison as ChainedCmpExpr" in {
+      parseExpr("a < b < c") shouldBe ChainedCmpExpr(
+        List(VarRefExpr("a"), VarRefExpr("b"), VarRefExpr("c")),
+        List("<", "<"),
+      )
+    }
+    "parse 4-way mixed chained comparison" in {
+      parseExpr("a <= b < c <= d") shouldBe ChainedCmpExpr(
+        List(VarRefExpr("a"), VarRefExpr("b"), VarRefExpr("c"), VarRefExpr("d")),
+        List("<=", "<", "<="),
+      )
     }
     "parse `and` / `or` with proper precedence" in {
       // `or` is looser, so `a or b and c` = `a or (b and c)`.

@@ -119,7 +119,7 @@ sum_axis(m: [[T]], axis: integer): [T]  // axis=0 → per-column; axis=1 → per
 map(m: [[T]], f: T -> U): [[U]]         // element-wise
 ```
 
-These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. User-defined polymorphic functions of equivalent generality require generics, *deferred to v1+*.
+These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. User-defined polymorphic functions of equivalent generality require generics, *deferred*.
 
 ## 10.5 Construction
 
@@ -151,7 +151,7 @@ fill((3, 2), 0.0)        // rank-2 reals
 identity(3)              // rank-2 integer identity matrix
 ```
 
-`zeros`, `ones`, and `identity` return **integer** element type in v0. When you need a real-typed buffer, use `fill(n, 0.0)`, `fill(n, 1.0)`, or `linspace`; for a real identity, multiply by `1.0` (`identity(n) * 1.0`) or fill manually. A future refinement is expected once overload-by-return-type lands.
+`zeros`, `ones`, and `identity` currently return **integer** element type. When you need a real-typed buffer, use `fill(n, 0.0)`, `fill(n, 1.0)`, or `linspace`; for a real identity, multiply by `1.0` (`identity(n) * 1.0`) or fill manually. A future refinement is expected once overload-by-return-type lands.
 
 ## 10.6 I/O
 
@@ -163,7 +163,7 @@ format(args...): string      // join args (in default form) with single spaces
 
 For string composition, prefer interpolated string literals (`s"x = $x"`, see the Lexical chapter) — they are the idiomatic form. The `format` function is currently a minimal helper that converts each argument with the same rules as `print` (whole reals as `n.0`, strings unquoted, structs as `Name { ... }`) and joins them with single spaces; it does not interpret a format string.
 
-Positional `{}` substitution and type-aware formatting (precision, padding, hex specifiers, the `f"..."` literal form) are *deferred to v0.1+*.
+Positional `{}` substitution and type-aware formatting (precision, padding, hex specifiers, the `f"..."` literal form) are *deferred*.
 
 ## 10.7 Type conversions
 
@@ -190,6 +190,6 @@ assert_traps(thunk: () -> T, expected_substring: string)
 
 All assertions trap on failure with a message naming the assertion type and (where applicable) the user-supplied `msg`. The test runner catches the trap and reports the failure without halting the rest of the test suite.
 
-**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. (Array and complex overloads of `assert_approx` are *deferred to v0.1+*.)
+**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. (Array and complex overloads of `assert_approx` are *deferred*.)
 
 `assert_traps` takes a zero-argument closure and passes if invoking it traps; it fails if the thunk returns normally. The 2-arg form additionally checks that the trap message contains `expected_substring` — useful for asserting a specific failure mode rather than "any trap fires".
