@@ -128,6 +128,15 @@ protected trait NexElabState:
     */
   protected val paramNames = mutable.Map.empty[Int, List[String]]
 
+  /** Type symbol id → declared type-param names, in declaration order.
+    * Populated for generic struct (and, in a later chunk, enum) decls so
+    * `typeOf(AppliedType("Pair", [integer, string]))` can substitute
+    * `Pair`'s `TyKindVar` fields by zipping declared names against the
+    * applied args. Monomorphization reads the same ordering off the
+    * decl's `typeParams: List[Symbol]`.
+    */
+  protected val typeParamNames = mutable.Map.empty[Int, List[String]]
+
   /** Symbol id → TLambda value, for every `val/var = lambda` binding whose
     * lambda has any `TyUnknown` param. Populated by inferTopBinding /
     * inferBlockItem. Consumed by [[inferArg]] when a TVarRef to such a

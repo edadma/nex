@@ -209,9 +209,11 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   // --- struct declarations -----------------------------------------------
 
   lazy val structDecl: PackratParser[DeclAST] =
-    opt("private") ~ ("struct" ~> ident) ~ blockOfFields ~ opt(trailingEnd) ^^ {
-      case priv ~ name ~ fields ~ _ =>
-        StructDeclAST(name, fields, isPrivate = priv.isDefined)
+    opt("private") ~ ("struct" ~> ident) ~ opt(typeParamList) ~ blockOfFields ~ opt(trailingEnd) ^^ {
+      case priv ~ name ~ tps ~ fields ~ _ =>
+        StructDeclAST(name, fields,
+                      isPrivate  = priv.isDefined,
+                      typeParams = tps.getOrElse(Nil))
     }
 
   lazy val blockOfFields: PackratParser[List[StructField]] =
@@ -234,9 +236,11 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   // enum" surface chosen for sum types.
 
   lazy val enumDecl: PackratParser[DeclAST] =
-    opt("private") ~ ("enum" ~> ident) ~ ("=" ~> blockOfVariants) ~ opt(trailingEnd) ^^ {
-      case priv ~ name ~ variants ~ _ =>
-        EnumDeclAST(name, variants, isPrivate = priv.isDefined)
+    opt("private") ~ ("enum" ~> ident) ~ opt(typeParamList) ~ ("=" ~> blockOfVariants) ~ opt(trailingEnd) ^^ {
+      case priv ~ name ~ tps ~ variants ~ _ =>
+        EnumDeclAST(name, variants,
+                    isPrivate  = priv.isDefined,
+                    typeParams = tps.getOrElse(Nil))
     }
 
   lazy val blockOfVariants: PackratParser[List[EnumVariantAST]] =
@@ -409,6 +413,9 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     simpleType
 
   lazy val simpleType: PackratParser[TypeAST] =
+    ident ~ ("[" ~> rep1sep(typeExpr, ",") <~ "]") ^^ {
+      case n ~ args => AppliedType(n, args)
+    } |
     ident ^^ NamedType.apply |
     "[" ~> typeExpr <~ "]" ^^ ArrayType.apply
 

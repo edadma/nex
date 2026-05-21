@@ -121,7 +121,7 @@ sum_axis(m: [[T]], axis: integer): [T]  // axis=0 → per-column; axis=1 → per
 map(m: [[T]], f: T -> U): [[U]]         // element-wise
 ```
 
-These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. The equivalent surface for user code is `def foo[T](...)` (Functions §6.10) — Stage 1 covers generic functions; generic structs and enums are deferred (Deferred §11.2).
+These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. The user-facing surfaces for the same shape are generic functions ([§6.10](/spec/06-functions/#610-generic-functions)) and generic structs / enums ([§3.6](/spec/03-types/#36-generic-structs), [§3.8](/spec/03-types/#38-generic-enums)).
 
 ## 10.5 Construction
 

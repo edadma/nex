@@ -16,7 +16,6 @@ The features deferred from the current language are split into two tiers by scop
 ## 11.2 Long-term work
 
 **Type system:**
-- Generic structs and enums (Stage 2 of the generics roadmap; Stage 1 — generic *functions* — is shipped, see [§6.10](/spec/06-functions/#610-generic-functions))
 - Sized numeric variants (`integer8`, `integer32`, `real32`, `complex32`)
 - Higher-rank arrays (rank-3 and beyond) and a static-shape language (`[real; M, N]`)
 - Pattern matching beyond enums (literal patterns, guards, range patterns) — current `match` shape is defined in [§7.5](/spec/07-control-flow/#75-match-expressions)

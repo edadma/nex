@@ -489,14 +489,33 @@ class NexElaborator
     TFunDecl(sym, paramSyms, retTy, body, f.isPrivate, f.attributes.map(_.name), Some(f.pos))
 
   private def elabStruct(s: StructDeclAST, sym: Symbol): TStructDecl =
-    val fs = s.fields.map(f => (f.name, typeOf(f.typ)))
-    // Update the symbol's type now that we know the fields, and reflect
-    // the same Symbol on the returned TStructDecl so walkers see the
-    // resolved struct type instead of the Pass-A `TyStruct(name, Nil)`
-    // placeholder.
-    val resolvedSym = sym.copy(tpe = TyStruct(s.name, fs))
-    symbols.update(resolvedSym)
-    TStructDecl(resolvedSym, fs, s.isPrivate, Some(s.pos))
+    // A generic struct introduces its type parameters as TypeName symbols
+    // carrying TyKindVar into a scope local to its field-type resolution.
+    // The resulting TyStruct has TyKindVars in its field positions; the
+    // monomorphization pass mints concrete clones at each construction
+    // site.
+    if s.typeParams.nonEmpty then
+      val (tpSyms, fs) = scoped {
+        val syms = s.typeParams.map { tp =>
+          val kc = decodeKindConstraint(tp.constraint, s)
+          defineNoError(tp.name, SymKind.TypeName, TyKindVar(tp.name, kc))
+        }
+        val fields = s.fields.map(f => (f.name, typeOf(f.typ)))
+        (syms, fields)
+      }
+      val resolvedSym = sym.copy(tpe = TyStruct(s.name, fs))
+      symbols.update(resolvedSym)
+      typeParamNames(resolvedSym.id) = tpSyms.map(_.name)
+      TStructDecl(resolvedSym, fs, s.isPrivate, tpSyms, Some(s.pos))
+    else
+      val fs = s.fields.map(f => (f.name, typeOf(f.typ)))
+      // Update the symbol's type now that we know the fields, and reflect
+      // the same Symbol on the returned TStructDecl so walkers see the
+      // resolved struct type instead of the Pass-A `TyStruct(name, Nil)`
+      // placeholder.
+      val resolvedSym = sym.copy(tpe = TyStruct(s.name, fs))
+      symbols.update(resolvedSym)
+      TStructDecl(resolvedSym, fs, s.isPrivate, Nil, Some(s.pos))
 
   /** Resolve an enum's variant field types and re-mint refined symbols.
     * The type symbol gets `TyEnum(name, variants)`; each variant symbol
@@ -505,21 +524,49 @@ class NexElaborator
     * see the refined types via `symbols.get(id)`.
     */
   private def elabEnum(e: EnumDeclAST, typeSym: Symbol, variantSyms: List[Symbol]): TEnumDecl =
-    val variantFields = e.variants.map(v => v.fields.map(f => (f.name, typeOf(f.typ))))
-    val enumTy = TyEnum(e.name, e.variants.zip(variantFields).map { case (v, fs) => (v.name, fs) })
+    // A generic enum introduces its type parameters as TypeName symbols
+    // carrying TyKindVar into a scope local to variant field-type
+    // resolution. The resulting TyEnum has TyKindVars in its variant
+    // payload fields; the monomorphization pass mints concrete clones
+    // at each construction site (and at each match scrutinee).
+    if e.typeParams.nonEmpty then
+      val (tpSyms, resolvedType, resolvedVariants) = scoped {
+        val syms = e.typeParams.map { tp =>
+          val kc = decodeKindConstraint(tp.constraint, e)
+          defineNoError(tp.name, SymKind.TypeName, TyKindVar(tp.name, kc))
+        }
+        val variantFields = e.variants.map(v => v.fields.map(f => (f.name, typeOf(f.typ))))
+        val enumTy = TyEnum(e.name, e.variants.zip(variantFields).map { case (v, fs) => (v.name, fs) })
+        val rType = typeSym.copy(tpe = enumTy)
+        symbols.update(rType)
+        val rVariants = variantSyms.zip(variantFields).map { case (vs, fs) =>
+          val variantTpe =
+            if fs.isEmpty then enumTy
+            else TyFunc(fs.map { case (_, ft) => (ft, ParamMode.Read) }, enumTy)
+          val rs = vs.copy(tpe = variantTpe)
+          symbols.update(rs)
+          (rs, fs)
+        }
+        (syms, rType, rVariants)
+      }
+      typeParamNames(resolvedType.id) = tpSyms.map(_.name)
+      TEnumDecl(resolvedType, resolvedVariants, e.isPrivate, tpSyms, Some(e.pos))
+    else
+      val variantFields = e.variants.map(v => v.fields.map(f => (f.name, typeOf(f.typ))))
+      val enumTy = TyEnum(e.name, e.variants.zip(variantFields).map { case (v, fs) => (v.name, fs) })
 
-    val resolvedType = typeSym.copy(tpe = enumTy)
-    symbols.update(resolvedType)
+      val resolvedType = typeSym.copy(tpe = enumTy)
+      symbols.update(resolvedType)
 
-    val resolvedVariants = variantSyms.zip(variantFields).map { case (vs, fs) =>
-      val variantTpe =
-        if fs.isEmpty then enumTy
-        else TyFunc(fs.map { case (_, ft) => (ft, ParamMode.Read) }, enumTy)
-      val rs = vs.copy(tpe = variantTpe)
-      symbols.update(rs)
-      (rs, fs)
-    }
-    TEnumDecl(resolvedType, resolvedVariants, e.isPrivate, Some(e.pos))
+      val resolvedVariants = variantSyms.zip(variantFields).map { case (vs, fs) =>
+        val variantTpe =
+          if fs.isEmpty then enumTy
+          else TyFunc(fs.map { case (_, ft) => (ft, ParamMode.Read) }, enumTy)
+        val rs = vs.copy(tpe = variantTpe)
+        symbols.update(rs)
+        (rs, fs)
+      }
+      TEnumDecl(resolvedType, resolvedVariants, e.isPrivate, Nil, Some(e.pos))
 
   private def elabTopBinding(
       d:    DeclAST,
@@ -664,6 +711,39 @@ class NexElaborator
           case Some(Symbol(_, _, _, SymKind.TypeName))              => TyStruct(other, Nil)
           case _                                                    =>
             err(s"unknown type `$other`", t); TyUnknown
+      case AppliedType(name, args) =>
+        // `Pair[integer, string]` / `Opt[integer]` — look up the template
+        // and substitute its declared type parameters by zipping against
+        // `args`. The aggregate's name is preserved (mangling is the
+        // monomorphizer's concern), because by-name `TyStruct` / `TyEnum`
+        // equality is what every downstream walker — including spec
+        // lookup — relies on.
+        val typeArgs = args.map(typeOf)
+        current.lookup(name).flatMap(s => symbols.get(s.id)) match
+          case Some(Symbol(id, _, TyStruct(n, templateFs), SymKind.TypeName)) =>
+            val paramOrder = typeParamNames.getOrElse(id, Nil)
+            if paramOrder.isEmpty then
+              err(s"type `$name` is not generic but was applied to ${args.size} type argument(s)", t); TyUnknown
+            else if paramOrder.size != typeArgs.size then
+              err(s"type `$name` expects ${paramOrder.size} type argument(s), got ${typeArgs.size}", t); TyUnknown
+            else
+              val subs   = paramOrder.zip(typeArgs).toMap
+              val substF = templateFs.map { case (fn, ft) => (fn, substituteTyKindVars(ft, subs)) }
+              TyStruct(n, substF)
+          case Some(Symbol(id, _, TyEnum(n, templateVs), SymKind.TypeName)) =>
+            val paramOrder = typeParamNames.getOrElse(id, Nil)
+            if paramOrder.isEmpty then
+              err(s"type `$name` is not generic but was applied to ${args.size} type argument(s)", t); TyUnknown
+            else if paramOrder.size != typeArgs.size then
+              err(s"type `$name` expects ${paramOrder.size} type argument(s), got ${typeArgs.size}", t); TyUnknown
+            else
+              val subs   = paramOrder.zip(typeArgs).toMap
+              val substVs = templateVs.map { case (vn, vfs) =>
+                (vn, vfs.map { case (fn, ft) => (fn, substituteTyKindVars(ft, subs)) })
+              }
+              TyEnum(n, substVs)
+          case _ =>
+            err(s"unknown type `$name`", t); TyUnknown
       case ArrayType(inner) =>
         // Detect rank-2 by recursive shape (only rank 1 and 2 in v0).
         inner match

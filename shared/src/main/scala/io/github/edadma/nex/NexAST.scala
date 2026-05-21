@@ -78,12 +78,16 @@ enum ParamMode:
   case Read   // inferred default
   case Mut    // explicit `mut`
 
-/** `struct Name; field: T; ...; end [Name]`. */
+/** `struct Name[T1, T2, ...]?; field: T; ...; end [Name]`. The optional
+  * type-parameter list takes the same shape as on a generic `def` —
+  * each binder may carry a kind-constraint name (`[T: Numeric]`).
+  */
 case class StructDeclAST(
     name:       String,
     fields:     List[StructField],
     isPrivate:  Boolean = false,
     attributes: List[Attribute] = Nil,
+    typeParams: List[TypeParamAST] = Nil,
 ) extends DeclAST
 
 case class StructField(name: String, typ: TypeAST) extends Positional
@@ -99,6 +103,7 @@ case class EnumDeclAST(
     variants:   List[EnumVariantAST],
     isPrivate:  Boolean = false,
     attributes: List[Attribute] = Nil,
+    typeParams: List[TypeParamAST] = Nil,
 ) extends DeclAST
 
 case class EnumVariantAST(name: String, fields: List[StructField]) extends Positional
@@ -163,6 +168,12 @@ sealed trait TypeAST extends Positional
   * `Point`, etc.
   */
 case class NamedType(name: String) extends TypeAST
+
+/** Applied type: `Pair[integer, string]`, `Opt[T]`. The name resolves to
+  * a generic struct/enum decl whose type parameters bind to `args` in
+  * declaration order.
+  */
+case class AppliedType(name: String, args: List[TypeAST]) extends TypeAST
 
 /** `[T]` — rank-1 array. */
 case class ArrayType(elem: TypeAST) extends TypeAST
