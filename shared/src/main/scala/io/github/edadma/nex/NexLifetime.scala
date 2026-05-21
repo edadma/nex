@@ -205,7 +205,7 @@ class NexLifetime(
       case TReturn(None, p, t)            => TReturn(None, p, t)
       case TInterpStringLit(parts, p, t)  =>
         TInterpStringLit(parts.map {
-          case TInterpExpr(x) => TInterpExpr(rewriteSubtree(x, refs))
+          case TInterpExpr(x, sp) => TInterpExpr(rewriteSubtree(x, refs), sp)
           case other          => other
         }, p, t)
       // Pure leaves
@@ -339,6 +339,6 @@ class NexLifetime(
         f(r)
       case TInterpStringLit(parts, _, _)    =>
         parts.foreach {
-          case TInterpExpr(x) => f(x)
+          case TInterpExpr(x, _) => f(x)
           case _              => ()
         }

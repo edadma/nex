@@ -140,7 +140,7 @@ class NexFusion(symbols: SymbolTable):
       sys.error("internal: TOpenSliceMark survived to fusion pass; should be Stage-2-only")
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
-        case TInterpExpr(x) => TInterpExpr(fuseExpr(x))
+        case TInterpExpr(x, sp) => TInterpExpr(fuseExpr(x), sp)
         case other          => other
       }
       TInterpStringLit(ps, p, t)
@@ -367,7 +367,7 @@ class NexFusion(symbols: SymbolTable):
     case _: TOpenSliceMark => e
     case TInterpStringLit(parts, p, t) =>
       val ps = parts.map {
-        case TInterpExpr(x) => TInterpExpr(subst(x, fromId, to))
+        case TInterpExpr(x, sp) => TInterpExpr(subst(x, fromId, to), sp)
         case other          => other
       }
       TInterpStringLit(ps, p, t)

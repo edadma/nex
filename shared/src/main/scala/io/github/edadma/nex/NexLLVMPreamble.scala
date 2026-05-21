@@ -694,6 +694,96 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; codegen-side to avoid threading two literal-pool descriptors
         |; through a runtime select.
         |
+        |; Build a fresh string descriptor holding the binary representation
+        |; of an i64 (no leading zeros, no `0b` prefix). Special: 0 → "0".
+        |; Spec §10.6 `%b` format. Negative integers use two's-complement
+        |; (64 bits) — this matches Java's Long.toBinaryString.
+        |define ptr @__nex_str_from_bin(i64 %n) {
+        |entry:
+        |  %is_zero = icmp eq i64 %n, 0
+        |  br i1 %is_zero, label %zero_case, label %nonzero
+        |zero_case:
+        |  %z = call ptr @__nex_str_alloc(i64 1)
+        |  %zp = getelementptr inbounds %nex_str, ptr %z, i32 0, i32 2
+        |  %zd = load ptr, ptr %zp
+        |  store i8 48, ptr %zd                                 ; '0'
+        |  ret ptr %z
+        |nonzero:
+        |  ; Compute bit-length = 64 - leading-zero count (positive); for
+        |  ; negative inputs we always emit 64 bits.
+        |  %lt = icmp slt i64 %n, 0
+        |  %clz = call i64 @llvm.ctlz.i64(i64 %n, i1 false)
+        |  %pos_len = sub i64 64, %clz
+        |  %len = select i1 %lt, i64 64, i64 %pos_len
+        |  %res = call ptr @__nex_str_alloc(i64 %len)
+        |  %rdp = getelementptr inbounds %nex_str, ptr %res, i32 0, i32 2
+        |  %rd  = load ptr, ptr %rdp
+        |  br label %loop_hdr
+        |loop_hdr:
+        |  %i = phi i64 [0, %nonzero], [%i1, %loop_body]
+        |  %done = icmp uge i64 %i, %len
+        |  br i1 %done, label %loop_exit, label %loop_body
+        |loop_body:
+        |  ; bit at position (len - 1 - i)
+        |  %hi_idx = sub i64 %len, %i
+        |  %bit_idx = sub i64 %hi_idx, 1
+        |  %shifted = lshr i64 %n, %bit_idx
+        |  %bit_u = and i64 %shifted, 1
+        |  %bit_b = trunc i64 %bit_u to i8
+        |  %digit = add i8 %bit_b, 48                           ; '0' = 48
+        |  %slot = getelementptr inbounds i8, ptr %rd, i64 %i
+        |  store i8 %digit, ptr %slot
+        |  %i1 = add i64 %i, 1
+        |  br label %loop_hdr
+        |loop_exit:
+        |  ret ptr %res
+        |}
+        |
+        |declare i64 @llvm.ctlz.i64(i64, i1)
+        |
+        |; Pad a string descriptor to a target width. `side` is 0 for
+        |; right-justify (pad chars prepended) or 1 for left-justify (pad
+        |; chars appended). `pad` is the byte to repeat (`'0'` or `' '`).
+        |; If the input is already at or above `width`, returns a fresh
+        |; descriptor with identical content (caller still owns input).
+        |define ptr @__nex_str_pad(ptr %src, i64 %width, i8 %pad, i32 %side) {
+        |entry:
+        |  %srclp = getelementptr inbounds %nex_str, ptr %src, i32 0, i32 1
+        |  %srclen = load i64, ptr %srclp
+        |  %srcdp = getelementptr inbounds %nex_str, ptr %src, i32 0, i32 2
+        |  %srcd  = load ptr, ptr %srcdp
+        |  %cmp = icmp uge i64 %srclen, %width
+        |  br i1 %cmp, label %nopad, label %dopad
+        |nopad:
+        |  ; Copy as-is.
+        |  %r1 = call ptr @__nex_str_alloc(i64 %srclen)
+        |  %r1dp = getelementptr inbounds %nex_str, ptr %r1, i32 0, i32 2
+        |  %r1d  = load ptr, ptr %r1dp
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %r1d, ptr %srcd, i64 %srclen, i1 false)
+        |  ret ptr %r1
+        |dopad:
+        |  %padcnt = sub i64 %width, %srclen
+        |  %res = call ptr @__nex_str_alloc(i64 %width)
+        |  %rdp = getelementptr inbounds %nex_str, ptr %res, i32 0, i32 2
+        |  %rd  = load ptr, ptr %rdp
+        |  %left = icmp eq i32 %side, 1
+        |  br i1 %left, label %do_left, label %do_right
+        |do_left:
+        |  ; copy src then pad on the right
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %rd, ptr %srcd, i64 %srclen, i1 false)
+        |  %padstart_l = getelementptr inbounds i8, ptr %rd, i64 %srclen
+        |  call void @llvm.memset.p0.i64(ptr %padstart_l, i8 %pad, i64 %padcnt, i1 false)
+        |  ret ptr %res
+        |do_right:
+        |  ; pad on the left then copy src
+        |  call void @llvm.memset.p0.i64(ptr %rd, i8 %pad, i64 %padcnt, i1 false)
+        |  %datstart_r = getelementptr inbounds i8, ptr %rd, i64 %padcnt
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %datstart_r, ptr %srcd, i64 %srclen, i1 false)
+        |  ret ptr %res
+        |}
+        |
+        |declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)
+        |
         |; Build a fresh string descriptor from a real (double). Mirrors
         |; the interpreter's formatValue exactly: whole numbers with
         |; |v|<1e15 print as "<lld>.0"; everything else goes through the

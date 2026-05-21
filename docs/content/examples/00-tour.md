@@ -229,6 +229,12 @@ v[-2..]                // [2.0, 3.0]      open upper bound — fills with length
 v[..2]                 // [1.0, 2.0]      open lower bound — fills with 0
 v[..]                  // [1.0, 2.0, 3.0] both ends open — whole-array copy
 
+val w = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]
+w[0..8 by 2]           // [10.0, 30.0, 50.0, 70.0]   — strided: every k-th element
+w[1..8 by 3]           // [20.0, 50.0, 80.0]
+w[.. by 2]             // [10.0, 30.0, 50.0, 70.0]   — stride combines with open bounds
+w[-4.. by 2]           // [50.0, 70.0]                 and with negative bounds
+
 // Element-wise arithmetic with broadcasting:
 val a = [1.0, 2.0, 3.0]
 val b = [4.0, 5.0, 6.0]
@@ -274,6 +280,9 @@ var xs = [10, 20, 30, 40, 50]
 xs[1..4] = [200, 300, 400]               // xs = [10, 200, 300, 400, 50]
 xs[0..=2] = [1, 2, 3]                    // xs = [1, 2, 3, 400, 50]
 xs[-2..]  = [99, 100]                    // open hi: xs = [1, 2, 3, 99, 100]
+
+var ys = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+ys[0..10 by 2] = [1, 1, 1, 1, 1]         // strided: ys = [1,0,1,0,1,0,1,0,1,0]
 
 var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 m[1, :]       = [40, 50, 60]             // replace row 1
@@ -574,9 +583,12 @@ Rank-2 construction takes a `(rows, cols)` tuple as the shape argument (single-i
 ```nex
 print("hello")                                  // with newline
 print()                                         // newline alone
-print(s"x = $x")                                // interpolated (preferred)
-val s = format("x =", x, "y =", y)              // join args with spaces
+print(s"x = $x")                                // plain interpolation
+print(f"x = $x%5d, y = $y%.3f")                 // f-string with printf-style spec
+val s = f"alpha = $a%8.4f"                      // value-position is fine too
 ```
+
+`f"..."` accepts the same `$ident` / `${expr}` interpolations as `s"..."`, plus an optional Scala/printf-style spec right after each value: `%[flags][width][.precision]conv` with conv ∈ `d f e g s x X o b`. Flags `-` (left-align), `0` (zero-pad). See spec §10.6.
 
 ## Prelude — conversions
 

@@ -219,6 +219,8 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         (a.tpe, b.tpe) match
           case (TyArray(_, 1), TyArray(_, 1)) =>
             emitAssertApproxArr1(a, b, eps); "void"
+          case (TyArray(_, 2), TyArray(_, 2)) =>
+            emitAssertApproxArr2(a, b, eps); "void"
           case (TyComplex, TyComplex) =>
             emitAssertApproxComplex(a, b, eps); "void"
           case _ =>
@@ -280,34 +282,8 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("flatten",   List(a))              => emitFlattenCall(a, resultT)
       case ("sum_axis",  List(m, ax))          => emitSumAxisCall(m, ax, resultT)
 
-      case ("format", _) => emitFormatCall(args)
-
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
-
-  /** Lower `format(arg0, arg1, ...)` — interpreter equivalent is
-    * `args.map(formatValue).mkString(" ")`. Each arg routes through
-    * [[emitValueToString]] which produces a fresh %nex_str descriptor;
-    * intermediate results are chained via `__nex_str_concat` with
-    * literal " " separators between them. Every per-arg descriptor and
-    * every intermediate-concat result is dec'd once chained.
-    */
-  private def emitFormatCall(args: List[TExpr]): String =
-    if args.isEmpty then internStringDescriptor("")
-    else
-      val space = internStringDescriptor(" ")
-      var acc   = emitValueToString(args.head)
-      for a <- args.tail do
-        val withSep = newReg()
-        emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $acc, ptr $space)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $acc)\n")
-        val part = emitValueToString(a)
-        val next = newReg()
-        emitLine(s"  $next = call ptr @__nex_str_concat(ptr $withSep, ptr $part)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $withSep)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $part)\n")
-        acc = next
-      acc
 
   /** Lift an integer-typed expression to double via `sitofp`; pass-through
     * for double-typed expressions. Used by every libm bridge so callers
@@ -656,6 +632,72 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       val ok = newReg()
       emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
       emitTrapOnFalse(ok, "@.assert_approx_msg", "aapae")
+    }
+
+    emitArrDec(av, a.tpe)
+    emitArrDec(bv, b.tpe)
+
+  /** Emit a rank-2 element-wise `assert_approx`. Mirrors the rank-1
+    * emitter (same per-element distance computations) but checks both
+    * `rows` and `cols` for the shape match and iterates `rows * cols`
+    * positions over the flat buffer.
+    */
+  private def emitAssertApproxArr2(a: TExpr, b: TExpr, eps: TExpr): Unit =
+    val elemA = arrayElem(a.tpe)
+    val elemB = arrayElem(b.tpe)
+    if elemA != elemB then
+      notImpl(s"assert_approx on arrays of different element types ($elemA vs $elemB)")
+    val elem  = elemA
+    val stT   = storageType(elem)
+    val langT = llvmType(elem)
+
+    val av  = emitExpr(a)
+    val bv  = emitExpr(b)
+    val ev  = liftToReal(eps)
+
+    val aRows = newReg(); emitLine(s"  $aRows = call i64 @__nex_arr2_rows(ptr $av)\n")
+    val bRows = newReg(); emitLine(s"  $bRows = call i64 @__nex_arr2_rows(ptr $bv)\n")
+    val aCols = newReg(); emitLine(s"  $aCols = call i64 @__nex_arr2_cols(ptr $av)\n")
+    val bCols = newReg(); emitLine(s"  $bCols = call i64 @__nex_arr2_cols(ptr $bv)\n")
+    val sameRows = newReg(); emitLine(s"  $sameRows = icmp eq i64 $aRows, $bRows\n")
+    val sameCols = newReg(); emitLine(s"  $sameCols = icmp eq i64 $aCols, $bCols\n")
+    val sameShape = newReg(); emitLine(s"  $sameShape = and i1 $sameRows, $sameCols\n")
+    emitTrapOnFalse(sameShape, "@.assert_approx_msg", "aapa2s")
+
+    val total = newReg(); emitLine(s"  $total = mul i64 $aRows, $aCols\n")
+
+    val aBuf = bufPtr(av, a.tpe)
+    val bBuf = bufPtr(bv, b.tpe)
+
+    emitCountingLoop(total, "aapa2") { i =>
+      val sA = newReg(); emitLine(s"  $sA = getelementptr inbounds $stT, ptr $aBuf, i64 $i\n")
+      val sB = newReg(); emitLine(s"  $sB = getelementptr inbounds $stT, ptr $bBuf, i64 $i\n")
+      val vA = loadElem(stT, sA, langT)
+      val vB = loadElem(stT, sB, langT)
+      val dist = elem match
+        case TyComplex =>
+          val ar = newReg(); emitLine(s"  $ar = extractvalue { double, double } $vA, 0\n")
+          val ai = newReg(); emitLine(s"  $ai = extractvalue { double, double } $vA, 1\n")
+          val br = newReg(); emitLine(s"  $br = extractvalue { double, double } $vB, 0\n")
+          val bi = newReg(); emitLine(s"  $bi = extractvalue { double, double } $vB, 1\n")
+          val dr = newReg(); emitLine(s"  $dr = fsub double $ar, $br\n")
+          val di = newReg(); emitLine(s"  $di = fsub double $ai, $bi\n")
+          val h  = newReg(); emitLine(s"  $h  = call double @hypot(double $dr, double $di)\n")
+          h
+        case TyReal =>
+          val d  = newReg(); emitLine(s"  $d  = fsub double $vA, $vB\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $d)\n")
+          ad
+        case TyInteger =>
+          val d  = newReg(); emitLine(s"  $d  = sub i64 $vA, $vB\n")
+          val df = newReg(); emitLine(s"  $df = sitofp i64 $d to double\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $df)\n")
+          ad
+        case other =>
+          notImpl(s"assert_approx on array of $other elements")
+      val ok = newReg()
+      emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
+      emitTrapOnFalse(ok, "@.assert_approx_msg", "aapa2e")
     }
 
     emitArrDec(av, a.tpe)

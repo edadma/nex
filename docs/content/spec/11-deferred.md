@@ -12,11 +12,8 @@ The features deferred from the current language are split into two tiers by scop
 ## 11.1 Near-term additions
 
 **Syntax / expressions:**
-- Literate programming via `.lnex` files (Markdown wrapper: column-0 prose, indented code, supports inline math, tables, and non-Nex code blocks)
 - View-style slicing (non-copying — returns a borrow into the source array)
 - Function calls in `const` expressions (compile-time evaluation of pure-function calls)
-- Formatted output: positional `{}` substitution in `format()`, plus precision / padding / hex specifiers (`f"..."` literals and `format()` directives)
-- Rank-2 element-wise overloads of `assert_approx` — rank-1 element-wise `[T]` and scalar `complex` overloads ship (see [§10.5](/spec/10-prelude/#105-assertions))
 
 ## 11.2 Long-term work
 

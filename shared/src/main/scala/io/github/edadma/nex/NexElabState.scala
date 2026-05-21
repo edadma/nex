@@ -205,7 +205,7 @@ protected trait NexElabState:
       // §10.5 construction
       "zeros", "ones", "fill", "linspace", "identity",
       // §10.6 I/O
-      "print", "format",
+      "print",
       // §10.7 type conversions
       "to_real", "to_integer", "to_complex",
       // §10.8 assertions

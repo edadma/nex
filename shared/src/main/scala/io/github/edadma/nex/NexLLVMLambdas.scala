@@ -104,7 +104,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
        | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => ()
     case TInterpStringLit(parts, _, _) =>
       parts.foreach {
-        case TInterpExpr(x) => f(x)
+        case TInterpExpr(x, _) => f(x)
         case _              => ()
       }
     case TBinOp(_, l, r, _, _)            => f(l); f(r)

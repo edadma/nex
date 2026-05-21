@@ -243,7 +243,6 @@ class NexInterpreter:
 
   private def preludeFn(name: String): List[Value] => Value = args => name match
     case "print"  => doPrint(args); VUnit
-    case "format" => VString(formatArgs(args))
     case "cbrt"   => unary1(args, "cbrt")(v => VReal(math.cbrt(asReal(v))))
     case "abs"    => unary1(args, "abs")(absV)
     case "sign"   => unary1(args, "sign")(signV)
@@ -566,6 +565,19 @@ class NexInterpreter:
               trap(s"assert_approx: element $i: |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
             i += 1
           VUnit
+        case List(VArray2(as, ar, ac), VArray2(bs, br, bc), eps) =>
+          val tol = asReal(eps)
+          if ar != br || ac != bc then
+            trap(s"assert_approx: array shape mismatch: ($ar, $ac) vs ($br, $bc)", None)
+          var i = 0
+          while i < as.size do
+            val d = elementWiseDistance(as(i), bs(i))
+            if d > tol then
+              val row = i / ac
+              val col = i % ac
+              trap(s"assert_approx: element ($row, $col): |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
+            i += 1
+          VUnit
         case List(VComplex(ar, ai), VComplex(br, bi), eps) =>
           val tol  = asReal(eps)
           val dist = math.hypot(ar - br, ai - bi)
@@ -623,13 +635,13 @@ class NexInterpreter:
     case TInterpStringLit(parts, _, _) =>
       val sb = new StringBuilder
       for p <- parts do p match
-        case TInterpText(s)   => sb.append(s)
-        case TInterpRef(sym)  =>
+        case TInterpText(s)         => sb.append(s)
+        case TInterpRef(sym, spec)  =>
           env.lookup(sym.id) match
-            case Some(c) => sb.append(formatValue(c.v))
+            case Some(c) => sb.append(formatWithSpec(c.v, spec, e.pos))
             case None    => trap(s"interpolation: undefined `${sym.name}`", e.pos)
-        case TInterpExpr(x)   => sb.append(formatValue(evalExpr(x, env)))
-        case TInterpRaw(raw)  =>
+        case TInterpExpr(x, spec)   => sb.append(formatWithSpec(evalExpr(x, env), spec, e.pos))
+        case TInterpRaw(raw, _)     =>
           // Only reached when the elaborator failed to parse `${raw}` and
           // accumulated the parse error; the program should already have
           // aborted before run-time. Emit something useful if we do hit it.
@@ -1754,8 +1766,83 @@ class NexInterpreter:
   private def doPrint(args: List[Value]): Unit =
     Console.out.println(args.map(formatValue).mkString(" "))
 
-  private def formatArgs(args: List[Value]): String =
-    args.map(formatValue).mkString(" ")
+  /** Render a value using an optional `f"..."` format spec (spec §10.6).
+    * `spec = None` falls back to [[formatValue]]'s default form (used by
+    * `s"..."` and bare interpolations). `spec = Some("%5d")` etc. dispatches
+    * by the conversion character to the right host-side formatter. We
+    * route through Java's `String.format` for the standard types, but
+    * special-case `%b` (binary integer in Nex; Java uses `%b` for
+    * boolean) and re-route `%x`/`%X`/`%o` on real / complex inputs to a
+    * Nex-specific error.
+    */
+  private def formatWithSpec(v: Value, spec: Option[String], p: Option[scala.util.parsing.input.Position]): String =
+    spec match
+      case None    => formatValue(v)
+      case Some(s) => renderSpec(v, s, p)
+
+  /** Apply a printf-style spec to a single value. The spec arrives
+    * including the leading `%` and trailing conversion character (lexer
+    * already validated the shape). Conversion-vs-value-type mismatches
+    * trap; otherwise we hand the spec off to `String.format` (or a small
+    * special-case for `%b` / `%x` / `%o` on integers).
+    */
+  private def renderSpec(v: Value, spec: String, p: Option[scala.util.parsing.input.Position]): String =
+    val conv = spec.last
+    conv match
+      case 'd' =>
+        val n = v match
+          case VInt(x) => x
+          case other   => trap(s"format spec `$spec` expects integer, got ${formatValue(other)}", p)
+        String.format(java.util.Locale.ROOT, spec, java.lang.Long.valueOf(n))
+      case 'f' | 'e' | 'g' | 'E' | 'G' =>
+        val x = v match
+          case VReal(x) => x
+          case VInt(n)  => n.toDouble
+          case other    => trap(s"format spec `$spec` expects real, got ${formatValue(other)}", p)
+        String.format(java.util.Locale.ROOT, spec, java.lang.Double.valueOf(x))
+      case 's' =>
+        val s = v match
+          case VString(x) => x
+          case other      => formatValue(other)
+        String.format(java.util.Locale.ROOT, spec, s)
+      case 'x' | 'X' | 'o' =>
+        val n = v match
+          case VInt(x) => x
+          case other   => trap(s"format spec `$spec` expects integer, got ${formatValue(other)}", p)
+        String.format(java.util.Locale.ROOT, spec, java.lang.Long.valueOf(n))
+      case 'b' =>
+        // Nex: `%b` formats an integer as a binary numeric string. (Java
+        // hijacks `%b` for boolean, so we build it ourselves — toBinaryString
+        // plus the optional width / flags.)
+        val n = v match
+          case VInt(x) => x
+          case other   => trap(s"format spec `$spec` expects integer, got ${formatValue(other)}", p)
+        val raw = java.lang.Long.toBinaryString(n)
+        applyWidthAndFlags(raw, spec)
+      case _ =>
+        trap(s"unknown format conversion `$conv` in spec `$spec`", p)
+
+  /** Apply the width / `-` / `0` flags from the spec to an already-
+    * computed raw representation. Used by `%b` (binary integer) since
+    * we don't route binary through Java's printf.
+    */
+  private def applyWidthAndFlags(raw: String, spec: String): String =
+    // Parse: %[flags][width].b
+    val body = spec.substring(1, spec.length - 1) // drop leading `%` and trailing `b`
+    var i        = 0
+    var leftAlign = false
+    var zeroPad   = false
+    while i < body.length && "-+0 ".contains(body.charAt(i)) do
+      body.charAt(i) match
+        case '-' => leftAlign = true
+        case '0' => zeroPad   = true
+        case _   => ()
+      i += 1
+    val widthStr = body.substring(i).takeWhile(_.isDigit)
+    val width    = if widthStr.isEmpty then 0 else widthStr.toInt
+    if raw.length >= width then raw
+    else if leftAlign then raw + " " * (width - raw.length)
+    else (if zeroPad then "0" else " ") * (width - raw.length) + raw
 
   /** Default printable form. Numeric → its literal; arrays → bracketed
     * comma-list; strings → unquoted; structs → `Name { field=value, ... }`.

@@ -2542,6 +2542,71 @@ object NexProgramCorpus:
     ),
     Case(
       "prelude",
+      "assert_approx element-wise over rank-2 real array",
+      """
+        |def main() =
+        |  val a = [[1.0, 2.0], [3.0, 4.0]]
+        |  val b = [[1.0 + 1.0e-13, 2.0], [3.0, 4.0 - 1.0e-13]]
+        |  assert_approx(a, b, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-2 integer array (lifted)",
+      """
+        |def main() =
+        |  assert_approx([[1, 2], [3, 4]], [[1, 2], [3, 4]], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-2 complex array",
+      """
+        |def main() =
+        |  val a = [[1.0 + 0i, 0.0 + 1.0i], [2.0 + 0i, 0.0 + 2.0i]]
+        |  assert_approx(a, a, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when a rank-2 element exceeds the tolerance",
+      """
+        |def main() =
+        |  val a = [[1.0, 2.0], [3.0, 4.0]]
+        |  val b = [[1.0, 2.0], [3.0, 9.0]]
+        |  assert_traps(() -> assert_approx(a, b, 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on rank-2 row-count mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0]], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on rank-2 column-count mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([[1.0, 2.0]], [[1.0, 2.0, 3.0]], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
       "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
       "nan\n",
@@ -2726,31 +2791,73 @@ object NexProgramCorpus:
       mlir = true,
     ),
     Case(
-      "prelude",
-      "format returns a string",
+      "string interpolation",
+      "f-string without spec behaves like s-string",
       """
         |def main() =
-        |  val s = format(2 + 3)
-        |  print(s)
-        |  print(s == "5")
+        |  val x = 42
+        |  print(f"x = $x")
+        |  print(f"sum = ${1 + 2}")
       """.stripMargin,
-      "5\ntrue\n",
+      "x = 42\nsum = 3\n",
     ),
     Case(
-      "prelude",
-      "format joins multiple args with a single space",
+      "string interpolation",
+      "f-string width / left-align / zero-pad on integers",
       """
-        |def main() = print(format(1, 2, 3))
+        |def main() =
+        |  val x = 42
+        |  print(f"|$x%5d|")
+        |  print(f"|$x%-5d|")
+        |  print(f"|$x%05d|")
       """.stripMargin,
-      "1 2 3\n",
+      "|   42|\n|42   |\n|00042|\n",
     ),
     Case(
-      "prelude",
-      "format with mixed types (int / real / string)",
+      "string interpolation",
+      "f-string precision on reals",
       """
-        |def main() = print(format(1, 2.5, "ok"))
+        |def main() =
+        |  val pi = 3.14159265
+        |  print(f"$pi%.3f")
+        |  print(f"$pi%.10f")
+        |  print(f"$pi%10.3f")
       """.stripMargin,
-      "1 2.5 ok\n",
+      "3.142\n3.1415926500\n     3.142\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string hex / octal / binary",
+      """
+        |def main() =
+        |  val n = 255
+        |  print(f"$n%x")
+        |  print(f"$n%X")
+        |  print(f"$n%o")
+        |  print(f"$n%b")
+        |  print(f"$n%016b")
+      """.stripMargin,
+      "ff\nFF\n377\n11111111\n0000000011111111\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string value-position (function returns formatted string)",
+      """
+        |def render(label: string, x: real): string = f"$label = $x%8.4f"
+        |def main() =
+        |  print(render("alpha", 3.14159))
+        |  print(render("gamma", 12345.678))
+      """.stripMargin,
+      "alpha =   3.1416\ngamma = 12345.6780\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string literal `%` and `$$` escape",
+      """
+        |def main() =
+        |  print(f"100% sure $$dollar")
+      """.stripMargin,
+      "100% sure $dollar\n",
     ),
     Case(
       "prelude",

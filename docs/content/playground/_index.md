@@ -46,18 +46,12 @@ def main() =
 def fft(x: [complex]): [complex] =
   val n = length(x)
   if n == 1 then return x
+
+  // Split into even/odd-indexed sub-arrays via strided slices.
+  val ef = fft(x[..n by 2])
+  val of = fft(x[1..n by 2])
+
   val half = n div 2
-
-  // Split into even/odd-indexed sub-arrays (strided slices are
-  // deferred, so we walk the indices).
-  var even = fill(half, 0.0 + 0i)
-  var odd  = fill(half, 0.0 + 0i)
-  for k in 0..half do
-    even[k] = x[2 * k]
-    odd[k]  = x[2 * k + 1]
-
-  val ef = fft(even)
-  val of = fft(odd)
 
   // Twiddled odd half: t[k] = e^(-2πi k/n) · O[k].
   var t = fill(half, 0.0 + 0i)

@@ -706,23 +706,23 @@ class NexElaborator
 
       case InterpStringLitExpr(parts) =>
         val tparts = parts.map {
-          case InterpText(s)         => TInterpText(s)
-          case InterpVar(name)       =>
+          case InterpText(s)           => TInterpText(s)
+          case InterpVar(name, spec)   =>
             current.lookup(name) match
-              case Some(sym) => TInterpRef(sym)
+              case Some(sym) => TInterpRef(sym, spec)
               case None      =>
-                err(s"undefined name `$name`", e); TInterpRaw(name)
-          case InterpExprPart(raw)   =>
+                err(s"undefined name `$name`", e); TInterpRaw(name, spec)
+          case InterpExprPart(raw, sp) =>
             // Re-parse the `${...}` body as a single expression and elaborate
             // it in the current lexical scope. Surface-syntax errors inside
             // the interpolation become elaboration errors at the string's
             // position (the lexer only sliced the raw bytes; it never tried
             // to parse them).
             new NexParser().parseExpression(raw) match
-              case Right(parsed) => TInterpExpr(elabExpr(parsed))
+              case Right(parsed) => TInterpExpr(elabExpr(parsed), sp)
               case Left(perr)    =>
                 err(s"failed to parse interpolated expression: $perr", e)
-                TInterpRaw(raw)
+                TInterpRaw(raw, sp)
         }
         TInterpStringLit(tparts, pos)
 

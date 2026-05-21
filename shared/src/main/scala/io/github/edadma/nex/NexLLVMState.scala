@@ -261,6 +261,13 @@ protected trait NexLLVMState:
     */
   protected def emitValueToString(e: TExpr): String
 
+  /** Apply an `f"..."` printf-style spec to a single value, producing
+    * a fresh %nex_str descriptor. Declared here so [[NexLLVMPrint]] can
+    * call it without depending directly on [[NexLLVMCodegen]]. The
+    * concrete impl handles `%d %f %e %g %s %x %X %o %b` per spec §10.6.
+    */
+  protected def emitFormattedDesc(e: TExpr, spec: String): String
+
   protected def emitLambdaConstruct(lam: TLambda): String
   protected def emitClosureCall(callee: TExpr, args: List[TExpr], retT: Type): String
   protected def emitLambdaFunctions(): Unit

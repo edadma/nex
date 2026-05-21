@@ -74,7 +74,7 @@ class NexModuleLoader(projectRoot: String):
       val modImports = mutable.LinkedHashSet.empty[List[String]]
 
       for f <- files do
-        val src = readFile(f)
+        val src = readNexSource(f)
         new NexParser().parseProgram(src) match
           case Left(err) =>
             errors += s"$f: parse error: $err"
@@ -141,7 +141,7 @@ object NexModuleLoader:
         val parsed  = scala.collection.mutable.ListBuffer.empty[FileEntry]
         val imports = scala.collection.mutable.LinkedHashSet.empty[List[String]]
         for f <- files do
-          val src = readFile(f)
+          val src = readNexSource(f)
           new NexParser().parseProgram(src) match
             case Left(err) =>
               errors += s"$f: parse error: $err"
