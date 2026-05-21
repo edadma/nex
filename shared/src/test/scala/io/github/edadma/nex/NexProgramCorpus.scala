@@ -2001,6 +2001,105 @@ object NexProgramCorpus:
         |  print(a[lo..hi])
       """.stripMargin,
       "[20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime inclusive bound",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(a[lo..=hi])
+      """.stripMargin,
+      "[20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 leading-open slice with runtime hi",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val hi = 3
+        |  print(a[..hi])
+      """.stripMargin,
+      "[10, 20, 30]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 trailing-open slice with runtime lo",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val lo = 2
+        |  print(a[lo..])
+      """.stripMargin,
+      "[30, 40, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 fully-open slice copies the array",
+      """
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(a[..])
+      """.stripMargin,
+      "[10, 20, 30]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime stride",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60]
+        |  val k = 2
+        |  print(a[0..6 by k])
+      """.stripMargin,
+      "[10, 30, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime lo + hi + stride",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60, 70]
+        |  val lo = 1
+        |  val hi = 7
+        |  val k = 3
+        |  print(a[lo..hi by k])
+      """.stripMargin,
+      "[20, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice on a dynamic-bound range",
+      """
+        |def main() =
+        |  val n = 8
+        |  print(range(0, n)[2..6])
+      """.stripMargin,
+      "[2, 3, 4, 5]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "length of dynamic slice",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  val lo = 1
+        |  val hi = 4
+        |  print(length(a[lo..hi]))
+      """.stripMargin,
+      "3\n",
+      mlir = true,
     ),
     Case(
       "arrays",

@@ -700,6 +700,14 @@ class NexMLIRCodegen:
         case other =>
           notYet(s"rank-1 slice on $other")
 
+    case TSlice(arr, loE, hiE, inclusive, strideE, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) =>
+          emitRank1SliceDynamic(av, t, loE, hiE, inclusive, strideE)
+        case other =>
+          notYet(s"rank-1 slice on $other")
+
     case TSlice2(arr, rowAx, colAx, _, _) =>
       val av = emitExpr(arr)
       av.ty match
@@ -858,6 +866,98 @@ class NexMLIRCodegen:
       return MlirVal(r, outTy)
     val r = fresh("sl")
     out.append(s"  $r = tensor.extract_slice ${av.reg}[$offset] [$len] [1] : ${srcTy.text} to ${outTy.text}\n")
+    MlirVal(r, outTy)
+
+  /** Rank-1 slice with any combination of open-ended bounds, runtime
+    * bounds, and stride. Always produces `tensor<?xT>`:
+    *
+    *   - Open `lo` (`a[..hi]`) defaults to 0; open `hi` (`a[lo..]`) to
+    *     the source length recovered via `tensor.dim`.
+    *   - `[..= ]` (inclusive) bumps the upper bound by one.
+    *   - Stride defaults to 1; runtime stride uses ceil-divide for the
+    *     output length: `(max(0, span) + stride - 1) / stride`.
+    *
+    * Out-of-range bounds aren't trapped here (the static path doesn't
+    * either) — MLIR's `tensor.extract_slice` will assert at run time
+    * if the inputs violate the op's invariants. Tightening this to
+    * match the LLVM backend's user-facing trap (`slice oob`) is a
+    * separate concern from the dynamic-shape plumbing.
+    */
+  private def emitRank1SliceDynamic(
+      av:        MlirVal,
+      srcTy:     MTensor,
+      loE:       Option[TExpr],
+      hiE:       Option[TExpr],
+      inclusive: Boolean,
+      strideE:   Option[TExpr],
+  ): MlirVal =
+    val outTy = MTensor(srcTy.elem, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+
+    val srcLenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("srclen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("srclen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val loIdx = loE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val r = fresh("loix")
+        out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+        r
+      case None => c0Idx
+
+    val hiIdx = hiE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val hiBase = fresh("hix")
+        out.append(s"  $hiBase = arith.index_cast ${v.reg} : i64 to index\n")
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $hiBase, $c1Idx : index\n")
+          r
+        else hiBase
+      case None =>
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $srcLenIdx, $c1Idx : index\n")
+          r
+        else srcLenIdx
+
+    val strideIdx = strideE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val r = fresh("stx")
+        out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+        r
+      case None => c1Idx
+
+    val rawSpan = fresh("span")
+    out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
+    val spanClamped = fresh("spanc")
+    out.append(s"  $spanClamped = arith.maxsi $rawSpan, $c0Idx : index\n")
+    val strideM1 = fresh("stm1")
+    out.append(s"  $strideM1 = arith.subi $strideIdx, $c1Idx : index\n")
+    val numerator = fresh("num")
+    out.append(s"  $numerator = arith.addi $spanClamped, $strideM1 : index\n")
+    val sliceLen = fresh("slen")
+    out.append(s"  $sliceLen = arith.divui $numerator, $strideIdx : index\n")
+
+    val r = fresh("dsl")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}[$loIdx] [$sliceLen] [$strideIdx] : ${srcTy.text} to ${outTy.text}\n",
+    )
     MlirVal(r, outTy)
 
   /** Allocate a stack slot for a `var <sym>` scalar binding and store
