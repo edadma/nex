@@ -39,8 +39,8 @@ def fft(x: [complex]): [complex] =
   // (`ef + t`, `ef - t` on `[complex]`) plus a slice assignment per
   // half — no per-index `y[k] = ...; y[k + half] = ...` shuffle.
   var y = fill(n, 0.0 + 0i)
-  y[0..half] = ef + t
-  y[half..n] = ef - t
+  y[..half] = ef + t                    // open lo: same as 0..half
+  y[half..] = ef - t                    // open hi: same as half..n
   y
 
 def main() =
