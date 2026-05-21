@@ -513,6 +513,26 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case (lt, rt, _) =>
           notYet(s"scalar binop $op on $lt and $rt")
 
+    case TCall(TVarRef(s, _, _), List(arg), _, _)
+        if s.kind == SymKind.Prelude && s.name == "to_real" =>
+      val v = emitExpr(arg)
+      v.ty match
+        case MScalar(TyReal)    => v
+        case MScalar(TyInteger) => promoteIntToReal(v)
+        case other              => notYet(s"to_real on $other")
+
+    case TCall(TVarRef(s, _, _), List(arg), _, _)
+        if s.kind == SymKind.Prelude && s.name == "to_integer" =>
+      val v = emitExpr(arg)
+      v.ty match
+        case MScalar(TyInteger) => v
+        case MScalar(TyReal) =>
+          val r = fresh("toi")
+          out.append(s"  $r = arith.fptosi ${v.reg} : f64 to i64\n")
+          MlirVal(r, MScalar(TyInteger))
+        case other =>
+          notYet(s"to_integer on $other")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && s.name == "sum" =>
       val av = emitExpr(arr)

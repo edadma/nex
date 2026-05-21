@@ -3859,6 +3859,7 @@ object NexProgramCorpus:
         |  print(s"mean = $mean, stddev = $stddev")
       """.stripMargin,
       "mean = 5.5, stddev = 2.8722813232690143\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
