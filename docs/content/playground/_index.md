@@ -68,8 +68,8 @@ def fft(x: [complex]): [complex] =
   // Stitch the two output halves with element-wise array ops + slice
   // assignment — no per-index `y[k] = ...; y[k + half] = ...` shuffle.
   var y = fill(n, 0.0 + 0i)
-  y[0..half] = ef + t
-  y[half..n] = ef - t
+  y[..half] = ef + t
+  y[half..] = ef - t
   y
 
 def main() =
