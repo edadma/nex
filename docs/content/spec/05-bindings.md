@@ -70,12 +70,30 @@ A *constant expression* is one of:
 - A reference to another `const` binding
 - A reference to a prelude constant (`pi`, `e`, `inf`, `nan`, `i`)
 - Unary `-` of a constant expression
+- A call to a *pure function* (prelude or user-defined) whose every argument is itself a constant expression and whose return type is scalar (`integer`, `real`, `bool`, or `complex`)
 
-Function calls in `const` expressions are *deferred* (compile-time evaluation of pure functions). For runtime-computed module-level values, use `val`:
+A function is *pure* when it has no observable side effects: no I/O, no mutation of `var` bindings, and every function it calls is itself pure. Prelude math functions (`sqrt`, `sin`, `cos`, `abs`, `hypot`, `min`, `max`, `floor`, `ceil`, `round`, `trunc`, the conversions, the complex helpers, …) are pure; `print` and the `assert_*` family are impure (they emit output or trap).
 
 ```nex
-val SQRT_2 = sqrt(2.0)              // function call → must be val
-const TWO_PI = 2 * pi               // OK — pi is a prelude constant
+const SQRT_2  = sqrt(2.0)            // OK — sqrt is pure
+const HYP     = hypot(3.0, 4.0)      // OK — 5.0
+const TWO_PI  = 2 * pi                // OK — arithmetic on prelude const
+
+def square(x: real): real = x * x
+const NINE    = square(3.0)          // OK — square is pure
+
+const BAD     = print(1)              // ERROR — print is impure
+```
+
+Two practical restrictions:
+
+- The return type of a forward-referenced user function (one declared *after* the const) must be written explicitly. Otherwise the const's static type can't be resolved before the function's body is type-inferred. Move the `def` above the const or add a declared return type.
+- The call result must be a scalar — `[T]`, tuples, structs, and strings escape the inline-friendly model. A pure helper that returns an array can still be used inside a normal `val` binding.
+
+For runtime-computed module-level values that aren't compile-time constants (a call that needs an array argument, a struct construction, an `if`), use `val`:
+
+```nex
+val SAMPLES = linspace(0.0, 1.0, 100)   // construction → must be val
 ```
 
 Prefer `const` over `val` whenever the value is a true compile-time fact (mathematical constants, physical constants, configuration flags, fixed tolerances). It signals intent and lets the compiler inline at use sites.

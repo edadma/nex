@@ -149,6 +149,32 @@ protected trait NexElabState:
     */
   protected val constSymIds = mutable.Set.empty[Int]
 
+  /** Purity cache: symbol id → is the function pure (no I/O, no var
+    * mutation, calls only other pure functions). Populated lazily by
+    * [[isPureFn]]. Mid-recursion the entry maps to `None` (a discovery
+    * marker — assume pure while recursing, finalize once stable). The
+    * final `Some(true/false)` is the cached verdict.
+    */
+  protected val purityCache = mutable.Map.empty[Int, Option[Boolean]]
+
+  /** Deferred purity checks raised by [[validateConstExpr]] on TCall.
+    * Each entry is (callee symbol id, source position of the call). The
+    * checks are drained at the end of `inferProgram` once every user
+    * function's body is fully typed, so a `const NINE = square(3.0)`
+    * declared above `def square` still type-checks. Each entry on
+    * resolution emits an error if the callee turns out to be impure.
+    */
+  protected val pendingConstPurityChecks =
+    mutable.ListBuffer.empty[(Symbol, Option[Position])]
+
+  /** Function symbol id → its typed body. Long-lived across module
+    * boundaries so a user module's deferred const-purity check can
+    * see prelude-source `def`s elaborated earlier. Populated at the
+    * end of every [[NexElabInference.inferProgram]] call with each
+    * `TFunDecl` in that module's typed decls.
+    */
+  protected val allFuncBodies = mutable.Map.empty[Int, TExpr]
+
   /** Define a name in the current scope, minting a fresh symbol. Returns
     * either the new symbol or the existing one (and records an error).
     */

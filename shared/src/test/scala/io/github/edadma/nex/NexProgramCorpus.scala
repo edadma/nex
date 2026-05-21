@@ -4401,4 +4401,62 @@ object NexProgramCorpus:
       """.stripMargin,
       "99\n",
     ),
+
+    // ============================================================
+    // const expressions calling functions — spec §5.3. The RHS may
+    // call any pure function (prelude or user-defined) so long as
+    // the result type is scalar. Compile-time evaluation is optional
+    // (spec says "may inline"); today the runtime computes the value
+    // at module init, which is observable at the first print.
+    // ============================================================
+    Case(
+      "const fn calls",
+      "const calls a pure prelude function returning real",
+      """
+        |const SQRT2 = sqrt(2.0)
+        |def main() =
+        |  print(SQRT2 * SQRT2)
+      """.stripMargin,
+      "2.0000000000000004\n",
+    ),
+    Case(
+      "const fn calls",
+      "const calls a user-defined pure function",
+      """
+        |def square(x: real) = x * x
+        |const NINE = square(3.0)
+        |def main() = print(NINE)
+      """.stripMargin,
+      "9.0\n",
+    ),
+    Case(
+      "const fn calls",
+      "const calls a recursive pure function",
+      """
+        |def fact(n: integer): integer = if n <= 0 then 1 else n * fact(n - 1)
+        |const FACT6 = fact(6)
+        |def main() = print(FACT6)
+      """.stripMargin,
+      "720\n",
+    ),
+    Case(
+      "const fn calls",
+      "const chains a prelude call into arithmetic with another const",
+      """
+        |const HALF_PI = pi / 2.0
+        |const COS_HP  = cos(HALF_PI)
+        |def main() = print(abs(COS_HP) < 1.0e-10)
+      """.stripMargin,
+      "true\n",
+    ),
+    Case(
+      "const fn calls",
+      "user pure function declared after the const still works (declared return type)",
+      """
+        |const NINE = square(3.0)
+        |def square(x: real): real = x * x
+        |def main() = print(NINE)
+      """.stripMargin,
+      "9.0\n",
+    ),
   )

@@ -202,7 +202,37 @@ protected trait NexElabInference extends NexElabState:
         setSymType(f.sym, TyFunc(params, f.returnType))
       case _ => ()
     }
-    p.copy(decls = p.decls.map(inferDecl))
+    val result = p.copy(decls = p.decls.map(inferDecl))
+    // Stash every TFunDecl body so a later module's deferred purity
+    // check can reach back through `def`s declared in the prelude or
+    // in earlier modules. (The map is module-scope-agnostic — symbol
+    // ids are globally unique via `SymbolTable.mint`.)
+    result.decls.foreach {
+      case f: TFunDecl => allFuncBodies(f.sym.id) = f.body
+      case _ => ()
+    }
+    drainPendingConstPurityChecks()
+    result
+
+  /** Resolve every TCall-in-const purity check accumulated by
+    * [[validateConstExpr]] during this module's elaboration. Runs
+    * after every function body has been fully typed, so a `const
+    * NINE = square(3.0)` can refer to a `def square` declared
+    * anywhere in the same module (above OR below) — or in the
+    * source prelude / an already-elaborated upstream module. The
+    * scalar-result check already ran eagerly at validation time
+    * (when the call's tpe was known). Here we only verify the
+    * callee is pure (no I/O, no var mutation, only pure-call
+    * transitive closure). Each violation emits an error at the
+    * original call site.
+    */
+  protected def drainPendingConstPurityChecks(): Unit =
+    if pendingConstPurityChecks.isEmpty then return
+    for (callee, pos) <- pendingConstPurityChecks do
+      val current = symbols.get(callee.id).getOrElse(callee)
+      if !isPureFn(current, allFuncBodies.toMap) then
+        err(s"const expression can only call pure functions; `${current.name}` is impure (or its purity could not be determined)", pos)
+    pendingConstPurityChecks.clear()
 
   protected def inferDecl(d: TDecl): TDecl = d match
     case t: TFunDecl     => inferFun(t)
@@ -296,8 +326,29 @@ protected trait NexElabInference extends NexElabState:
           case _ =>
             if !constSymIds.contains(s.id) then
               err(s"const expression cannot reference `${s.name}` — only other `const` bindings and prelude constants are allowed", p)
-      case TCall(_, _, p, _) =>
-        err("const expression cannot contain a function call (deferred to v1+)", p)
+      case call @ TCall(callee, args, p, _) =>
+        // Spec §5.3: function calls are valid in a const RHS as long
+        // as the callee is a pure function (prelude or user-defined),
+        // every argument is itself a constant expression, and the
+        // result is a scalar. The result-type check is eager — the
+        // const binding's symbol type freezes at the call's tpe at
+        // this point, so we need it resolved (any TyUnknown here is
+        // a forward-reference to a fn with no declared return type
+        // and that frozen TyUnknown would break codegen later).
+        // Purity is deferred: a user fn might be declared below the
+        // const, so its body isn't yet typed. The pending list is
+        // drained at the end of `inferProgram`.
+        callee match
+          case TVarRef(s, _, _) if s.kind == SymKind.Prelude || s.kind == SymKind.Function =>
+            if call.tpe == TyUnknown then
+              err(s"const expression's call to `${s.name}` has unresolved return type — declare the function's return type or move its `def` above the const", p)
+            else if !isScalarConstType(call.tpe) then
+              err(s"const expression's call result must be a scalar (integer / real / bool / complex), got ${call.tpe}", p)
+            else
+              args.foreach(validateConstExpr)
+              pendingConstPurityChecks += ((s, p))
+          case _ =>
+            err("const expression's function call must target a named function (no higher-order or computed callees)", p)
       case TLambda(_, _, p, _) =>
         err("const expression cannot be a lambda", p)
       case TArrayLit(_, p, _) =>
@@ -310,6 +361,119 @@ protected trait NexElabInference extends NexElabState:
         err("const expression cannot be a string literal in v0", p)
       case other =>
         err(s"const expression contains a non-constant form (${other.getClass.getSimpleName})", other.pos)
+
+  /** Result types a const binding's RHS may produce. Mirrors §5.3's
+    * "compile-time constant" intent: scalars only — arrays / tuples /
+    * structs / strings escape the inline-friendly model. Complex
+    * values qualify (they're a 16-byte struct in codegen but a single
+    * value semantically — `const Z = 3 + 4i` already works).
+    */
+  protected def isScalarConstType(t: Type): Boolean = t match
+    case TyInteger | TyReal | TyBool | TyComplex => true
+    case _ => false
+
+  /** Prelude functions known to be free of observable side effects.
+    * `print` writes to stdout; the `assert_*` family inspects state
+    * and can trap (a trap is observable). Everything else listed in
+    * §10.2 / §10.3 / §10.7 is a pure mathematical transformation and
+    * fair game for compile-time inlining or runtime startup eval.
+    *
+    * Array / matrix / I/O operations are deliberately omitted — even
+    * if their bodies are pure, their results aren't scalar, so they
+    * can never satisfy the const-result-type rule.
+    */
+  protected def isPurePreludeName(name: String): Boolean =
+    purePreludeNames.contains(name)
+
+  private val purePreludeNames: Set[String] = Set(
+    "sqrt", "cbrt", "exp", "log", "log2", "log10",
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "hypot",
+    "floor", "ceil", "round", "trunc",
+    "abs", "sign", "min", "max",
+    "conj", "arg",
+    "to_real", "to_integer", "to_complex",
+  )
+
+  /** Decide whether calling `sym` is side-effect-free. Prelude names
+    * consult [[purePreludeNames]] directly. User functions
+    * (`SymKind.Function`) walk their body via [[isPureBody]] using the
+    * caller-supplied `funcBodies` index. Recursion is broken by
+    * caching `None` mid-discovery (i.e., assume pure during the
+    * recursive walk; the final verdict is whatever a fixed body walk
+    * produces). Imports and any other kind are conservatively impure.
+    */
+  protected def isPureFn(sym: Symbol, funcBodies: Map[Int, TExpr]): Boolean =
+    purityCache.get(sym.id) match
+      case Some(Some(b)) => b
+      case Some(None)    => true
+      case None =>
+        sym.kind match
+          case SymKind.Prelude =>
+            val pure = isPurePreludeName(sym.name)
+            purityCache(sym.id) = Some(pure)
+            pure
+          case SymKind.Function =>
+            funcBodies.get(sym.id) match
+              case None =>
+                purityCache(sym.id) = Some(false)
+                false
+              case Some(body) =>
+                purityCache(sym.id) = None
+                val pure = isPureBody(body, funcBodies)
+                purityCache(sym.id) = Some(pure)
+                pure
+          case _ =>
+            purityCache(sym.id) = Some(false)
+            false
+
+  /** Walk a typed expression tree and report whether every leaf is
+    * side-effect-free. The shape mirrors the typed-AST forms a normal
+    * user function can produce; anything not listed is conservatively
+    * impure (forces the analyzer to be extended deliberately when
+    * new node kinds appear).
+    */
+  protected def isPureBody(e: TExpr, funcBodies: Map[Int, TExpr]): Boolean = e match
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit | _: TUnitLit => true
+    case TVarRef(_, _, _) => true
+    case TBinOp(_, l, r, _, _) =>
+      isPureBody(l, funcBodies) && isPureBody(r, funcBodies)
+    case TUnaryOp(_, x, _, _) =>
+      isPureBody(x, funcBodies)
+    case TJuxtapose(c, b, _, _) =>
+      isPureBody(c, funcBodies) && isPureBody(b, funcBodies)
+    case TCall(callee, args, _, _) =>
+      callee match
+        case TVarRef(s, _, _) =>
+          isPureFn(s, funcBodies) && args.forall(a => isPureBody(a, funcBodies))
+        case _ =>
+          false
+    case TIf(c, t, eo, _, _) =>
+      isPureBody(c, funcBodies) && isPureBody(t, funcBodies) && eo.forall(x => isPureBody(x, funcBodies))
+    case TBlock(items, result, _, _) =>
+      items.forall {
+        case TBlockBinding(_, _, v) => isPureBody(v, funcBodies)
+        case TBlockExpr(x)          => isPureBody(x, funcBodies)
+      } && isPureBody(result, funcBodies)
+    case TMatch(scrut, cases, _, _) =>
+      isPureBody(scrut, funcBodies) && cases.forall(c => isPureBody(c.body, funcBodies))
+    case TArrayLit(elems, _, _) =>
+      elems.forall(x => isPureBody(x, funcBodies))
+    case TTuple(elems, _, _) =>
+      elems.forall(x => isPureBody(x, funcBodies))
+    case TLambda(_, body, _, _) =>
+      isPureBody(body, funcBodies)
+    case _: TAssign =>
+      false
+    case TIntrinsic(opId, _, _) =>
+      // Intrinsic bodies are foreign-call leaves. Today's only family
+      // is `libm.*`, all pure mathematical transformations; an opId
+      // outside that family would be a new bridge whose semantics
+      // aren't known yet, so reject conservatively.
+      opId.startsWith("libm.")
+    case _ =>
+      false
 
   protected def registerDeferredLambda(sym: Symbol, v: TExpr): Unit = v match
     case lam: TLambda if isPartiallyInferredLambda(lam) =>

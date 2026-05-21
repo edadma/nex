@@ -11,8 +11,7 @@ The features deferred from the current language are split into two tiers by scop
 
 ## 11.1 Near-term additions
 
-**Syntax / expressions:**
-- Function calls in `const` expressions (compile-time evaluation of pure-function calls)
+*(All previously-listed near-term items are now shipped.)*
 
 ## 11.2 Long-term work
 

@@ -1075,9 +1075,80 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
       """.stripMargin)
     }
 
-    "spec §5.3: const rejects a function call on the RHS" in {
-      val errs = elabExpect("const X = abs(-5)")
-      errs.exists(_.contains("function call")) shouldBe true
+    "spec §5.3: const accepts a call to a pure prelude function" in {
+      noException should be thrownBy elab("""
+        |const X = sqrt(2.0)
+        |const Y = abs(5)
+        |const Z = sin(0.0)
+        |const W = hypot(3.0, 4.0)
+      """.stripMargin)
+    }
+
+    "spec §5.3: const accepts a call to a pure user-defined function" in {
+      noException should be thrownBy elab("""
+        |def square(x: real) = x * x
+        |const NINE = square(3.0)
+      """.stripMargin)
+    }
+
+    "spec §5.3: const accepts a forward-referenced pure user function with declared return type" in {
+      // The user function is declared AFTER the const; the purity
+      // check is deferred to the end of inferProgram. A declared
+      // return type is required so the const binding's static type
+      // is known at validation time.
+      noException should be thrownBy elab("""
+        |const NINE = square(3.0)
+        |def square(x: real): real = x * x
+      """.stripMargin)
+    }
+
+    "spec §5.3: const rejects a forward-referenced fn without declared return type" in {
+      val errs = elabExpect("""
+        |const NINE = square(3.0)
+        |def square(x: real) = x * x
+      """.stripMargin)
+      errs.exists(_.contains("unresolved return type")) shouldBe true
+    }
+
+    "spec §5.3: const accepts a recursive pure function call" in {
+      noException should be thrownBy elab("""
+        |def fact(n: integer): integer = if n <= 0 then 1 else n * fact(n - 1)
+        |const FACT5 = fact(5)
+      """.stripMargin)
+    }
+
+    "spec §5.3: const rejects a call to an impure prelude function" in {
+      // `print(1)` has return type TyUnit which is non-scalar; the
+      // scalar check fires first, before purity. Either error
+      // message is fine — they both clearly reject the const.
+      val errs = elabExpect("const X = print(1)")
+      errs.exists(e => e.contains("impure") || e.contains("scalar")) shouldBe true
+    }
+
+    "spec §5.3: const rejects a call to an impure user function" in {
+      val errs = elabExpect("""
+        |def shout(x: integer) =
+        |  print(x)
+        |  x
+        |const X = shout(42)
+      """.stripMargin)
+      errs.exists(e => e.contains("impure") || e.contains("purity")) shouldBe true
+    }
+
+    "spec §5.3: const rejects a call whose result is not a scalar" in {
+      val errs = elabExpect("""
+        |def evens() = [2, 4, 6, 8]
+        |const A = evens()
+      """.stripMargin)
+      errs.exists(_.contains("scalar")) shouldBe true
+    }
+
+    "spec §5.3: const composes a chain of calls and arithmetic" in {
+      noException should be thrownBy elab("""
+        |def square(x: real) = x * x
+        |const SQRT2 = sqrt(2.0)
+        |const TWO   = square(SQRT2)
+      """.stripMargin)
     }
 
     "spec §5.3: const rejects a reference to a val binding" in {
