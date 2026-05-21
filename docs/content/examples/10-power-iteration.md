@@ -4,6 +4,20 @@ summary: Dominant eigenvalue and eigenvector of a square matrix via the `@` oper
 weight: 100
 ---
 
+Power iteration finds the eigenvector $v_*$ associated with the eigenvalue of largest magnitude (the *dominant* eigenvalue $\lambda_*$) of a square matrix $A$. Starting from an arbitrary nonzero $v_0$, repeated multiplication by $A$ amplifies the component along $v_*$ faster than every other component; renormalizing each step keeps the vector bounded:
+
+$$
+v_{k+1} = \frac{A v_k}{\lVert A v_k \rVert_2}.
+$$
+
+Once $v_k$ has converged in direction, the Rayleigh quotient recovers the eigenvalue:
+
+$$
+\lambda \;=\; \frac{v^\top A v}{v^\top v}.
+$$
+
+The denominator is $1$ here because we renormalize $v$ each step, so the code below evaluates the numerator $v^\top (A v)$ directly with `dot`.
+
 ```nex
 // Power iteration: finds the dominant eigenvalue/eigenvector of a square matrix.
 // Returns (eigenvalue, eigenvector).

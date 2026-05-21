@@ -6,6 +6,8 @@ weight: 40
 
 ## Complex numbers
 
+A complex number $z = a + bi$ has modulus $\lvert z \rvert = \sqrt{a^2 + b^2}$ and argument $\arg(z) = \operatorname{atan2}(b, a)$, related by the polar form $z = \lvert z \rvert \, e^{i\arg(z)}$ — i.e. Euler's formula $e^{i\theta} = \cos\theta + i\sin\theta$. The prelude exposes both the field-style accessors `.re` / `.im` and the polar-form helpers `abs(z)` / `arg(z)`.
+
 ```nex
 def main() =
   val z1 = 1.0 + 2i             // (1.0 + 2.0i)
@@ -18,6 +20,14 @@ def main() =
 ```
 
 ## Quadratic formula
+
+The roots of $a x^2 + b x + c = 0$ are
+
+$$
+x \;=\; \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}.
+$$
+
+The sign of the discriminant $\Delta = b^2 - 4ac$ decides whether the roots are real ($\Delta \ge 0$) or a complex-conjugate pair ($\Delta < 0$). The function below returns both roots as `complex` regardless, so callers see a single result type.
 
 ```nex
 // Solve ax² + bx + c = 0; returns a pair of complex roots.

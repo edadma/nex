@@ -6,6 +6,14 @@ weight: 130
 
 A solver loop typically has three distinct outcomes: it converged on a value, the iterates diverged, or it ran out of iterations without converging. Modeling the *result* as a flat structure (`(success: bool, x: real, iters: integer)`) loses information: the meaning of `x` depends on `success`, and the meaning of `iters` depends on both. A sum type makes the three cases — and the data each one carries — explicit.
 
+The driver below is Newton's method for $f(x) = 0$,
+
+$$
+x_{n+1} \;=\; x_n - \frac{f(x_n)}{f'(x_n)},
+$$
+
+reporting `Converged(x)` once $\lvert f(x_n) \rvert < \text{tol}$, `Diverged` if $f'(x_n)$ approaches zero (the update step blows up), and `MaxIters(iters, last)` if the loop exhausts its budget without either condition firing. The example function is $f(x) = x^2 - 2$, $f'(x) = 2x$, so a converging run lands on $\sqrt{2}$.
+
 ## The solver
 
 ```nex
