@@ -44,6 +44,6 @@ def main() =
   // 3) Slice assignment: replace the first two elements in place.
   //    This is the idiom for partial in-place updates on a var array.
   var d = [9.0, 9.0, 9.0, 9.0]
-  d[0..2] = [0.6, 0.8]
+  d[..2] = [0.6, 0.8]               // open lo: writes positions 0 and 1
   print(d)                          // [0.6, 0.8, 9.0, 9.0]
 ```

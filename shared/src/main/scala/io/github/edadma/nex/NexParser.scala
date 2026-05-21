@@ -792,7 +792,9 @@ class NexParser extends StandardTokenParsers with PackratParsers:
 
   /** Branch body — used after explicit `then` / `do` / `else` and as
     * the RHS of a `match` arm's `->`. Either a single inline expression
-    * at `exprNoTuple` precedence, or a Newline-Indent block.
+    * at `exprNoTuple` precedence, an inline assignment statement
+    * (`for x in xs do s = s + x` per the spec's control-flow examples),
+    * or a Newline-Indent block.
     *
     * Single-line branch bodies do not consume a trailing `,` — comma
     * is the loosest operator (spec §4.3) and so binds at the outer
@@ -801,9 +803,15 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     * a tuple inline (`if a then (b, c)`). The block-form branch has
     * no such restriction because its last `blockItem` accepts a
     * paren-less tuple.
+    *
+    * `assignment` is tried before `exprNoTuple` because both start with
+    * a `postfixExpr` and `exprNoTuple` would otherwise greedily commit
+    * to the bare lvalue, leaving the `=` to be re-parsed by the outer
+    * block — producing `AssignExpr(<branch>, <rhs>)` and stripping the
+    * loop's binders from `<rhs>`'s scope.
     */
   lazy val branchBody: PackratParser[ExprAST] =
-    blockBody | exprNoTuple
+    blockBody | assignment | exprNoTuple
 
   /** Match the lexer's pre-split [[NexLexer.InterpStringTok]] and convert
     * its parts to AST nodes. The `${...}` body strings are re-parsed using

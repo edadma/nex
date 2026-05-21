@@ -326,6 +326,7 @@ object NexProgramCorpus:
         |  print(false != false)
       """.stripMargin,
       "true\nfalse\ntrue\nfalse\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -341,6 +342,7 @@ object NexProgramCorpus:
         |  print(0 < x < 10)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -351,6 +353,7 @@ object NexProgramCorpus:
         |  print(0 < x < 10)
       """.stripMargin,
       "false\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -361,6 +364,7 @@ object NexProgramCorpus:
         |  print(0 <= x < 10 <= 100)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -373,6 +377,7 @@ object NexProgramCorpus:
         |    print(chained == explicit)
       """.stripMargin,
       "true\n" * 15,
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -402,6 +407,7 @@ object NexProgramCorpus:
         |  print(a < b < c <= d)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -600,6 +606,7 @@ object NexProgramCorpus:
         |  print(r)
       """.stripMargin,
       "[0, 1, 2, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -608,6 +615,7 @@ object NexProgramCorpus:
         |def main() = print(1..=3)
       """.stripMargin,
       "[1, 2, 3]\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -618,6 +626,7 @@ object NexProgramCorpus:
         |  print(8..3)
       """.stripMargin,
       "[]\n[]\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -968,6 +977,7 @@ object NexProgramCorpus:
         |  print(sum(xs.map(x -> x * 10)))
       """.stripMargin,
       "60\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1595,6 +1605,117 @@ object NexProgramCorpus:
         |  print(xs.map(x -> x * x).sum())
       """.stripMargin,
       "30\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "map with inline lambda printed directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(map(xs, x -> x * 10))
+      """.stripMargin,
+      "[10, 20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "method-call sugar `xs.map(...)` printed directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(xs.map(x -> x + 100))
+      """.stripMargin,
+      "[101, 102, 103]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "map producing real output from int input",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(xs.map(x -> x * 1.5))
+      """.stripMargin,
+      "[1.5, 3.0, 4.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce with inline lambda computes a fold",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(reduce(xs, 0, (acc, x) -> acc + x * x))
+      """.stripMargin,
+      "30\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce with inline lambda computes product as fold",
+      """
+        |def main() =
+        |  val xs = [2, 3, 4]
+        |  print(reduce(xs, 1, (acc, x) -> acc * x))
+      """.stripMargin,
+      "24\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "map over a rank-2 array preserves rank",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(map(m, x -> x * 10))
+      """.stripMargin,
+      "[[10, 20], [30, 40]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "method-call sugar `m.map(...)` on rank-2 preserves rank",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m.map(x -> x + 100))
+      """.stripMargin,
+      "[[101, 102, 103], [104, 105, 106]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 map producing real output from int input",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m.map(x -> x * 1.5))
+      """.stripMargin,
+      "[[1.5, 3.0], [4.5, 6.0]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce over a rank-2 array folds left-to-right over all elements",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(reduce(m, 0, (acc, x) -> acc + x))
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 reduce computes sum-of-squares via inline lambda",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(reduce(m, 0, (acc, x) -> acc + x * x))
+      """.stripMargin,
+      "30\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1638,6 +1759,62 @@ object NexProgramCorpus:
         |  print(reshape(flatten(m), 2, 3))
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "sum_axis(m, 0) collapses rows producing the column totals",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 0))
+      """.stripMargin,
+      "[5, 7, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "sum_axis(m, 1) collapses columns producing the row totals",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(sum_axis(m, 1))
+      """.stripMargin,
+      "[6, 15]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "product of an integer array",
+      """def main() = print(product([2, 3, 4]))""",
+      "24\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "product of a real array",
+      """def main() = print(product([1.5, 2.0, 0.5]))""",
+      "1.5\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "diag(arr) builds a square matrix with arr on the diagonal",
+      """
+        |def main() =
+        |  print(diag([1, 2, 3]))
+      """.stripMargin,
+      "[[1, 0, 0], [0, 2, 0], [0, 0, 3]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "identity(n) is the n×n integer identity matrix",
+      """
+        |def main() =
+        |  print(identity(3))
+      """.stripMargin,
+      "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]\n",
       mlir = true,
     ),
     Case(
@@ -2100,10 +2277,139 @@ object NexProgramCorpus:
       "prelude",
       "zeros + ones",
       """def main() =
-        |  print(zeros(3))
+        |  val xs = zeros(3)
+        |  print(xs)
         |  print(ones(3))
       """.stripMargin,
       "[0, 0, 0]\n[1, 1, 1]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "range with runtime bounds",
+      """def main() =
+        |  val lo = 2
+        |  val hi = 7
+        |  print(range(lo, hi))
+      """.stripMargin,
+      "[2, 3, 4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "range with runtime bounds — empty when hi <= lo",
+      """def main() =
+        |  val lo = 5
+        |  val hi = 5
+        |  print(range(lo, hi))
+      """.stripMargin,
+      "[]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "zeros with runtime length",
+      """def main() =
+        |  val n = 4
+        |  print(zeros(n))
+      """.stripMargin,
+      "[0, 0, 0, 0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "ones with runtime length",
+      """def main() =
+        |  val n = 5
+        |  print(ones(n))
+      """.stripMargin,
+      "[1, 1, 1, 1, 1]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "linspace with runtime length",
+      """def main() =
+        |  val n = 5
+        |  print(linspace(0.0, 1.0, n))
+      """.stripMargin,
+      "[0.0, 0.25, 0.5, 0.75, 1.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "linspace with runtime bounds and length",
+      """def main() =
+        |  val lo = 0.0
+        |  val hi = 4.0
+        |  val n = 5
+        |  print(linspace(lo, hi, n))
+      """.stripMargin,
+      "[0.0, 1.0, 2.0, 3.0, 4.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "length of dynamic-bound range",
+      """def main() =
+        |  val lo = 1
+        |  val hi = 8
+        |  print(length(range(lo, hi)))
+      """.stripMargin,
+      "7\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "sum of dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(sum(range(0, n)))
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "scalar broadcast over dynamic-bound range",
+      """def main() =
+        |  val n = 4
+        |  print(2 * range(0, n))
+      """.stripMargin,
+      "[0, 2, 4, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "map over dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(map(range(0, n), x -> x * x))
+      """.stripMargin,
+      "[0, 1, 4, 9, 16]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "for over dynamic-bound range — running sum",
+      """def main() =
+        |  val n = 4
+        |  var s = 0
+        |  val xs = range(1, n + 1)
+        |  for x in xs do s = s + x
+        |  print(s)
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "comparison broadcast over dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(range(0, n) < 3)
+      """.stripMargin,
+      "[true, true, true, false, false]\n",
       mlir = true,
     ),
     Case(
