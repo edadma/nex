@@ -216,7 +216,13 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("assert_eq", List(a, b)) =>
         emitAssertEq(a, b); "void"
       case ("assert_approx", List(a, b, eps)) =>
-        emitAssertApprox(a, b, eps); "void"
+        (a.tpe, b.tpe) match
+          case (TyArray(_, 1), TyArray(_, 1)) =>
+            emitAssertApproxArr1(a, b, eps); "void"
+          case (TyComplex, TyComplex) =>
+            emitAssertApproxComplex(a, b, eps); "void"
+          case _ =>
+            emitAssertApprox(a, b, eps); "void"
       case ("assert_traps", List(fn)) =>
         emitAssertTraps(fn, expectedSubstr = None); "void"
       case ("assert_traps", List(fn, sub)) =>
@@ -570,6 +576,90 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     val ok = newReg()
     emitLine(s"  $ok = fcmp ole double $ad, $ev\n")
     emitTrapOnFalse(ok, "@.assert_approx_msg", "aap")
+
+  /** Emit `hypot(re(a) - re(b), im(a) - im(b)) <= eps` for complex
+    * operands. Both operands carry the `{ double, double }` layout.
+    * Traps with the standard assert_approx message on mismatch.
+    */
+  private def emitAssertApproxComplex(a: TExpr, b: TExpr, eps: TExpr): Unit =
+    val av = emitExpr(a)
+    val bv = emitExpr(b)
+    val ev = liftToReal(eps)
+    val ar = newReg(); emitLine(s"  $ar = extractvalue { double, double } $av, 0\n")
+    val ai = newReg(); emitLine(s"  $ai = extractvalue { double, double } $av, 1\n")
+    val br = newReg(); emitLine(s"  $br = extractvalue { double, double } $bv, 0\n")
+    val bi = newReg(); emitLine(s"  $bi = extractvalue { double, double } $bv, 1\n")
+    val dr = newReg(); emitLine(s"  $dr = fsub double $ar, $br\n")
+    val di = newReg(); emitLine(s"  $di = fsub double $ai, $bi\n")
+    val dist = newReg()
+    emitLine(s"  $dist = call double @hypot(double $dr, double $di)\n")
+    val ok = newReg()
+    emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
+    emitTrapOnFalse(ok, "@.assert_approx_msg", "aapc")
+
+  /** Emit a rank-1 element-wise `assert_approx`. Both arrays must have
+    * the same length (traps on mismatch); each element pair is checked
+    * with the appropriate per-element distance — scalar |x - y| for
+    * integer / real / bool elements, `hypot(dr, di)` for complex.
+    * Trap message is the standard assert_approx message; the array
+    * descriptor shares are released at exit.
+    */
+  private def emitAssertApproxArr1(a: TExpr, b: TExpr, eps: TExpr): Unit =
+    val elemA = arrayElem(a.tpe)
+    val elemB = arrayElem(b.tpe)
+    if elemA != elemB then
+      notImpl(s"assert_approx on arrays of different element types ($elemA vs $elemB)")
+    val elem  = elemA
+    val esz   = elemSize(elem)
+    val stT   = storageType(elem)
+    val langT = llvmType(elem)
+
+    val av  = emitExpr(a)
+    val bv  = emitExpr(b)
+    val ev  = liftToReal(eps)
+
+    val aLen = newReg(); emitLine(s"  $aLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    val bLen = newReg(); emitLine(s"  $bLen = call i64 @__nex_arr1_len(ptr $bv)\n")
+    val sameLen = newReg()
+    emitLine(s"  $sameLen = icmp eq i64 $aLen, $bLen\n")
+    emitTrapOnFalse(sameLen, "@.assert_approx_msg", "aapal")
+
+    val aBuf = bufPtr(av, a.tpe)
+    val bBuf = bufPtr(bv, b.tpe)
+
+    emitCountingLoop(aLen, "aapa") { i =>
+      val sA = newReg(); emitLine(s"  $sA = getelementptr inbounds $stT, ptr $aBuf, i64 $i\n")
+      val sB = newReg(); emitLine(s"  $sB = getelementptr inbounds $stT, ptr $bBuf, i64 $i\n")
+      val vA = loadElem(stT, sA, langT)
+      val vB = loadElem(stT, sB, langT)
+      val dist = elem match
+        case TyComplex =>
+          val ar = newReg(); emitLine(s"  $ar = extractvalue { double, double } $vA, 0\n")
+          val ai = newReg(); emitLine(s"  $ai = extractvalue { double, double } $vA, 1\n")
+          val br = newReg(); emitLine(s"  $br = extractvalue { double, double } $vB, 0\n")
+          val bi = newReg(); emitLine(s"  $bi = extractvalue { double, double } $vB, 1\n")
+          val dr = newReg(); emitLine(s"  $dr = fsub double $ar, $br\n")
+          val di = newReg(); emitLine(s"  $di = fsub double $ai, $bi\n")
+          val h  = newReg(); emitLine(s"  $h  = call double @hypot(double $dr, double $di)\n")
+          h
+        case TyReal =>
+          val d  = newReg(); emitLine(s"  $d  = fsub double $vA, $vB\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $d)\n")
+          ad
+        case TyInteger =>
+          val d  = newReg(); emitLine(s"  $d  = sub i64 $vA, $vB\n")
+          val df = newReg(); emitLine(s"  $df = sitofp i64 $d to double\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $df)\n")
+          ad
+        case other =>
+          notImpl(s"assert_approx on array of $other elements")
+      val ok = newReg()
+      emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
+      emitTrapOnFalse(ok, "@.assert_approx_msg", "aapae")
+    }
+
+    emitArrDec(av, a.tpe)
+    emitArrDec(bv, b.tpe)
 
   /** Emit a length-ish call (length / rows / cols). The runtime helper
     * picked depends on the array's static rank.

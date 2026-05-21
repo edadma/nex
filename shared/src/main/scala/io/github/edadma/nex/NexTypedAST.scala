@@ -251,12 +251,17 @@ case class TTupleProj(receiver: TExpr, idx: Int, pos: Option[Position] = None, t
   * per spec §4.14. Returns a freshly-owned rank-1 array. `inclusive`
   * encodes whether the upper bound is included. Emitted by the
   * elaborator's `inferIndex` when the lone index expression is a
-  * `TBinOp("..", _, _)` / `TBinOp("..=", _, _)`.
+  * `TBinOp("..", _, _)` / `TBinOp("..=", _, _)` or an `OpenSliceExpr`.
+  *
+  * Open-ended forms (`a[..hi]`, `a[lo..]`, `a[..]`) leave the omitted
+  * side as `None` — downstream evaluators fill `lo = 0` and `hi =
+  * length(arr)` from the array's runtime extent, evaluated once,
+  * without re-evaluating `arr`.
   */
 case class TSlice(
     arr:       TExpr,
-    lo:        TExpr,
-    hi:        TExpr,
+    lo:        Option[TExpr],
+    hi:        Option[TExpr],
     inclusive: Boolean,
     pos:       Option[Position] = None,
     tpe:       Type = TyUnknown,
@@ -270,6 +275,21 @@ case class TSlice(
   */
 case class TAxisAllMark(pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
+/** Stage-1-only sentinel marking an open-ended slice (`..hi`, `lo..`,
+  * `..`) inside an index list. `inferIndex` rewrites the surrounding
+  * `TIndex` into a `TSlice` (rank-1) or `TSlice2` with `TAxisRange`
+  * (rank-2). Never appears in a Stage-3 program. The omitted side
+  * carries `None`; the downstream evaluator fills `lo = 0` and `hi =
+  * length(arr)` from the array's runtime extent.
+  */
+case class TOpenSliceMark(
+    lo:        Option[TExpr],
+    hi:        Option[TExpr],
+    inclusive: Boolean,
+    pos:       Option[Position] = None,
+    tpe:       Type = TyUnknown,
+) extends TExpr
+
 /** Per-axis spec for a rank-2 slice (spec §4.14). Each axis is either:
   *   - [[TAxisAll]]: the full extent of this axis (`:`) — preserves rank.
   *   - [[TAxisIndex]]: a single integer index — collapses this axis.
@@ -278,7 +298,7 @@ case class TAxisAllMark(pos: Option[Position] = None, tpe: Type = TyUnknown) ext
 sealed trait TAxisSpec
 case object TAxisAll                                                            extends TAxisSpec
 case class  TAxisIndex(idx: TExpr)                                              extends TAxisSpec
-case class  TAxisRange(lo: TExpr, hi: TExpr, inclusive: Boolean)                extends TAxisSpec
+case class  TAxisRange(lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean) extends TAxisSpec
 
 /** Rank-2 slice — `m[axis0, axis1]` per spec §4.14. The result rank
   * depends on how many axes are preserved (0 = scalar, 1 = rank-1,

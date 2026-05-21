@@ -161,12 +161,13 @@ class NexLifetime(
       case TFlatIndex(a, i, p, t)         => TFlatIndex(rewriteSubtree(a, refs), rewriteSubtree(i, refs), p, t)
       case TClone(a, p, t)                => TClone(rewriteSubtree(a, refs), p, t)
       case TIndex(a, idx, p, t)           => TIndex(rewriteSubtree(a, refs), idx.map(rewriteSubtree(_, refs)), p, t)
-      case TSlice(a, lo, hi, inc, p, t)   => TSlice(rewriteSubtree(a, refs), rewriteSubtree(lo, refs), rewriteSubtree(hi, refs), inc, p, t)
+      case TSlice(a, lo, hi, inc, p, t)   =>
+        TSlice(rewriteSubtree(a, refs), lo.map(rewriteSubtree(_, refs)), hi.map(rewriteSubtree(_, refs)), inc, p, t)
       case TSlice2(a, rAx, cAx, p, t)     =>
         def rwAx(ax: TAxisSpec): TAxisSpec = ax match
           case TAxisAll              => TAxisAll
           case TAxisIndex(e)         => TAxisIndex(rewriteSubtree(e, refs))
-          case TAxisRange(lo, hi, i) => TAxisRange(rewriteSubtree(lo, refs), rewriteSubtree(hi, refs), i)
+          case TAxisRange(lo, hi, i) => TAxisRange(lo.map(rewriteSubtree(_, refs)), hi.map(rewriteSubtree(_, refs)), i)
         TSlice2(rewriteSubtree(a, refs), rwAx(rAx), rwAx(cAx), p, t)
       case TField(r, n, p, t)             => TField(rewriteSubtree(r, refs), n, p, t)
       case TTupleProj(r, idx, p, t)       => TTupleProj(rewriteSubtree(r, refs), idx, p, t)
@@ -209,7 +210,7 @@ class NexLifetime(
         }, p, t)
       // Pure leaves
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => e
+         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => e
 
   /** If `e` is a bare [[TVarRef]] to a var-array binding that has any
     * other reference in the body (count > 1), wrap it in [[TClone]] so
@@ -294,7 +295,7 @@ class NexLifetime(
   private def walkChildren(e: TExpr, f: TExpr => Unit): Unit =
     e match
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => ()
+         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => ()
       case TBinOp(_, l, r, _, _)            => f(l); f(r)
       case TUnaryOp(_, x, _, _)             => f(x)
       case TJuxtapose(c, b, _, _)           => f(c); f(b)
@@ -309,13 +310,14 @@ class NexLifetime(
       case TClone(a, _, _)                  => f(a)
       case TCall(c, args, _, _)             => f(c); args.foreach(f)
       case TIndex(a, idx, _, _)             => f(a); idx.foreach(f)
-      case TSlice(a, lo, hi, _, _, _)       => f(a); f(lo); f(hi)
+      case TSlice(a, lo, hi, _, _, _)       =>
+        f(a); lo.foreach(f); hi.foreach(f)
       case TSlice2(a, rAx, cAx, _, _)       =>
         f(a)
         def go(ax: TAxisSpec): Unit = ax match
           case TAxisAll              => ()
           case TAxisIndex(e)         => f(e)
-          case TAxisRange(lo, hi, _) => f(lo); f(hi)
+          case TAxisRange(lo, hi, _) => lo.foreach(f); hi.foreach(f)
         go(rAx); go(cAx)
       case TField(r, _, _, _)               => f(r)
       case TTupleProj(r, _, _, _)           => f(r)

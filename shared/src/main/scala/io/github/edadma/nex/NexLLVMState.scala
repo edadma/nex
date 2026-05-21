@@ -290,7 +290,7 @@ protected trait NexLLVMState:
   protected def emitIndex(arr: TExpr, indices: List[TExpr], resultT: Type): String
   protected def emitElementWise(op: String, lhs: TExpr, rhs: TExpr, resultT: Type): String
   protected def emitBroadcast(scalar: TExpr, arr: TExpr, op: String, scalarFirst: Boolean, resultT: Type): String
-  protected def emitSlice(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, resultT: Type): String
+  protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, resultT: Type): String
   protected def emitSlice2(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, resultT: Type): String
   protected def emitClone(arr: TExpr, resultT: Type): String
   protected def emitFlatIndex(arr: TExpr, idx: TExpr, resultT: Type): String

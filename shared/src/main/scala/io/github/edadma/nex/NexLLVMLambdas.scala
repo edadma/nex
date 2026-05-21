@@ -101,7 +101,7 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     */
   private def walkChildren(e: TExpr, f: TExpr => Unit): Unit = e match
     case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-       | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => ()
+       | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => ()
     case TInterpStringLit(parts, _, _) =>
       parts.foreach {
         case TInterpExpr(x) => f(x)
@@ -121,13 +121,14 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     case TClone(a, _, _)                  => f(a)
     case TCall(c, args, _, _)             => f(c); args.foreach(f)
     case TIndex(a, idx, _, _)             => f(a); idx.foreach(f)
-    case TSlice(a, lo, hi, _, _, _)       => f(a); f(lo); f(hi)
+    case TSlice(a, lo, hi, _, _, _)       =>
+      f(a); lo.foreach(f); hi.foreach(f)
     case TSlice2(a, rAx, cAx, _, _)       =>
       f(a)
       def goAx(ax: TAxisSpec): Unit = ax match
         case TAxisAll              => ()
         case TAxisIndex(e2)        => f(e2)
-        case TAxisRange(lo, hi, _) => f(lo); f(hi)
+        case TAxisRange(lo, hi, _) => lo.foreach(f); hi.foreach(f)
       goAx(rAx); goAx(cAx)
     case TField(r, _, _, _)               => f(r)
     case TTupleProj(r, _, _, _)           => f(r)

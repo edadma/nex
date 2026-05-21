@@ -329,6 +329,19 @@ a[0..2]       // [10.0, 20.0]
 a[1..=2]      // [20.0, 30.0]
 ```
 
+**Open-ended slice bounds** omit either side; the missing bound fills from the array's runtime extent (`0` for the lower side, `length(a)` for the upper). Each side is independent and combines with negative indices and the inclusive form:
+
+```nex
+a[2..]        // [30.0]        — lo given, hi defaults to length(a)
+a[..2]        // [10.0, 20.0]  — hi given, lo defaults to 0
+a[..]         // full copy     — both ends default
+a[-3..]       // last 3 elements
+a[..-1]       // all but the last
+a[..=-1]      // inclusive — full array
+```
+
+The open forms are only legal inside an index list; using `..` or `..=` outside a slice context (e.g. as a value on the right of `=`) is a parse error.
+
 **Rank-2 indexing** uses two integer indices separated by a comma:
 
 ```nex

@@ -225,7 +225,9 @@ v[0]                   // 1.0
 v[-1]                  // 3.0             — negative indices wrap from the end
 v[1..3]                // [2.0, 3.0]      slice (owned copy)
 v[0..=1]               // [1.0, 2.0]      inclusive slice
-v[-2..length(v)]       // [2.0, 3.0]      negative bounds work in slices too
+v[-2..]                // [2.0, 3.0]      open upper bound — fills with length(v)
+v[..2]                 // [1.0, 2.0]      open lower bound — fills with 0
+v[..]                  // [1.0, 2.0, 3.0] both ends open — whole-array copy
 
 // Element-wise arithmetic with broadcasting:
 val a = [1.0, 2.0, 3.0]
@@ -247,6 +249,8 @@ M[0]                   // [1.0, 2.0, 3.0]   — i-th row
 M[:, 1]                // [2.0, 5.0]        — j-th column
 M[0, 0..2]             // [1.0, 2.0]        — row 0, cols 0-1
 M[0..2, 1..3]          // [[2.0, 3.0], [5.0, 6.0]]  — submatrix
+M[1.., :]              // [[4.0, 5.0, 6.0]]         — open lo: rows 1..rows(M)
+M[..2, ..2]            // [[1.0, 2.0], [4.0, 5.0]]  — open hi on both axes
 
 // Element-wise on rank-2:
 val N = [[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]]
@@ -269,6 +273,7 @@ A slice expression on the left of `=` overwrites the corresponding sub-extent of
 var xs = [10, 20, 30, 40, 50]
 xs[1..4] = [200, 300, 400]               // xs = [10, 200, 300, 400, 50]
 xs[0..=2] = [1, 2, 3]                    // xs = [1, 2, 3, 400, 50]
+xs[-2..]  = [99, 100]                    // open hi: xs = [1, 2, 3, 99, 100]
 
 var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 m[1, :]       = [40, 50, 60]             // replace row 1
@@ -597,6 +602,20 @@ def test_approx_real() =
   assert_approx(0.1 + 0.2, 0.3, 1e-10)
 
 @test
+def test_approx_complex() =
+  // Checks `|a - b| <= tol` via hypot on the componentwise differences.
+  assert_approx(1.0 + 2i, 1.000001 + 2.000001i, 1e-5)
+
+@test
+def test_approx_array() =
+  // Element-wise rank-1 form: integer/real/complex elements are compared
+  // per element with the same per-type distance as the scalar overloads.
+  // A length mismatch traps.
+  val xs = [1.0, 2.0, 3.0]
+  val ys = [1.0 + 1e-12, 2.0 - 1e-12, 3.0 + 1e-12]
+  assert_approx(xs, ys, 1e-9)
+
+@test
 def test_traps_on_bad_division() =
   assert_traps(() -> 1 div 0)
 
@@ -607,8 +626,6 @@ def test_trap_message_contains_substring() =
   // failure mode rather than "any trap fires".
   assert_traps(() -> 1 div 0, "division by zero")
 ```
-
-(Array- and complex-valued `assert_approx` are *deferred* — for now compare element-wise yourself, or check `abs(diff)` against a scalar tolerance.)
 
 A whole module can be marked test-only:
 
