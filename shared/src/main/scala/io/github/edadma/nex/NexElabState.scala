@@ -268,8 +268,33 @@ protected trait NexElabState:
   protected def inferCall(callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr
   protected def coerceTo(v: TExpr, expected: Type): TExpr
   protected def currentType(s: Symbol): Type
+  protected def setSymType(s: Symbol, t: Type): Symbol
   protected def elemOf(t: Type): Option[(Type, Int)]
   protected def refreshSym(s: Symbol): Symbol
+  protected def isNumeric(t: Type): Boolean
+  protected def promote(a: Type, b: Type): Option[Type]
+  protected def matMulType(lt: Type, rt: Type, p: Option[Position]): Type
+
+  // Implemented in NexElabInferGenerics (Stage 2 — kind-var unification):
+  protected def hasKindVar(t: Type): Boolean
+  protected def resolveOverload(cands: List[Symbol], args: List[TExpr], pos: Option[Position]): Option[Symbol]
+  protected def inferGenericCall(callee: TExpr, params: List[(Type, ParamMode)], ret: Type, args: List[TExpr], p: Option[Position]): TExpr
+  protected def inferGenericStructConstruct(callee: TExpr, typeSym: Symbol, template: TyStruct, args: List[TExpr], p: Option[Position]): TExpr
+
+  // Implemented in NexElabInferPrelude (Stage 2 — const / purity / prelude routing):
+  protected def validateConstExpr(e: TExpr): Unit
+  protected def drainPendingConstPurityChecks(): Unit
+  protected def isPreludeHOF(s: Symbol): Boolean
+  protected def isPreludeRank1Only(s: Symbol): Boolean
+  protected def inferPreludeHOFCall(name: String, callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr
+  protected def inferPreludeRank1Call(name: String, callee: TExpr, args: List[TExpr], p: Option[Position]): TExpr
+  protected def preludeReturnTypeFor(name: String, args: List[TExpr]): Type
+
+  // Implemented in NexElabInferPatterns (Stage 2 — match / index / field):
+  protected def typePattern(p: TPattern, enumTy: Option[TyEnum]): TPattern
+  protected def checkMatchExhaustiveness(cases: List[TMatchCase], enumTy: Option[TyEnum], pos: Option[Position]): Unit
+  protected def inferIndex(arr: TExpr, idx: List[TExpr], p: Option[Position]): TExpr
+  protected def inferField(r: TExpr, name: String, p: Option[Position]): TExpr
 
   // Implemented in NexElabLowering (Stage 4):
   protected def lowerProgram(p: TProgram): TProgram
