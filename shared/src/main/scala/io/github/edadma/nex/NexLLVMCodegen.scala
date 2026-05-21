@@ -790,8 +790,8 @@ class NexLLVMCodegen
     case TBroadcast(scalar, arr, op, scalarFirst, _, t) =>
       emitBroadcast(scalar, arr, op, scalarFirst, t)
 
-    case TSlice(arr, lo, hi, inclusive, _, t) =>
-      emitSlice(arr, lo, hi, inclusive, t)
+    case TSlice(arr, lo, hi, inclusive, stride, _, t) =>
+      emitSlice(arr, lo, hi, inclusive, stride, t)
 
     case TSlice2(arr, rowAx, colAx, _, t) =>
       emitSlice2(arr, rowAx, colAx, t)
@@ -1339,8 +1339,8 @@ class NexLLVMCodegen
         // The receiver array `av` was loaded as an owning share — release it.
         emitArrDec(av, arr.tpe)
 
-      case TSlice(arr, lo, hi, inclusive, _, _) =>
-        emitSliceAssign(arr, lo, hi, inclusive, value)
+      case TSlice(arr, lo, hi, inclusive, stride, _, _) =>
+        emitSliceAssign(arr, lo, hi, inclusive, stride, value)
 
       case TSlice2(arr, rowAx, colAx, _, _) =>
         emitSlice2Assign(arr, rowAx, colAx, value)

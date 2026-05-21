@@ -127,12 +127,12 @@ class NexFusion(symbols: SymbolTable):
     case TFusedLoop(lv, len, b, cols, p, t) => TFusedLoop(lv, fuseExpr(len), fuseExpr(b), cols.map(fuseExpr), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(fuseExpr(a), fuseExpr(i), p, t)
     case TClone(a, p, t)               => TClone(fuseExpr(a), p, t)
-    case TSlice(a, lo, hi, inc, p, t)  => TSlice(fuseExpr(a), lo.map(fuseExpr), hi.map(fuseExpr), inc, p, t)
+    case TSlice(a, lo, hi, inc, st, p, t)  => TSlice(fuseExpr(a), lo.map(fuseExpr), hi.map(fuseExpr), inc, st.map(fuseExpr), p, t)
     case TSlice2(a, rAx, cAx, p, t)    =>
       def fuseAxis(s: TAxisSpec): TAxisSpec = s match
         case TAxisAll              => TAxisAll
         case TAxisIndex(e)         => TAxisIndex(fuseExpr(e))
-        case TAxisRange(lo, hi, i) => TAxisRange(lo.map(fuseExpr), hi.map(fuseExpr), i)
+        case TAxisRange(lo, hi, i, st) => TAxisRange(lo.map(fuseExpr), hi.map(fuseExpr), i, st.map(fuseExpr))
       TSlice2(fuseExpr(a), fuseAxis(rAx), fuseAxis(cAx), p, t)
     case _: TAxisAllMark =>
       sys.error("internal: TAxisAllMark survived to fusion pass; should be Stage-2-only")
@@ -356,12 +356,12 @@ class NexFusion(symbols: SymbolTable):
       else TFusedLoop(lv, subst(len, fromId, to), subst(b, fromId, to), cols.map(subst(_, fromId, to)), p, t)
     case TFlatIndex(a, i, p, t)        => TFlatIndex(subst(a, fromId, to), subst(i, fromId, to), p, t)
     case TClone(a, p, t)               => TClone(subst(a, fromId, to), p, t)
-    case TSlice(a, lo, hi, inc, p, t)  => TSlice(subst(a, fromId, to), lo.map(subst(_, fromId, to)), hi.map(subst(_, fromId, to)), inc, p, t)
+    case TSlice(a, lo, hi, inc, st, p, t)  => TSlice(subst(a, fromId, to), lo.map(subst(_, fromId, to)), hi.map(subst(_, fromId, to)), inc, st.map(subst(_, fromId, to)), p, t)
     case TSlice2(a, rAx, cAx, p, t)    =>
       def substAxis(s: TAxisSpec): TAxisSpec = s match
         case TAxisAll              => TAxisAll
         case TAxisIndex(x)         => TAxisIndex(subst(x, fromId, to))
-        case TAxisRange(lo, hi, i) => TAxisRange(lo.map(subst(_, fromId, to)), hi.map(subst(_, fromId, to)), i)
+        case TAxisRange(lo, hi, i, st) => TAxisRange(lo.map(subst(_, fromId, to)), hi.map(subst(_, fromId, to)), i, st.map(subst(_, fromId, to)))
       TSlice2(subst(a, fromId, to), substAxis(rAx), substAxis(cAx), p, t)
     case _: TAxisAllMark => e
     case _: TOpenSliceMark => e

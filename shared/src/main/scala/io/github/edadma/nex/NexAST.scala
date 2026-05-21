@@ -261,12 +261,28 @@ case class IndexExpr(arr: ExprAST, indices: List[ExprAST]) extends ExprAST
   * the bare `..` forms; the elaborator's `inferIndex` lowers it to
   * `TSlice` / `TAxisRange` with `None` on the omitted side. The
   * downstream codegen / interpreter fills the missing bound from the
-  * array's runtime extent (`0` for `lo`, `length` for `hi`).
+  * array's runtime extent (`0` for `lo`, `length` for `hi`). An
+  * optional `by` clause carries the stride (spec §4.14 strided slice).
   */
 case class OpenSliceExpr(
     lo:        Option[ExprAST],
     hi:        Option[ExprAST],
     inclusive: Boolean,
+    stride:    Option[ExprAST] = None,
+) extends ExprAST
+
+/** A closed slice with an explicit stride (`lo..hi by k`,
+  * `lo..=hi by k`). The parser emits this whenever a `by <expr>`
+  * clause follows a range inside an [[IndexExpr]] argument list. Like
+  * [[OpenSliceExpr]] the form is only legal in index position; the
+  * elaborator's `inferIndex` lowers it to `TSlice` (rank-1) or
+  * `TAxisRange` (rank-2) with the stride wrapped in `Some`.
+  */
+case class StridedSliceExpr(
+    lo:        ExprAST,
+    hi:        ExprAST,
+    inclusive: Boolean,
+    stride:    ExprAST,
 ) extends ExprAST
 
 /** The `:` axis selector — only legal inside an `IndexExpr`'s index list,

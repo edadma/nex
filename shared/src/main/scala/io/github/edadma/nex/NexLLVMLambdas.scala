@@ -121,14 +121,14 @@ protected trait NexLLVMLambdas extends NexLLVMState:
     case TClone(a, _, _)                  => f(a)
     case TCall(c, args, _, _)             => f(c); args.foreach(f)
     case TIndex(a, idx, _, _)             => f(a); idx.foreach(f)
-    case TSlice(a, lo, hi, _, _, _)       =>
-      f(a); lo.foreach(f); hi.foreach(f)
+    case TSlice(a, lo, hi, _, st, _, _)   =>
+      f(a); lo.foreach(f); hi.foreach(f); st.foreach(f)
     case TSlice2(a, rAx, cAx, _, _)       =>
       f(a)
       def goAx(ax: TAxisSpec): Unit = ax match
-        case TAxisAll              => ()
-        case TAxisIndex(e2)        => f(e2)
-        case TAxisRange(lo, hi, _) => lo.foreach(f); hi.foreach(f)
+        case TAxisAll                  => ()
+        case TAxisIndex(e2)            => f(e2)
+        case TAxisRange(lo, hi, _, st) => lo.foreach(f); hi.foreach(f); st.foreach(f)
       goAx(rAx); goAx(cAx)
     case TField(r, _, _, _)               => f(r)
     case TTupleProj(r, _, _, _)           => f(r)
