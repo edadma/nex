@@ -12,7 +12,6 @@ The features deferred from the current language are split into two tiers by scop
 ## 11.1 Near-term additions
 
 **Syntax / expressions:**
-- View-style slicing (non-copying — returns a borrow into the source array)
 - Function calls in `const` expressions (compile-time evaluation of pure-function calls)
 
 ## 11.2 Long-term work
