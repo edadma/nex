@@ -768,6 +768,93 @@ object NexProgramCorpus:
     ),
     Case(
       "functions",
+      "tensor-typed param + scalar return",
+      """
+        |def total(xs: [integer]): integer = sum(xs)
+        |
+        |def main() =
+        |  val v = [1, 2, 3, 4, 5]
+        |  print(total(v))
+      """.stripMargin,
+      "15\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "rank-1 tensor param with prelude reductions",
+      """
+        |def stats(xs: [real]): real = sqrt(sum(xs)) * 2.0
+        |
+        |def main() =
+        |  print(stats([4.0, 5.0, 7.0]))
+      """.stripMargin,
+      "8.0\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "rank-2 tensor param + integer return via length",
+      """
+        |def rows_count(m: [[integer]]): integer = length(m)
+        |
+        |def main() =
+        |  print(rows_count([[1, 2, 3], [4, 5, 6]]))
+      """.stripMargin,
+      "2\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "def returning a tensor (rank-1 doubled via map)",
+      """
+        |def doubled(xs: [integer]): [integer] = map(xs, x -> x * 2)
+        |
+        |def main() =
+        |  print(doubled([1, 2, 3]))
+      """.stripMargin,
+      "[2, 4, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "tensor + scalar params, tensor return (broadcast scale)",
+      """
+        |def scale_by(v: [real], k: real): [real] = v * k
+        |
+        |def main() =
+        |  print(scale_by([1.0, 2.0, 3.0], 3.5))
+      """.stripMargin,
+      "[3.5, 7.0, 10.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "two tensor params, element-wise sum returned",
+      """
+        |def add_arrays(a: [integer], b: [integer]): [integer] = a + b
+        |
+        |def main() =
+        |  print(add_arrays([1, 2, 3], [10, 20, 30]))
+      """.stripMargin,
+      "[11, 22, 33]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "tensor-returning if-expression branches yield same tensor type",
+      """
+        |def pick(flag: bool, a: [integer], b: [integer]): [integer] =
+        |  if flag then a else b
+        |
+        |def main() =
+        |  print(pick(true, [1, 2, 3], [4, 5, 6]))
+        |  print(pick(false, [1, 2, 3], [4, 5, 6]))
+      """.stripMargin,
+      "[1, 2, 3]\n[4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
       "default parameter values are filled when omitted",
       """
         |def scale(x: real, factor: real = 2.0, offset: real = 0.0) =

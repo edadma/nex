@@ -731,6 +731,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
 
+    case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MTensor]) =>
+      // Tensor-returning if-expression. Both branches must produce
+      // the same MLIR tensor type for the `scf.if -> (T)` result
+      // slot to verify. We declare the result as the param-boundary
+      // dynamic-shape tensor (`tensor<?xT>` / `tensor<?x?xT>`) and
+      // cast each branch's emit to that type at the yield, which
+      // accepts statically-shaped values as well.
+      val outTy = mlirTypeOf(tpe).get.asInstanceOf[MTensor]
+      emitIfExpr(cond, thenB, elseB, outTy)
+
     case TFusedLoop(loopVar, length, body, None, _, tpe) =>
       val n = staticLength(length).getOrElse(notYet(s"fused loop with non-static length"))
       val elemT = tpe match

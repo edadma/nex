@@ -314,12 +314,31 @@ trait NexMLIRScalarControl:
     val r  = fresh("if")
     out.append(s"  $r = scf.if ${cv.reg} -> (${outTy.text}) {\n")
     val tv = emitExpr(thenB)
-    out.append(s"    scf.yield ${tv.reg} : ${outTy.text}\n")
+    val tReg = coerceToType(tv, outTy)
+    out.append(s"    scf.yield $tReg : ${outTy.text}\n")
     out.append("  } else {\n")
     val ev = emitExpr(elseB)
-    out.append(s"    scf.yield ${ev.reg} : ${outTy.text}\n")
+    val eReg = coerceToType(ev, outTy)
+    out.append(s"    scf.yield $eReg : ${outTy.text}\n")
     out.append("  }\n")
     MlirVal(r, outTy)
+
+  /** Adapt a branch result to the expected if-expression result type.
+    * For matching types it's an identity pass-through; for tensor
+    * branches whose static shape mismatches the boundary-form (which
+    * is always dynamic-shape on the `if -> (T)` result type), insert
+    * a `tensor.cast`. Other type mismatches are an elaborator bug to
+    * surface here.
+    */
+  protected def coerceToType(v: MlirVal, expected: MlirType): String =
+    (v.ty, expected) match
+      case (lt, rt) if lt == rt => v.reg
+      case (lt: MTensor, rt: MTensor) if lt.elem == rt.elem && lt.shape.length == rt.shape.length =>
+        val r = fresh("tcast")
+        out.append(s"    $r = tensor.cast ${v.reg} : ${lt.text} to ${rt.text}\n")
+        r
+      case (lt, rt) =>
+        notYet(s"if branch result $lt cannot coerce to $rt")
 
   protected def emitShortCircuit(lhs: TExpr, rhs: TExpr, isAnd: Boolean): MlirVal =
     val lv = emitExpr(lhs)
@@ -480,16 +499,24 @@ trait NexMLIRScalarControl:
   /** Convert a Nex elaborator-level `Type` to the codegen's
     * [[MlirType]] when the backend can express it as a function
     * parameter or return type. Returns `None` for types this phase
-    * doesn't yet handle (tensors, complex, tuples, structs, enums,
-    * `TyUnit` — units are unit-returning defs which need a
+    * doesn't yet handle (complex, tuples, structs, enums, function
+    * types, `TyUnit` — units are unit-returning defs which need a
     * different `func.return` shape).
+    *
+    * Rank-1 and rank-2 array types with scalar (int/real/bool)
+    * elements lower to dynamic-shape tensors at the function-boundary
+    * level (`tensor<?xT>` / `tensor<?x?xT>`); call sites bridge
+    * statically-shaped args via `tensor.cast`. Static element-type
+    * resolution lets the body still recover lengths via `tensor.dim`.
     */
   protected def mlirTypeOf(t: Type): Option[MlirType] = t match
-    case TyInteger => Some(MScalar(TyInteger))
-    case TyReal    => Some(MScalar(TyReal))
-    case TyBool    => Some(MScalar(TyBool))
-    case TyString  => Some(MString)
-    case _         => None
+    case TyInteger                                                => Some(MScalar(TyInteger))
+    case TyReal                                                   => Some(MScalar(TyReal))
+    case TyBool                                                   => Some(MScalar(TyBool))
+    case TyString                                                 => Some(MString)
+    case TyArray(elem, 1) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1)))
+    case TyArray(elem, 2) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1, -1)))
+    case _                                                        => None
 
   /** True when `e` is a scalar literal (after literal-fold of unary
     * minus) — i.e. an expression the codegen can re-emit at every
@@ -533,6 +560,17 @@ trait NexMLIRScalarControl:
       (av.ty, expectedTy) match
         case (lt, rt) if lt == rt                  => av
         case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
+        case (lt: MTensor, rt: MTensor)
+            if lt.elem == rt.elem
+              && lt.shape.length == rt.shape.length
+              && rt.shape.forall(_ < 0) =>
+          // Caller has a tensor whose element type and rank match the
+          // declared dynamic-shape param. Bridge via `tensor.cast`
+          // so the call's argument type matches the callee's
+          // signature byte-for-byte.
+          val r = fresh("tcast")
+          out.append(s"  $r = tensor.cast ${av.reg} : ${lt.text} to ${rt.text}\n")
+          MlirVal(r, rt)
         case (lt, rt) =>
           notYet(s"user def `$symName` arg type $lt does not match param type $rt")
     }
