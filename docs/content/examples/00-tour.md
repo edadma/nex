@@ -225,6 +225,7 @@ v[0]                   // 1.0
 v[-1]                  // 3.0             — negative indices wrap from the end
 v[1..3]                // [2.0, 3.0]      slice (owned copy)
 v[0..=1]               // [1.0, 2.0]      inclusive slice
+v[-2..length(v)]       // [2.0, 3.0]      negative bounds work in slices too
 
 // Element-wise arithmetic with broadcasting:
 val a = [1.0, 2.0, 3.0]
@@ -394,6 +395,17 @@ def first_positive(v: [real]) =
 def greet(name: string) =
   print(s"hello, $name")
   ()
+
+// Default parameter values + named arguments — defaults sit on the
+// trailing positions; callers can pass `name = value` in any order
+// for any parameter after the positional run.
+def make_box(w: real, h: real = 1.0, depth: real = 1.0) =
+  w, h, depth
+
+make_box(3.0)                            // (3.0, 1.0, 1.0)
+make_box(3.0, 5.0)                       // (3.0, 5.0, 1.0)
+make_box(3.0, depth = 7.0)               // (3.0, 1.0, 7.0)
+make_box(w = 2.0, depth = 4.0, h = 3.0)  // (2.0, 3.0, 4.0)
 ```
 
 ## Parameter modes

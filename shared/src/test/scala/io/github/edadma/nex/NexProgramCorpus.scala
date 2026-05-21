@@ -1180,6 +1180,55 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "open-ended slice bounds (`a[lo..]`, `a[..hi]`, `a[..]`)",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[2..])
+        |  print(a[..3])
+        |  print(a[..])
+        |  print(a[..=2])
+      """.stripMargin,
+      "[30, 40, 50]\n[10, 20, 30]\n[10, 20, 30, 40, 50]\n[10, 20, 30]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended slice bounds combine with negative indices",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[-3..])
+        |  print(a[..-1])
+        |  print(a[..=-1])
+      """.stripMargin,
+      "[30, 40, 50]\n[10, 20, 30, 40]\n[10, 20, 30, 40, 50]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended axis bounds on rank-2 slices",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[1.., :])
+        |  print(m[1.., 1..])
+        |  print(m[..2, ..2])
+      """.stripMargin,
+      "[[4, 5, 6], [7, 8, 9]]\n[[5, 6], [8, 9]]\n[[1, 2], [4, 5]]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended slice-assign target (`v[-2..] = rhs`)",
+      """
+        |def main() =
+        |  var v = [100, 200, 300, 400, 500]
+        |  v[-2..] = [44, 55]
+        |  v[..2] = [11, 22]
+        |  print(v)
+      """.stripMargin,
+      "[11, 22, 300, 44, 55]\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))
@@ -2008,6 +2057,76 @@ object NexProgramCorpus:
     ),
     Case(
       "prelude",
+      "assert_approx on complex (component-wise distance)",
+      """
+        |def main() =
+        |  assert_approx(1.0 + 2.0i, 1.0 + 2.0i + 1.0e-13 * i, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 real array",
+      """
+        |def main() =
+        |  assert_approx([1.0, 2.0, 3.0], [1.0 + 1.0e-13, 2.0, 3.0 - 1.0e-13], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 complex array",
+      """
+        |def main() =
+        |  assert_approx([1.0 + 0i, 0.0 + 1.0i], [1.0 + 0i, 0.0 + 1.0i], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-1 integer array (lifted)",
+      """
+        |def main() =
+        |  assert_approx([1, 2, 3], [1, 2, 3], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when an array element exceeds the tolerance",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([1.0, 2.0, 3.0], [1.0, 5.0, 3.0], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on length mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([1.0, 2.0], [1.0, 2.0, 3.0], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when the complex distance exceeds the tolerance",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx(1.0 + 0i, 1.0 + 5.0i, 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
       "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
       "nan\n",
@@ -2298,6 +2417,61 @@ object NexProgramCorpus:
         |  print(s"n=$n s=$s")
       """.stripMargin,
       "n=42 s=hello\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple from a def block body",
+      """
+        |def split(x: integer) =
+        |  val y = x * 2
+        |  y, -y
+        |def main() =
+        |  val a, b = split(3)
+        |  print(s"$a $b")
+      """.stripMargin,
+      "6 -6\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple via the `return` keyword",
+      """
+        |def first_positive(xs: [real]) =
+        |  for x in xs do
+        |    if x > 0.0 then return x, true
+        |  end for
+        |  0.0, false
+        |def main() =
+        |  val a, b = first_positive([-1.0, 2.0, 3.0])
+        |  print(s"$a $b")
+      """.stripMargin,
+      "2.0 true\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "assign a paren-less tuple in a block (assignment RHS)",
+      """
+        |def main() =
+        |  var p = 0, 0
+        |  p = 7, 8
+        |  val a, b = p
+        |  print(s"$a $b")
+      """.stripMargin,
+      "7 8\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple as the last item of an indented if-branch block",
+      """
+        |def classify(x: integer) =
+        |  if x > 0 then
+        |    x, "pos"
+        |  else
+        |    -x, "non-pos"
+        |def main() =
+        |  val n, label = classify(-5)
+        |  print(s"$n $label")
+      """.stripMargin,
+      "5 non-pos\n",
     ),
 
     // ========================================================================

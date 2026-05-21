@@ -256,6 +256,19 @@ case class NamedArg(name: String, value: ExprAST) extends ExprAST
 /** Indexing: `a[i]` (single) or `a[i, j]` (rank-2; Pass 2). */
 case class IndexExpr(arr: ExprAST, indices: List[ExprAST]) extends ExprAST
 
+/** An open-ended slice bound used inside an [[IndexExpr]] argument list
+  * (spec §4.14). The parser emits this for `..hi`, `..=hi`, `lo..`, and
+  * the bare `..` forms; the elaborator's `inferIndex` lowers it to
+  * `TSlice` / `TAxisRange` with `None` on the omitted side. The
+  * downstream codegen / interpreter fills the missing bound from the
+  * array's runtime extent (`0` for `lo`, `length` for `hi`).
+  */
+case class OpenSliceExpr(
+    lo:        Option[ExprAST],
+    hi:        Option[ExprAST],
+    inclusive: Boolean,
+) extends ExprAST
+
 /** The `:` axis selector — only legal inside an `IndexExpr`'s index list,
   * marks "all of this axis" for rank-2 slicing (spec §4.14). The parser
   * accepts it exclusively in that position; using `:` elsewhere is a

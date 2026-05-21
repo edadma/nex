@@ -320,15 +320,17 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val blockItem: PackratParser[Either[DeclAST, ExprAST]] =
     declBare ^^ Left.apply |
     assignment ^^ Right.apply |
-    exprNoTuple ^^ Right.apply
+    expr ^^ Right.apply
 
   /** Assignment statement: `lvalue = rhs`. Only legal at block-item
     * position. The l-value is parsed greedily as a postfix expression
     * (covering bare names, field access, and indexing); the elaborator
-    * verifies it's actually assignable.
+    * verifies it's actually assignable. The RHS is `expr`, so a
+    * paren-less tuple (`p = 1, 2, 3`) is accepted — block items are
+    * Newline/`;` separated, so there's no comma ambiguity.
     */
   lazy val assignment: PackratParser[ExprAST] =
-    postfixExpr ~ "=" ~ exprNoTuple ^^ {
+    postfixExpr ~ "=" ~ expr ^^ {
       case lhs ~ _ ~ rhs => AssignExpr(lhs, rhs)
     }
 
@@ -452,6 +454,18 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     } |
     orExpr
 
+  /** Lambda body: a Newline-Indent block, or a single inline expression
+    * at `arrowExpr` precedence (so a nested `->` chains right-
+    * associatively as `x -> y -> z` ≡ `x -> (y -> z)`).
+    *
+    * Single-line lambda bodies do NOT consume a trailing `,` — the comma
+    * remains available for whatever outer context the lambda sits in,
+    * most importantly the enclosing argument list of a call. To return
+    * a tuple from a single-line lambda, wrap the body in parens:
+    * `(x) -> (x, -x)`. The block-form lambda has no such restriction
+    * because `blockBody` flows through `block` whose last `blockItem`
+    * accepts a paren-less tuple.
+    */
   lazy val arrowBody: PackratParser[ExprAST] = blockBody | arrowExpr
 
   /** The "shape" before a lambda arrow: a single bare identifier, or a
@@ -597,14 +611,47 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       (recv: ExprAST) => IndexExpr(recv, ixs)
     }
 
-  /** A single position in an index list. Three shapes:
-    *   - `:` — the rank-2 axis-all marker (spec §4.14 slicing).
-    *   - any other expression (integer, range `lo..hi`, computed bounds).
-    * The `:` form is only legal in index position; the parser doesn't
-    * surface it as a primary expression.
+  /** A single position in an index list (spec §4.14). Shapes:
+    *   - `:` — the rank-2 axis-all marker.
+    *   - `..hi` / `..=hi` — leading-open slice (lo defaults to 0).
+    *   - `lo..` — trailing-open slice (hi defaults to `length(arr)`).
+    *   - `..` — both ends open (full slice).
+    *   - any other expression — integer index, full range `lo..hi`, or
+    *     computed bounds via `exprNoTuple`.
+    *
+    * The open-ended forms (and `:`) are only legal here — the parser
+    * doesn't surface them as primary expressions. The order matters:
+    * leading-open variants must precede the trailing-open / bare forms
+    * so a bare `..` is recognised; trailing-open precedes `exprNoTuple`
+    * so `lo..,` and `lo..]` resolve as open-trailing slices instead of
+    * stranded ranges that fail later.
     */
   lazy val indexElem: PackratParser[ExprAST] =
-    ":" ^^^ AxisAllExpr() | exprNoTuple
+    ":" ^^^ AxisAllExpr() |
+    ("..=" ~> addExpr) ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = true) } |
+    (".." ~> addExpr)  ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = false) } |
+    ".." ^^^ OpenSliceExpr(None, None, inclusive = false) |
+    closedOrTrailingOpenRange |
+    exprNoTuple
+
+  /** A scalar index (`a[i]`), a closed range (`a[lo..hi]` / `a[lo..=hi]`),
+    * or a trailing-open slice (`a[lo..]`). Factored into a single parse
+    * tree so the trailing-open form is detected via `opt(addExpr)` after
+    * the `..` operator — this avoids a greedy `addExpr <~ ".."` from
+    * eating `lo..hi` half-way and leaving `hi` for the outer context.
+    */
+  lazy val closedOrTrailingOpenRange: PackratParser[ExprAST] =
+    addExpr ~ opt(("..=" | "..") ~ opt(addExpr)) ^^ {
+      case e ~ None                  => e
+      case e ~ Some(op ~ Some(rhs))  => BinOpExpr(op, e, rhs)
+      case e ~ Some(op ~ None)       =>
+        // `lo..` (exclusive) or `lo..=` (inclusive) — the elaborator
+        // treats both as a trailing-open slice and fills `hi` from the
+        // array's runtime length. The inclusive variant collapses to
+        // the exclusive form because `lo..=length-1` and `lo..length`
+        // cover the same elements.
+        OpenSliceExpr(Some(e), None, inclusive = op == "..=")
+    }
 
   /** `.name` is a field access; `.name(args)` becomes a method-call sugar
     * node so the analyzer can decide field-vs-method per §4.9.
@@ -717,11 +764,23 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val doBody: PackratParser[ExprAST] =
     ("do" ~> branchBody) | blockBody
 
+  /** `return [value]`. The value is `expr`, so a paren-less tuple is
+    * accepted: `return a, b, c` returns a 3-tuple.
+    */
   lazy val returnExpr: PackratParser[ExprAST] =
-    "return" ~> opt(exprNoTuple) ^^ ReturnExpr.apply
+    "return" ~> opt(expr) ^^ ReturnExpr.apply
 
-  /** Branch body — used after explicit `then` / `do` / `else`. Either a
-    * single inline expression or a Newline-Indent block.
+  /** Branch body — used after explicit `then` / `do` / `else` and as
+    * the RHS of a `match` arm's `->`. Either a single inline expression
+    * at `exprNoTuple` precedence, or a Newline-Indent block.
+    *
+    * Single-line branch bodies do not consume a trailing `,` — comma
+    * is the loosest operator (spec §4.3) and so binds at the outer
+    * expression level. `if a then b else c, d` parses as
+    * `((if a then b else c), d)`; wrap the branch in parens to return
+    * a tuple inline (`if a then (b, c)`). The block-form branch has
+    * no such restriction because its last `blockItem` accepts a
+    * paren-less tuple.
     */
   lazy val branchBody: PackratParser[ExprAST] =
     blockBody | exprNoTuple

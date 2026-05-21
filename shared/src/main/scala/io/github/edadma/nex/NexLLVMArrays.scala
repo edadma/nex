@@ -457,20 +457,24 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * array's length) to match the interpreter; without the check, an
     * OOB slice would silently read past the buffer.
     */
-  protected def emitSlice(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, resultT: Type): String =
+  protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, resultT: Type): String =
     val elem = arrayElem(arr.tpe)
     val stE  = storageType(elem)
     val langE = llvmType(elem)
     val esz  = elemSize(elem)
 
-    val av    = emitExpr(arr)
-    val loRaw = emitExpr(lo)
-    val hiRaw = emitExpr(hi)
-
+    val av     = emitExpr(arr)
     val srcLen = newReg()
     emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
-    val loV = wrapNegBound(loRaw, srcLen)
-    val hiV = wrapNegBound(hiRaw, srcLen)
+    // Open-ended bounds fill from the runtime extent: `lo` defaults to
+    // 0, `hi` to the array length. For closed bounds the wrap helper
+    // turns negatives into `bound + len` before the existing check.
+    val loV = lo match
+      case Some(e) => wrapNegBound(emitExpr(e), srcLen)
+      case None    => "0"
+    val hiV = hi match
+      case Some(e) => wrapNegBound(emitExpr(e), srcLen)
+      case None    => srcLen
 
     // Bounds check: lo < 0, hi < lo, or hi exceeds size (for
     // exclusive: hi > size; for inclusive: hi >= size). The trap
@@ -569,10 +573,12 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false, Some(iv))
       case TAxisRange(lo, hi, inclusive) =>
-        val loRaw = emitExpr(lo)
-        val hiRaw = emitExpr(hi)
-        val loV = wrapNegBound(loRaw, total)
-        val hiV = wrapNegBound(hiRaw, total)
+        val loV = lo match
+          case Some(e) => wrapNegBound(emitExpr(e), total)
+          case None    => "0"
+        val hiV = hi match
+          case Some(e) => wrapNegBound(emitExpr(e), total)
+          case None    => total
         val negLo = newReg()
         emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
         val hiLtLo = newReg()
@@ -682,21 +688,23 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * the destination's underlying buffer. Both descriptor shares (LHS
     * and RHS) are released at exit.
     */
-  protected def emitSliceAssign(arr: TExpr, lo: TExpr, hi: TExpr, inclusive: Boolean, value: TExpr): Unit =
+  protected def emitSliceAssign(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, value: TExpr): Unit =
     val elem  = arrayElem(arr.tpe)
     val stE   = storageType(elem)
     val langE = llvmType(elem)
     val esz   = elemSize(elem)
 
-    val av    = emitExpr(arr)
-    val loRaw = emitExpr(lo)
-    val hiRaw = emitExpr(hi)
-    val rv    = emitExpr(value)
+    val av = emitExpr(arr)
+    val rv = emitExpr(value)
 
     val dstLen = newReg()
     emitLine(s"  $dstLen = call i64 @__nex_arr1_len(ptr $av)\n")
-    val loV = wrapNegBound(loRaw, dstLen)
-    val hiV = wrapNegBound(hiRaw, dstLen)
+    val loV = lo match
+      case Some(e) => wrapNegBound(emitExpr(e), dstLen)
+      case None    => "0"
+    val hiV = hi match
+      case Some(e) => wrapNegBound(emitExpr(e), dstLen)
+      case None    => dstLen
     val negLo = newReg()
     emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
     val hiLtLo = newReg()
@@ -799,10 +807,12 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false)
       case TAxisRange(lo, hi, inclusive) =>
-        val loRaw = emitExpr(lo)
-        val hiRaw = emitExpr(hi)
-        val loV   = wrapNegBound(loRaw, total)
-        val hiV   = wrapNegBound(hiRaw, total)
+        val loV = lo match
+          case Some(e) => wrapNegBound(emitExpr(e), total)
+          case None    => "0"
+        val hiV = hi match
+          case Some(e) => wrapNegBound(emitExpr(e), total)
+          case None    => total
         val negLo = newReg()
         emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
         val hiLtLo = newReg()

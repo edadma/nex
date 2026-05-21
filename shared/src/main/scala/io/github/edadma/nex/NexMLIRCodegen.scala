@@ -605,8 +605,6 @@ class NexMLIRCodegen:
           out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
         case (t @ MTensor(et, List(_, cols)), MScalar(TyInteger)) =>
-          // Rank-2 source with a flat index: convert flat → (i, j) via
-          // `i = flat / cols`, `j = flat % cols`, then tensor.extract.
           val flatI = fresh("fidx")
           out.append(s"  $flatI = arith.index_cast ${iv.reg} : i64 to index\n")
           val colsI = fresh("fcols")
@@ -621,7 +619,7 @@ class NexMLIRCodegen:
         case (aty, ity) =>
           notYet(s"flat-index on $aty with $ity")
 
-    case TSlice(arr, TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive, _, _) =>
+    case TSlice(arr, Some(TIntLit(lo, _, _)), Some(TIntLit(hi, _, _)), inclusive, _, _) =>
       val av = emitExpr(arr)
       av.ty match
         case t @ MTensor(_, List(_)) =>
@@ -744,9 +742,12 @@ class NexMLIRCodegen:
       AxisSlice(offset = 0, size = dim, collapsed = false)
     case TAxisIndex(TIntLit(v, _, _)) =>
       AxisSlice(offset = v.toInt, size = 1, collapsed = true)
-    case TAxisRange(TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive) =>
+    case TAxisRange(Some(TIntLit(lo, _, _)), Some(TIntLit(hi, _, _)), inclusive) =>
       val end = if inclusive then hi.toInt + 1 else hi.toInt
       AxisSlice(offset = lo.toInt, size = math.max(0, end - lo.toInt), collapsed = false)
+    case TAxisRange(None, Some(TIntLit(hi, _, _)), inclusive) =>
+      val end = if inclusive then hi.toInt + 1 else hi.toInt
+      AxisSlice(offset = 0, size = math.max(0, end), collapsed = false)
     case other =>
       notYet(s"rank-2 slice axis spec: ${other.getClass.getSimpleName} with non-literal bound")
 
