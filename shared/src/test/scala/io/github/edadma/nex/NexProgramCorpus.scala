@@ -1272,6 +1272,7 @@ object NexProgramCorpus:
         |  print(apply2(neg, neg, 7))
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1288,6 +1289,7 @@ object NexProgramCorpus:
         |  print(f(9))
       """.stripMargin,
       "81\n",
+      mlir = true,
     ),
 
     // ========================================================================

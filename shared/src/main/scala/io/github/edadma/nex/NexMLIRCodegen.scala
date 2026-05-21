@@ -153,6 +153,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     varBindings.clear()
     boxedVarSet.clear()
     boxedVarBoxes.clear()
+    defThunks.clear()
     currentLambdaCaptures = Map.empty
     tp.allDecls.foreach {
       case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
@@ -237,6 +238,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     // so user-def and main bodies see consistent state.
     collectVarBindings(tp)
     collectLambdas(tp)
+    // Third closure pre-pass: spot every top-level user def reached
+    // as a function-value (passed as an HOF arg, bound to a `val`,
+    // returned, etc) so [[emitDefThunkFunctions]] can write a
+    // synthetic `llvm.func @nex_def_thunk_<id>` wrapper for each.
+    // Must run after [[userDefs]] is populated.
+    collectDefThunks(tp)
     // Emit user-defined `def`s as `func.func` ops at module level
     // BEFORE `@main`, so they're visible to call sites inside main
     // (and to each other for mutual recursion). MLIR module ops are
@@ -251,6 +258,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     // before `@main` so its address (taken via `llvm.mlir.addressof`)
     // resolves at closure construction sites.
     emitLambdaFunctions()
+    // Synthetic `llvm.func @nex_def_thunk_<id>` per top-level def
+    // referenced as a function-value. The thunk ignores its env_ptr
+    // and forwards to the user's `func.call @nex_user_<name>_<id>`.
+    emitDefThunkFunctions()
     out.append("func.func @main() -> i32 {\n")
     nextReg = 0
     env.clear()
@@ -487,6 +498,15 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       // exactly what user-def bodies (executing outside `@main`)
       // need for prelude constants like `pi` / `e`.
       emitExpr(topLevelLiteralInits(sym.id))
+
+    case TVarRef(sym, _, _) if defThunks.contains(sym.id) =>
+      // Top-level def reached as a function-value (HOF arg, bound to
+      // a val, etc). Build the closure descriptor on the spot via
+      // `nex_closure_make(thunk_addr, 0)`. Multiple references to
+      // the same def share one thunk (memoized by symbol id) but
+      // each reference builds its own closure value — the env_ptr
+      // is null anyway, so the cost is just one `closure_make` call.
+      emitDefThunkClosure(sym.id, sym.name)
 
     case TVarRef(sym, _, _) =>
       env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))

@@ -51,6 +51,18 @@ trait NexMLIRLambdas:
   protected val boxedVarBoxes    = mutable.Map.empty[Int, String]
   protected var currentLambdaCaptures: Map[Int, (Int, MlirType, CaptureMode)] = Map.empty
 
+  /** Synthetic-thunk registry for top-level user defs reached as
+    * function-values (passed as args, bound to vals, returned, etc).
+    * Keyed by the user-def's symbol id; value is the MLIR symbol name
+    * of the thunk `llvm.func`. Populated by [[collectDefThunks]] from
+    * any [[TVarRef]] to a `SymKind.Function` symbol that appears
+    * outside the immediate-callee position of a [[TCall]]. The thunk
+    * itself is written by [[emitDefThunkFunctions]] before `@main`;
+    * the construction site at the reference produces the closure
+    * descriptor `{thunk_addr, null_env}` via `nex_closure_make`.
+    */
+  protected val defThunks = mutable.Map.empty[Int, String]
+
   /** First pre-pass: collect every `var` binding's Symbol id. Drives the
     * later by-ref/by-val classification — a free variable referenced
     * inside a lambda is captured ByRef iff its symbol is here.
@@ -133,6 +145,38 @@ trait NexMLIRLambdas:
     tp.allDecls.foreach {
       case f: TFunDecl    => walk(f.body, f.params.map(_.id).toSet)
       case b: TTopBinding => walk(b.value, Set.empty)
+      case _              => ()
+    }
+
+  /** Third pre-pass: walk every program node and register a thunk for
+    * each top-level user-def `TVarRef` that appears in a value
+    * position (i.e. anywhere except as the immediate callee of a
+    * [[TCall]]). A registered thunk name is `@nex_def_thunk_<id>` keyed
+    * on the def's symbol id, so multiple references share one thunk.
+    */
+  protected def collectDefThunks(tp: TProgram): Unit =
+    def walk(e: TExpr): Unit = e match
+      case TCall(callee @ TVarRef(_, _, _), args, _, _) =>
+        args.foreach(walk)
+        // Intentionally do NOT recurse into `callee` — its TVarRef is
+        // in callee position, handled by the user-def TCall arm.
+        ()
+      case TVarRef(s, _, _) if s.kind == SymKind.Function && userDefs.contains(s.id) =>
+        // A thunk lives inside an `llvm.func`, which only admits
+        // LLVM-dialect-compatible scalars in its signature. Reject
+        // tensor params / returns up front so reference-as-value
+        // surfaces at `notYet` rather than producing un-translatable
+        // MLIR. Tensor-shaped function-values are a separate piece
+        // of work (see roadmap §3 "Tensor captures + tensor closure
+        // params/returns").
+        val (_, paramTys, retTyOpt) = userDefs(s.id)
+        val sigOk = paramTys.forall(isLlvmFuncSignatureType) &&
+          retTyOpt.forall(isLlvmFuncSignatureType)
+        if sigOk && !defThunks.contains(s.id) then defThunks(s.id) = s"@nex_def_thunk_${s.id}"
+      case _ => walkChildren(e, walk)
+    tp.allDecls.foreach {
+      case f: TFunDecl    => walk(f.body)
+      case b: TTopBinding => walk(b.value)
       case _              => ()
     }
 
@@ -242,6 +286,57 @@ trait NexMLIRLambdas:
         case TBlockExpr(x)          => f(x)
       }
       f(r)
+
+  /** Emit one synthetic `llvm.func @nex_def_thunk_<id>` per registered
+    * top-level def reached as a function-value. The thunk accepts an
+    * `%env: i64` it ignores and forwards its remaining arguments to
+    * the user's `func.call @nex_user_<name>_<id>` op. Returning the
+    * underlying def's return type lets a closure literal `{thunk_addr,
+    * null_env}` be dispatched through the regular indirect-call path.
+    *
+    * Must be emitted after the user-def `func.func` definitions and
+    * before the closure-construction sites in `@main` — the addressof
+    * resolution is by symbol name, so order is purely for readability.
+    */
+  protected def emitDefThunkFunctions(): Unit =
+    defThunks.toSeq.sortBy(_._1).foreach { case (id, thunkName) =>
+      val (userName, paramTys, retTyOpt) = userDefs(id)
+      val paramSig =
+        ("%env: i64" :: paramTys.zipWithIndex.map { case (t, i) => s"%arg$i: ${t.text}" }).mkString(", ")
+      val retStr = retTyOpt.fold("")(t => s" -> ${t.text}")
+      out.append(s"llvm.func $thunkName($paramSig)$retStr {\n")
+      val callArgs = paramTys.indices.map(i => s"%arg$i").mkString(", ")
+      val paramTyText = paramTys.map(_.text).mkString(", ")
+      retTyOpt match
+        case Some(retTy) =>
+          out.append(s"  %r = func.call $userName($callArgs) : ($paramTyText) -> ${retTy.text}\n")
+          out.append(s"  llvm.return %r : ${retTy.text}\n")
+        case None =>
+          out.append(s"  func.call $userName($callArgs) : ($paramTyText) -> ()\n")
+          out.append("  llvm.return\n")
+      out.append("}\n")
+    }
+
+  /** Build the closure value at a `TVarRef` site that names a
+    * top-level user def. Allocates no env (env_ptr is `0`); takes the
+    * thunk's address via `llvm.mlir.addressof` + `llvm.ptrtoint`; calls
+    * `nex_closure_make` for the `{fn_ptr, env_ptr=0}` descriptor.
+    */
+  protected def emitDefThunkClosure(symId: Int, symName: String): MlirVal =
+    val thunkName = defThunks.getOrElse(
+      symId,
+      notYet(s"def-thunk for `$symName` not registered (pre-pass missed it)"),
+    )
+    val (_, paramTys, retTyOpt) = userDefs(symId)
+    val fnPtr = fresh("dthp")
+    out.append(s"  $fnPtr = llvm.mlir.addressof $thunkName : !llvm.ptr\n")
+    val fnInt = fresh("dthi")
+    out.append(s"  $fnInt = llvm.ptrtoint $fnPtr : !llvm.ptr to i64\n")
+    val envZ = fresh("dthe")
+    out.append(s"  $envZ = arith.constant 0 : i64\n")
+    val cl = fresh("dthcl")
+    out.append(s"  $cl = func.call @nex_closure_make($fnInt, $envZ) : (i64, i64) -> i64\n")
+    MlirVal(cl, MFunc(paramTys, retTyOpt))
 
   /** Emit every registered lambda's synthetic top-level `llvm.func` into
     * [[out]]. Must run before `@main` and before any user def that
