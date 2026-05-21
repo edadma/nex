@@ -698,6 +698,7 @@ object NexProgramCorpus:
         |  print(f(4))
       """.stripMargin,
       "-1\n8\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -764,6 +765,94 @@ object NexProgramCorpus:
         |def main() = print(add(3, 4))
       """.stripMargin,
       "7\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "tensor-typed param + scalar return",
+      """
+        |def total(xs: [integer]): integer = sum(xs)
+        |
+        |def main() =
+        |  val v = [1, 2, 3, 4, 5]
+        |  print(total(v))
+      """.stripMargin,
+      "15\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "rank-1 tensor param with prelude reductions",
+      """
+        |def stats(xs: [real]): real = sqrt(sum(xs)) * 2.0
+        |
+        |def main() =
+        |  print(stats([4.0, 5.0, 7.0]))
+      """.stripMargin,
+      "8.0\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "rank-2 tensor param + integer return via length",
+      """
+        |def rows_count(m: [[integer]]): integer = length(m)
+        |
+        |def main() =
+        |  print(rows_count([[1, 2, 3], [4, 5, 6]]))
+      """.stripMargin,
+      "2\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "def returning a tensor (rank-1 doubled via map)",
+      """
+        |def doubled(xs: [integer]): [integer] = map(xs, x -> x * 2)
+        |
+        |def main() =
+        |  print(doubled([1, 2, 3]))
+      """.stripMargin,
+      "[2, 4, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "tensor + scalar params, tensor return (broadcast scale)",
+      """
+        |def scale_by(v: [real], k: real): [real] = v * k
+        |
+        |def main() =
+        |  print(scale_by([1.0, 2.0, 3.0], 3.5))
+      """.stripMargin,
+      "[3.5, 7.0, 10.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "two tensor params, element-wise sum returned",
+      """
+        |def add_arrays(a: [integer], b: [integer]): [integer] = a + b
+        |
+        |def main() =
+        |  print(add_arrays([1, 2, 3], [10, 20, 30]))
+      """.stripMargin,
+      "[11, 22, 33]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "tensor-returning if-expression branches yield same tensor type",
+      """
+        |def pick(flag: bool, a: [integer], b: [integer]): [integer] =
+        |  if flag then a else b
+        |
+        |def main() =
+        |  print(pick(true, [1, 2, 3], [4, 5, 6]))
+        |  print(pick(false, [1, 2, 3], [4, 5, 6]))
+      """.stripMargin,
+      "[1, 2, 3]\n[4, 5, 6]\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -777,6 +866,7 @@ object NexProgramCorpus:
         |  scale(10.0, 5.0, 1.0)
       """.stripMargin,
       "20.0\n30.0\n51.0\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -791,6 +881,7 @@ object NexProgramCorpus:
         |  greet("Bar", greeting = "Yo")
       """.stripMargin,
       "Hello, World!\nHello, Nex!\nHi, Foo!\nYo, Bar!\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -803,6 +894,7 @@ object NexProgramCorpus:
         |  scale(10.0, factor = 7.0)
       """.stripMargin,
       "25.0\n70.0\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -834,6 +926,7 @@ object NexProgramCorpus:
         |def main() = print(fact(6))
       """.stripMargin,
       "720\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -848,6 +941,7 @@ object NexProgramCorpus:
         |  print(isOdd(7))
       """.stripMargin,
       "true\ntrue\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1249,6 +1343,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[111, 20, 999]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1299,6 +1394,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "[100, 200, 33, 44, 55]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1363,6 +1459,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "[11, 22, 300, 44, 55]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1429,6 +1526,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "[1, 0, 1, 0, 1, 0, 1, 0, 1, 0]\n[10, 200, 30, 40, 500, 60, 70, 800, 90, 100]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1444,6 +1542,7 @@ object NexProgramCorpus:
         |  print(d)
       """.stripMargin,
       "[99, 42, 99, 42, 99]\n[77, 20, 77, 40, 77]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2004,6 +2103,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "[10, 20, 30]\n[99, 20]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2172,6 +2272,7 @@ object NexProgramCorpus:
         |  print(copy)
       """.stripMargin,
       "[[1, 2], [3, 4]]\n[[99, 2], [3, 4]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2283,6 +2384,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[1, 99, 3]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2294,6 +2396,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[1, 20, 30, 40, 5]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2305,6 +2408,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[10, 20, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2316,6 +2420,7 @@ object NexProgramCorpus:
         |  print(m)
       """.stripMargin,
       "[[10, 20], [3, 4]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2327,6 +2432,7 @@ object NexProgramCorpus:
         |  print(m)
       """.stripMargin,
       "[[1, 2, 30], [4, 5, 60]]\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -2868,6 +2974,7 @@ object NexProgramCorpus:
         |  print(render("gamma", 12345.678))
       """.stripMargin,
       "alpha =   3.1416\ngamma = 12345.6780\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2976,6 +3083,7 @@ object NexProgramCorpus:
         |  print(f(1))
       """.stripMargin,
       "101\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3206,6 +3314,7 @@ object NexProgramCorpus:
         |  print(s"5^2 = ${square(5)}")
       """.stripMargin,
       "5^2 = 25\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3294,6 +3403,7 @@ object NexProgramCorpus:
         |  print(fmt(1.0e20))
       """.stripMargin,
       "x=1.4142135623730951\nx=1.0\nx=0.0\nx=-3.5\nx=1.0E-20\nx=1.0E20\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3306,6 +3416,7 @@ object NexProgramCorpus:
         |  print(fmt(-inf))
       """.stripMargin,
       "x=nan\nx=inf\nx=-inf\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3417,6 +3528,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "10\n999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3429,6 +3541,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3483,6 +3596,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "1\n0\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3496,6 +3610,7 @@ object NexProgramCorpus:
         |  print(n[0, 0])
       """.stripMargin,
       "1\n99\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3537,6 +3652,7 @@ object NexProgramCorpus:
         |  print(c[0])
       """.stripMargin,
       "1\n1\n999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3550,6 +3666,7 @@ object NexProgramCorpus:
         |  print(b[2])
       """.stripMargin,
       "5\n10\n15\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3565,6 +3682,7 @@ object NexProgramCorpus:
         |  print(n[0, 0])
       """.stripMargin,
       "6\n999\n1\n1\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3580,6 +3698,7 @@ object NexProgramCorpus:
         |  print(xs[0])
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3668,6 +3787,7 @@ object NexProgramCorpus:
         |def main() = print(x)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "top-level initialization",
@@ -3684,6 +3804,7 @@ object NexProgramCorpus:
         |  print(is_odd(7))
       """.stripMargin,
       "true\ntrue\n",
+      mlir = true,
     ),
     Case(
       "top-level initialization",
@@ -3696,6 +3817,7 @@ object NexProgramCorpus:
         |def main() = print(s)
       """.stripMargin,
       "49\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3716,6 +3838,7 @@ object NexProgramCorpus:
         |  print(s"hypotenuse(3, 4) = ${hypotenuse(3.0, 4.0)}")
       """.stripMargin,
       "hypotenuse(3, 4) = 5.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -3756,6 +3879,7 @@ object NexProgramCorpus:
         |  print(s"mean = $mean, stddev = $stddev")
       """.stripMargin,
       "mean = 5.5, stddev = 2.8722813232690143\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -3790,6 +3914,7 @@ object NexProgramCorpus:
         |  print(newton_sqrt(1000.0, 1.0e-9))
       """.stripMargin,
       "1.414213562373095\n31.622776601683793\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -3901,6 +4026,7 @@ object NexProgramCorpus:
         |  print(s"wave(0.75) = ${wave(0.75)}")
       """.stripMargin,
       "wave(0.0)  = 2.0\nwave(0.25) = 2.0\nwave(0.5)  = 2.0\nwave(0.75) = -6.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
