@@ -489,6 +489,36 @@ add5(3.0)            // 8.0
 add10(3.0)           // 13.0
 ```
 
+## Generic functions
+
+A `def` may carry type parameters in `[...]` right after the name. The caller never writes the type arguments — the compiler infers each `T` from the actuals at the call site and emits a specialized clone per distinct instantiation.
+
+```nex
+def id[T](x: T): T = x
+
+def pickMax[T: Ord](a: T, b: T): T =
+  if a < b then b else a
+
+id(42)               // T := integer
+id("hi")             // T := string
+pickMax(3, 7)        // 7   — T := integer
+pickMax(2.5, 1.5)    // 2.5 — T := real
+```
+
+A bare `[T]` admits any type; a bound `[T: Kind]` restricts `T` to a fixed admission list — `Numeric` (`integer` / `real` / `complex`), `Real`, `Float`, `Complex`, `Ord` (the types with `<`), `Eq` (the types with `==`). The closed set is hard-wired in this milestone; user-defined constraints are deferred.
+
+Concrete overloads win when they apply — a generic is consulted only when no concrete `def` of the same name fits the call:
+
+```nex
+def f(x: integer): integer = 100
+def f[T](x: T): integer    = 200
+
+f(1)        // 100 — concrete integer overload
+f("hi")     // 200 — falls through to the generic
+```
+
+Generic *structs* and *enums* are deferred (Stage 2 of the generics roadmap); this milestone covers generic functions only.
+
 ## Control flow
 
 ```nex
