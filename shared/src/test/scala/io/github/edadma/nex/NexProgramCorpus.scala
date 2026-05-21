@@ -939,6 +939,73 @@ object NexProgramCorpus:
         |  print(sum(ev))
       """.stripMargin,
       "6\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter prints the selected elements directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5, 6]
+        |  print(filter(xs, x -> x > 3))
+      """.stripMargin,
+      "[4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter where no element matches returns an empty array",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(filter(xs, x -> x > 100))
+      """.stripMargin,
+      "[]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter where every element matches returns a full-length copy",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(filter(xs, x -> x > 0))
+      """.stripMargin,
+      "[1, 2, 3]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter on a dynamic-bound range",
+      """
+        |def main() =
+        |  val n = 10
+        |  print(filter(range(0, n), x -> x % 3 == 0))
+      """.stripMargin,
+      "[0, 3, 6, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter on real values picks NaN-safe predicate",
+      """
+        |def main() =
+        |  val xs = [1.0, 2.5, 3.5, 4.5]
+        |  print(filter(xs, x -> x > 2.0))
+      """.stripMargin,
+      "[2.5, 3.5, 4.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "length of filter result",
+      """
+        |def main() =
+        |  val xs = [10, 20, 30, 40, 50]
+        |  print(length(filter(xs, x -> x >= 30)))
+      """.stripMargin,
+      "3\n",
+      mlir = true,
     ),
     Case(
       "functions",

@@ -502,6 +502,13 @@ class NexMLIRCodegen:
         case t: MTensor if t.shape.nonEmpty => emitReduceInlineLambda(av, t, iv, lam)
         case other                          => notYet(s"reduce over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, lam: TLambda), _, _)
+        if s.kind == SymKind.Prelude && s.name == "filter" && lam.params.size == 1 =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitFilterInlineLambda(av, t, lam)
+        case other                   => notYet(s"filter over $other")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
       val av = emitExpr(arr)
@@ -1084,6 +1091,105 @@ class NexMLIRCodegen:
       case Some(v) => env(paramSym.id) = v
       case None    => env.remove(paramSym.id)
     MlirVal(outR, outTy)
+
+  /** `filter(arr, x -> pred)` with an inline one-param predicate. Output
+    * length depends on how many elements satisfy the predicate, so the
+    * result has dynamic shape `tensor<?xT>` and is built in two passes:
+    *
+    *   1. Count matches into an i64 carried as an `scf.for` iter_arg.
+    *   2. Allocate `tensor.empty(%count)` and walk again, inserting each
+    *      matched element at the next write position via `tensor.insert`.
+    *      Both the output tensor and the write cursor are iter_args.
+    *
+    * The predicate body is emitted twice — once per pass — using the
+    * same lambda parameter symbol bound to a fresh per-pass element
+    * extract. Predicates are pure (Nex value-level expressions), so
+    * re-emission is semantically safe.
+    */
+  private def emitFilterInlineLambda(av: MlirVal, srcTy: MTensor, lam: TLambda): MlirVal =
+    val elemT = srcTy.elem
+    val elemS = scalarText(elemT)
+    val outTy = MTensor(elemT, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val c0I64 = fresh("c0i")
+    out.append(s"  $c0I64 = arith.constant 0 : i64\n")
+    val c1I64 = fresh("c1i")
+    out.append(s"  $c1I64 = arith.constant 1 : i64\n")
+
+    val lenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("flen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("flen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val paramSym = lam.params.head
+    val prev     = env.get(paramSym.id)
+
+    val ivPass1   = fresh("fi1")
+    val accName   = fresh("acc")
+    val countOut  = fresh("count")
+    out.append(
+      s"  $countOut = scf.for $ivPass1 = $c0Idx to $lenIdx step $c1Idx iter_args($accName = $c0I64) -> (i64) {\n",
+    )
+    val elt1 = fresh("elt")
+    out.append(s"    $elt1 = tensor.extract ${av.reg}[$ivPass1] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt1, MScalar(elemT))
+    val pred1 = emitExpr(lam.body)
+    val nextAcc = fresh("nacc")
+    out.append(s"    $nextAcc = scf.if ${pred1.reg} -> (i64) {\n")
+    val plus1 = fresh("plus1")
+    out.append(s"      $plus1 = arith.addi $accName, $c1I64 : i64\n")
+    out.append(s"      scf.yield $plus1 : i64\n")
+    out.append("    } else {\n")
+    out.append(s"      scf.yield $accName : i64\n")
+    out.append("    }\n")
+    out.append(s"    scf.yield $nextAcc : i64\n")
+    out.append("  }\n")
+
+    val countIdx = fresh("countidx")
+    out.append(s"  $countIdx = arith.index_cast $countOut : i64 to index\n")
+    val outInit  = emitTensorEmpty(outTy, List(countIdx))
+
+    val ivPass2  = fresh("fi2")
+    val outIter  = fresh("oit")
+    val wposIter = fresh("wp")
+    val resPair  = fresh("res")
+    out.append(
+      s"  $resPair:2 = scf.for $ivPass2 = $c0Idx to $lenIdx step $c1Idx " +
+        s"iter_args($outIter = $outInit, $wposIter = $c0Idx) -> (${outTy.text}, index) {\n",
+    )
+    val elt2 = fresh("elt")
+    out.append(s"    $elt2 = tensor.extract ${av.reg}[$ivPass2] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt2, MScalar(elemT))
+    val pred2 = emitExpr(lam.body)
+    val nrPair = fresh("nr")
+    out.append(s"    $nrPair:2 = scf.if ${pred2.reg} -> (${outTy.text}, index) {\n")
+    val inserted = fresh("ins")
+    out.append(s"      $inserted = tensor.insert $elt2 into $outIter[$wposIter] : ${outTy.text}\n")
+    val nwpos = fresh("nwp")
+    out.append(s"      $nwpos = arith.addi $wposIter, $c1Idx : index\n")
+    out.append(s"      scf.yield $inserted, $nwpos : ${outTy.text}, index\n")
+    out.append("    } else {\n")
+    out.append(s"      scf.yield $outIter, $wposIter : ${outTy.text}, index\n")
+    out.append("    }\n")
+    out.append(s"    scf.yield $nrPair#0, $nrPair#1 : ${outTy.text}, index\n")
+    out.append("  }\n")
+
+    prev match
+      case Some(v) => env(paramSym.id) = v
+      case None    => env.remove(paramSym.id)
+
+    MlirVal(s"$resPair#0", outTy)
 
   /** `reduce(arr, init, lambda)` with an inline two-param lambda.
     * Nex spec §10.4: the lambda is `(acc, x) -> body`. Lowers to
