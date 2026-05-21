@@ -219,6 +219,8 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         (a.tpe, b.tpe) match
           case (TyArray(_, 1), TyArray(_, 1)) =>
             emitAssertApproxArr1(a, b, eps); "void"
+          case (TyArray(_, 2), TyArray(_, 2)) =>
+            emitAssertApproxArr2(a, b, eps); "void"
           case (TyComplex, TyComplex) =>
             emitAssertApproxComplex(a, b, eps); "void"
           case _ =>
@@ -630,6 +632,72 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       val ok = newReg()
       emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
       emitTrapOnFalse(ok, "@.assert_approx_msg", "aapae")
+    }
+
+    emitArrDec(av, a.tpe)
+    emitArrDec(bv, b.tpe)
+
+  /** Emit a rank-2 element-wise `assert_approx`. Mirrors the rank-1
+    * emitter (same per-element distance computations) but checks both
+    * `rows` and `cols` for the shape match and iterates `rows * cols`
+    * positions over the flat buffer.
+    */
+  private def emitAssertApproxArr2(a: TExpr, b: TExpr, eps: TExpr): Unit =
+    val elemA = arrayElem(a.tpe)
+    val elemB = arrayElem(b.tpe)
+    if elemA != elemB then
+      notImpl(s"assert_approx on arrays of different element types ($elemA vs $elemB)")
+    val elem  = elemA
+    val stT   = storageType(elem)
+    val langT = llvmType(elem)
+
+    val av  = emitExpr(a)
+    val bv  = emitExpr(b)
+    val ev  = liftToReal(eps)
+
+    val aRows = newReg(); emitLine(s"  $aRows = call i64 @__nex_arr2_rows(ptr $av)\n")
+    val bRows = newReg(); emitLine(s"  $bRows = call i64 @__nex_arr2_rows(ptr $bv)\n")
+    val aCols = newReg(); emitLine(s"  $aCols = call i64 @__nex_arr2_cols(ptr $av)\n")
+    val bCols = newReg(); emitLine(s"  $bCols = call i64 @__nex_arr2_cols(ptr $bv)\n")
+    val sameRows = newReg(); emitLine(s"  $sameRows = icmp eq i64 $aRows, $bRows\n")
+    val sameCols = newReg(); emitLine(s"  $sameCols = icmp eq i64 $aCols, $bCols\n")
+    val sameShape = newReg(); emitLine(s"  $sameShape = and i1 $sameRows, $sameCols\n")
+    emitTrapOnFalse(sameShape, "@.assert_approx_msg", "aapa2s")
+
+    val total = newReg(); emitLine(s"  $total = mul i64 $aRows, $aCols\n")
+
+    val aBuf = bufPtr(av, a.tpe)
+    val bBuf = bufPtr(bv, b.tpe)
+
+    emitCountingLoop(total, "aapa2") { i =>
+      val sA = newReg(); emitLine(s"  $sA = getelementptr inbounds $stT, ptr $aBuf, i64 $i\n")
+      val sB = newReg(); emitLine(s"  $sB = getelementptr inbounds $stT, ptr $bBuf, i64 $i\n")
+      val vA = loadElem(stT, sA, langT)
+      val vB = loadElem(stT, sB, langT)
+      val dist = elem match
+        case TyComplex =>
+          val ar = newReg(); emitLine(s"  $ar = extractvalue { double, double } $vA, 0\n")
+          val ai = newReg(); emitLine(s"  $ai = extractvalue { double, double } $vA, 1\n")
+          val br = newReg(); emitLine(s"  $br = extractvalue { double, double } $vB, 0\n")
+          val bi = newReg(); emitLine(s"  $bi = extractvalue { double, double } $vB, 1\n")
+          val dr = newReg(); emitLine(s"  $dr = fsub double $ar, $br\n")
+          val di = newReg(); emitLine(s"  $di = fsub double $ai, $bi\n")
+          val h  = newReg(); emitLine(s"  $h  = call double @hypot(double $dr, double $di)\n")
+          h
+        case TyReal =>
+          val d  = newReg(); emitLine(s"  $d  = fsub double $vA, $vB\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $d)\n")
+          ad
+        case TyInteger =>
+          val d  = newReg(); emitLine(s"  $d  = sub i64 $vA, $vB\n")
+          val df = newReg(); emitLine(s"  $df = sitofp i64 $d to double\n")
+          val ad = newReg(); emitLine(s"  $ad = call double @fabs(double $df)\n")
+          ad
+        case other =>
+          notImpl(s"assert_approx on array of $other elements")
+      val ok = newReg()
+      emitLine(s"  $ok = fcmp ole double $dist, $ev\n")
+      emitTrapOnFalse(ok, "@.assert_approx_msg", "aapa2e")
     }
 
     emitArrDec(av, a.tpe)

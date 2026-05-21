@@ -209,12 +209,13 @@ assert_eq(actual: T, expected: T)
 assert_approx(actual: real,      expected: real,      tol: real)
 assert_approx(actual: complex,   expected: complex,   tol: real)
 assert_approx(actual: [T],       expected: [T],       tol: real)
+assert_approx(actual: [[T]],     expected: [[T]],     tol: real)
 assert_traps(thunk: () -> T)
 assert_traps(thunk: () -> T, expected_substring: string)
 ```
 
 All assertions trap on failure with a message naming the assertion type and (where applicable) the user-supplied `msg`. The test runner catches the trap and reports the failure without halting the rest of the test suite.
 
-**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. The `complex` overload checks the Euclidean distance `|a - b|` against `tol`. The array overload runs element-wise on rank-1 arrays of integer, real, or complex; integers lift to real, complex elements use the Euclidean distance, and a length mismatch between the two arrays traps. Rank-2 element-wise overloads are *deferred*.
+**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. The `complex` overload checks the Euclidean distance `|a - b|` against `tol`. The array overloads run element-wise on rank-1 and rank-2 arrays of integer, real, or complex; integers lift to real, complex elements use the Euclidean distance, and a shape mismatch (length for rank-1, rows or cols for rank-2) traps.
 
 `assert_traps` takes a zero-argument closure and passes if invoking it traps; it fails if the thunk returns normally. The 2-arg form additionally checks that the trap message contains `expected_substring` — useful for asserting a specific failure mode rather than "any trap fires".

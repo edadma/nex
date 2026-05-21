@@ -565,6 +565,19 @@ class NexInterpreter:
               trap(s"assert_approx: element $i: |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
             i += 1
           VUnit
+        case List(VArray2(as, ar, ac), VArray2(bs, br, bc), eps) =>
+          val tol = asReal(eps)
+          if ar != br || ac != bc then
+            trap(s"assert_approx: array shape mismatch: ($ar, $ac) vs ($br, $bc)", None)
+          var i = 0
+          while i < as.size do
+            val d = elementWiseDistance(as(i), bs(i))
+            if d > tol then
+              val row = i / ac
+              val col = i % ac
+              trap(s"assert_approx: element ($row, $col): |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
+            i += 1
+          VUnit
         case List(VComplex(ar, ai), VComplex(br, bi), eps) =>
           val tol  = asReal(eps)
           val dist = math.hypot(ar - br, ai - bi)

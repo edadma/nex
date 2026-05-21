@@ -2229,6 +2229,71 @@ object NexProgramCorpus:
     ),
     Case(
       "prelude",
+      "assert_approx element-wise over rank-2 real array",
+      """
+        |def main() =
+        |  val a = [[1.0, 2.0], [3.0, 4.0]]
+        |  val b = [[1.0 + 1.0e-13, 2.0], [3.0, 4.0 - 1.0e-13]]
+        |  assert_approx(a, b, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-2 integer array (lifted)",
+      """
+        |def main() =
+        |  assert_approx([[1, 2], [3, 4]], [[1, 2], [3, 4]], 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx element-wise over rank-2 complex array",
+      """
+        |def main() =
+        |  val a = [[1.0 + 0i, 0.0 + 1.0i], [2.0 + 0i, 0.0 + 2.0i]]
+        |  assert_approx(a, a, 1.0e-12)
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps when a rank-2 element exceeds the tolerance",
+      """
+        |def main() =
+        |  val a = [[1.0, 2.0], [3.0, 4.0]]
+        |  val b = [[1.0, 2.0], [3.0, 9.0]]
+        |  assert_traps(() -> assert_approx(a, b, 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on rank-2 row-count mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([[1.0, 2.0], [3.0, 4.0]], [[1.0, 2.0]], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
+      "assert_approx traps on rank-2 column-count mismatch",
+      """
+        |def main() =
+        |  assert_traps(() -> assert_approx([[1.0, 2.0]], [[1.0, 2.0, 3.0]], 1.0e-6), "assert_approx")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "prelude",
       "sqrt of negative real returns NaN (spec §10.2)",
       """def main() = print(sqrt(-4.0))""",
       "nan\n",
