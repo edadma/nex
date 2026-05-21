@@ -2171,6 +2171,95 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "rank-2 slice with runtime row range",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(m[lo..hi, :])
+      """.stripMargin,
+      "[[4, 5, 6], [7, 8, 9]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime column range",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(m[:, lo..hi])
+      """.stripMargin,
+      "[[2, 3], [6, 7]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime ranges on both axes",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val r0 = 1
+        |  val r1 = 3
+        |  val c0 = 0
+        |  val c1 = 2
+        |  print(m[r0..r1, c0..c1])
+      """.stripMargin,
+      "[[4, 5], [7, 8]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime row index drops a dimension",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val i = 1
+        |  print(m[i, :])
+      """.stripMargin,
+      "[4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime column index drops a dimension",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  val j = 2
+        |  print(m[:, j])
+      """.stripMargin,
+      "[3, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 leading-open row slice with runtime hi",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        |  val hi = 2
+        |  print(m[..hi, :])
+      """.stripMargin,
+      "[[1, 2], [3, 4]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 trailing-open column slice with runtime lo",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        |  val lo = 2
+        |  print(m[:, lo..])
+      """.stripMargin,
+      "[[3, 4], [7, 8]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
       "var array index assign",
       """
         |def main() =

@@ -712,9 +712,12 @@ class NexMLIRCodegen:
       val av = emitExpr(arr)
       av.ty match
         case t @ MTensor(_, List(rows, cols)) =>
-          val rowSpec = axisToSlice(rowAx, rows)
-          val colSpec = axisToSlice(colAx, cols)
-          emitRank2Slice(av, t, rowSpec, colSpec)
+          if rows >= 0 && cols >= 0 && isStaticAxis(rowAx) && isStaticAxis(colAx) then
+            val rowSpec = axisToSlice(rowAx, rows)
+            val colSpec = axisToSlice(colAx, cols)
+            emitRank2Slice(av, t, rowSpec, colSpec)
+          else
+            emitRank2SliceDynamic(av, t, rowAx, colAx)
         case other =>
           notYet(s"rank-2 slice on $other")
 
@@ -802,6 +805,19 @@ class NexMLIRCodegen:
       case None    => env.remove(loopVar.id)
     out.append("  }\n")
 
+  /** True when an axis spec can be fully resolved at compile time:
+    * `TAxisAll`, a literal `TAxisIndex`, or a `TAxisRange` whose
+    * bounds are literals and stride is omitted. Used as the dispatch
+    * gate between the static-size [[emitRank2Slice]] fast path and
+    * the dynamic-size [[emitRank2SliceDynamic]] path.
+    */
+  private def isStaticAxis(spec: TAxisSpec): Boolean = spec match
+    case TAxisAll                                                                       => true
+    case TAxisIndex(TIntLit(_, _, _))                                                   => true
+    case TAxisRange(Some(TIntLit(_, _, _)), Some(TIntLit(_, _, _)), _, None)            => true
+    case TAxisRange(None, Some(TIntLit(_, _, _)), _, None)                              => true
+    case _                                                                              => false
+
   /** Resolved spec for one axis of a rank-2 slice. `offset` and `size`
     * are the corresponding entries in the `tensor.extract_slice`
     * offsets/sizes lists; `collapsed` is true when this axis was a
@@ -848,6 +864,136 @@ class NexMLIRCodegen:
     val r = fresh("sl2")
     out.append(
       s"  $r = tensor.extract_slice ${av.reg}[${rowSpec.offset}, ${colSpec.offset}] [${rowSpec.size}, ${colSpec.size}] [1, 1] : ${srcTy.text} to ${outTy.text}\n",
+    )
+    MlirVal(r, outTy)
+
+  /** Resolved axis for the dynamic-rank-2 path. `offset`, `size`, and
+    * `stride` are SSA `index` values (or literal strings for the
+    * trivial 0 / 1 / size-1 cases). `collapsed` carries the
+    * rank-reducing flag for `TAxisIndex`. The result type's
+    * corresponding entry is built from these in
+    * [[emitRank2SliceDynamic]] — collapsed axes drop entirely; the
+    * remaining axes are `?` since their size flows in via the SSA
+    * operand.
+    */
+  private case class AxisSliceD(
+      offset:    String,
+      size:      String,
+      stride:    String,
+      collapsed: Boolean,
+  )
+
+  /** Resolve a `TAxisSpec` to its concrete operand triple for the
+    * rank-2 dynamic-bound slice path. Mirrors
+    * [[emitRank1SliceDynamic]] for one axis at a time; the source
+    * dimension may itself be dynamic in which case the default `hi`
+    * comes from `tensor.dim`.
+    */
+  private def emitAxisSliceDynamic(
+      spec:     TAxisSpec,
+      srcTy:    MTensor,
+      srcReg:   String,
+      axisIdx:  Int,
+      c0Idx:    String,
+      c1Idx:    String,
+  ): AxisSliceD =
+    val srcDim = srcTy.shape(axisIdx)
+    def srcDimIdx(): String =
+      if srcDim >= 0 then
+        val r = fresh("sdim")
+        out.append(s"  $r = arith.constant $srcDim : index\n")
+        r
+      else
+        val ax = fresh("daxis")
+        out.append(s"  $ax = arith.constant $axisIdx : index\n")
+        val r = fresh("sdim")
+        out.append(s"  $r = tensor.dim $srcReg, $ax : ${srcTy.text}\n")
+        r
+
+    spec match
+      case TAxisAll =>
+        AxisSliceD(c0Idx, srcDimIdx(), c1Idx, collapsed = false)
+
+      case TAxisIndex(e) =>
+        val v = emitExpr(e)
+        val offsetR = fresh("aix")
+        out.append(s"  $offsetR = arith.index_cast ${v.reg} : i64 to index\n")
+        AxisSliceD(offsetR, "1", "1", collapsed = true)
+
+      case TAxisRange(loE, hiE, inclusive, strideE) =>
+        val loIdx = loE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val r = fresh("loix")
+            out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+            r
+          case None => c0Idx
+        val hiIdx = hiE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val hiBase = fresh("hix")
+            out.append(s"  $hiBase = arith.index_cast ${v.reg} : i64 to index\n")
+            if inclusive then
+              val r = fresh("hix1")
+              out.append(s"  $r = arith.addi $hiBase, $c1Idx : index\n")
+              r
+            else hiBase
+          case None =>
+            if inclusive then
+              val r = fresh("hix1")
+              out.append(s"  $r = arith.addi ${srcDimIdx()}, $c1Idx : index\n")
+              r
+            else srcDimIdx()
+        val strideIdx = strideE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val r = fresh("stx")
+            out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+            r
+          case None => c1Idx
+        val rawSpan = fresh("span")
+        out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
+        val spanC = fresh("spanc")
+        out.append(s"  $spanC = arith.maxsi $rawSpan, $c0Idx : index\n")
+        val strideM1 = fresh("stm1")
+        out.append(s"  $strideM1 = arith.subi $strideIdx, $c1Idx : index\n")
+        val numer = fresh("num")
+        out.append(s"  $numer = arith.addi $spanC, $strideM1 : index\n")
+        val sz = fresh("asz")
+        out.append(s"  $sz = arith.divui $numer, $strideIdx : index\n")
+        AxisSliceD(loIdx, sz, strideIdx, collapsed = false)
+
+  /** Rank-2 slice with runtime axes — runtime bounds, open-ended
+    * forms, and stride all flow through here. Each axis resolves to
+    * an SSA `(offset, size, stride)` triple via
+    * [[emitAxisSliceDynamic]]; the result type drops collapsed axes
+    * and uses `?` for the rest. The static-bound fast path in
+    * [[emitRank2Slice]] still handles the all-literal case for
+    * tighter IR.
+    */
+  private def emitRank2SliceDynamic(
+      av:    MlirVal,
+      srcTy: MTensor,
+      rowAx: TAxisSpec,
+      colAx: TAxisSpec,
+  ): MlirVal =
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+
+    val rowAxis = emitAxisSliceDynamic(rowAx, srcTy, av.reg, 0, c0Idx, c1Idx)
+    val colAxis = emitAxisSliceDynamic(colAx, srcTy, av.reg, 1, c0Idx, c1Idx)
+
+    val outShape = List(rowAxis, colAxis).filterNot(_.collapsed).map(_ => -1)
+    val outTy    = MTensor(srcTy.elem, outShape)
+
+    val r = fresh("dsl2")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}" +
+        s"[${rowAxis.offset}, ${colAxis.offset}] " +
+        s"[${rowAxis.size}, ${colAxis.size}] " +
+        s"[${rowAxis.stride}, ${colAxis.stride}] : ${srcTy.text} to ${outTy.text}\n",
     )
     MlirVal(r, outTy)
 
