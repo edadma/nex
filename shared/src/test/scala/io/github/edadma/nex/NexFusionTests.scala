@@ -582,7 +582,7 @@ class NexFusionTests extends AnyWordSpec with Matchers:
     case TJuxtapose(c, b, _, _)         => countFusedLoops(c) + countFusedLoops(b)
     case TCall(c, args, _, _)           => countFusedLoops(c) + args.map(countFusedLoops).sum
     case TIndex(a, i, _, _)             => countFusedLoops(a) + i.map(countFusedLoops).sum
-    case TSlice(a, lo, hi, _, _, _)     => countFusedLoops(a) + countFusedLoops(lo) + countFusedLoops(hi)
+    case TSlice(a, lo, hi, _, _, _)     => countFusedLoops(a) + lo.map(countFusedLoops).getOrElse(0) + hi.map(countFusedLoops).getOrElse(0)
     case TField(r, _, _, _)             => countFusedLoops(r)
     case TTupleProj(r, _, _, _)         => countFusedLoops(r)
     case TMethodCall(r, _, args, _, _)  => countFusedLoops(r) + args.map(countFusedLoops).sum

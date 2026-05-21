@@ -555,6 +555,22 @@ class NexInterpreter:
         case _ => trap(s"assert_eq expects 2 args", None)
     case "assert_approx" =>
       args match
+        case List(VArray1(as), VArray1(bs), eps) =>
+          val tol = asReal(eps)
+          if as.size != bs.size then
+            trap(s"assert_approx: array length mismatch: ${as.size} vs ${bs.size}", None)
+          var i = 0
+          while i < as.size do
+            val d = elementWiseDistance(as(i), bs(i))
+            if d > tol then
+              trap(s"assert_approx: element $i: |${formatValue(as(i))} - ${formatValue(bs(i))}| = $d > $tol", None)
+            i += 1
+          VUnit
+        case List(VComplex(ar, ai), VComplex(br, bi), eps) =>
+          val tol  = asReal(eps)
+          val dist = math.hypot(ar - br, ai - bi)
+          if dist <= tol then VUnit
+          else trap(s"assert_approx: |${formatValue(VComplex(ar, ai))} - ${formatValue(VComplex(br, bi))}| = $dist > $tol", None)
         case List(a, b, eps) =>
           val diff = math.abs(asReal(a) - asReal(b))
           if diff <= asReal(eps) then VUnit
@@ -762,15 +778,20 @@ class NexInterpreter:
                 (k, k + 1, true)
               case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
           case TAxisRange(lo, hi, inclusive) =>
-            (evalExpr(lo, env), evalExpr(hi, env)) match
-              case (VInt(l), VInt(h)) =>
-                val lI    = wrapNeg(l.toInt, extent).toInt
-                val hI    = wrapNeg(h.toInt, extent).toInt
-                val hExcl = if inclusive then hI + 1 else hI
-                if lI < 0 || hExcl > extent || lI > hExcl then
-                  trap(s"$label slice [$l..${if inclusive then "=" else ""}${h}] out of bounds for extent $extent", p)
-                (lI, hExcl, false)
-              case (l, h) => trap(s"$label slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+            def axisBound(o: Option[TExpr], default: Int): Long = o match
+              case None    => default.toLong
+              case Some(e) =>
+                evalExpr(e, env) match
+                  case VInt(x) => x
+                  case other   => trap(s"$label slice bounds must be integers, got ${formatValue(other)}", p)
+            val l     = axisBound(lo, 0)
+            val h     = axisBound(hi, extent)
+            val lI    = wrapNeg(l.toInt, extent).toInt
+            val hI    = wrapNeg(h.toInt, extent).toInt
+            val hExcl = if inclusive then hI + 1 else hI
+            if lI < 0 || hExcl > extent || lI > hExcl then
+              trap(s"$label slice [$l..${if inclusive then "=" else ""}${h}] out of bounds for extent $extent", p)
+            (lI, hExcl, false)
 
       val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
       val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")
@@ -798,6 +819,9 @@ class NexInterpreter:
     case _: TAxisAllMark =>
       trap("internal: TAxisAllMark survived to interpreter; should be Stage-2-only", e.pos)
 
+    case _: TOpenSliceMark =>
+      trap("internal: TOpenSliceMark survived to interpreter; should be Stage-2-only", e.pos)
+
     case TClone(arr, p, _) =>
       // Spec §8.3: deep-copy an array. Inserted by NexLifetime at move
       // sites where the source has a later use. The result is a freshly-
@@ -814,15 +838,23 @@ class NexInterpreter:
       // `lo..=hi`. Negative bounds count from the end (`a[-1] ==
       // a[length(a)-1]`); the wrap happens BEFORE the bounds check
       // so an over-negative bound (`a[-10..2]` on a 3-element array)
-      // still traps. The result is a fresh VArray1.
+      // still traps. Open-ended bounds (`a[..hi]`, `a[lo..]`, `a[..]`)
+      // arrive with `lo` or `hi` as `None`; they fill from the array's
+      // runtime extent (0 for lo, length for hi). The result is a
+      // fresh VArray1.
       val av = evalExpr(arr, env)
-      val (loRaw, hiRaw) = (evalExpr(lo, env), evalExpr(hi, env)) match
-        case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
-        case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+      def asIntBound(o: Option[TExpr], default: Int): Int = o match
+        case None    => default
+        case Some(e) =>
+          evalExpr(e, env) match
+            case VInt(x) => x.toInt
+            case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
       av match
         case VArray1(b) =>
-          val loI  = wrapNeg(loRaw, b.size).toInt
-          val hiI  = wrapNeg(hiRaw, b.size).toInt
+          val loRaw = asIntBound(lo, 0)
+          val hiRaw = asIntBound(hi, b.size)
+          val loI   = wrapNeg(loRaw, b.size).toInt
+          val hiI   = wrapNeg(hiRaw, b.size).toInt
           val upper = if inclusive then hiI + 1 else hiI
           if loI < 0 || upper > b.size || loI > upper then
             trap(s"slice [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
@@ -1157,13 +1189,18 @@ class NexInterpreter:
 
       case TSlice(arr, lo, hi, inclusive, _, _) =>
         val av = evalExpr(arr, env)
-        val (loRaw, hiRaw) = (evalExpr(lo, env), evalExpr(hi, env)) match
-          case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
-          case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+        def asIntBound(o: Option[TExpr], default: Int): Int = o match
+          case None    => default
+          case Some(e) =>
+            evalExpr(e, env) match
+              case VInt(x) => x.toInt
+              case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
         av match
           case VArray1(b) =>
-            val loI  = wrapNeg(loRaw, b.size).toInt
-            val hiI  = wrapNeg(hiRaw, b.size).toInt
+            val loRaw = asIntBound(lo, 0)
+            val hiRaw = asIntBound(hi, b.size)
+            val loI   = wrapNeg(loRaw, b.size).toInt
+            val hiI   = wrapNeg(hiRaw, b.size).toInt
             val upper = if inclusive then hiI + 1 else hiI
             if loI < 0 || upper > b.size || loI > upper then
               trap(s"slice-assign [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
@@ -1198,15 +1235,20 @@ class NexInterpreter:
                   (k, k + 1, true)
                 case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
             case TAxisRange(lo, hi, inclusive) =>
-              (evalExpr(lo, env), evalExpr(hi, env)) match
-                case (VInt(l), VInt(h)) =>
-                  val lI    = wrapNeg(l.toInt, extent).toInt
-                  val hI    = wrapNeg(h.toInt, extent).toInt
-                  val hExcl = if inclusive then hI + 1 else hI
-                  if lI < 0 || hExcl > extent || lI > hExcl then
-                    trap(s"$label slice-assign [$l..${if inclusive then "=" else ""}$h] out of bounds for extent $extent", p)
-                  (lI, hExcl, false)
-                case (l, h) => trap(s"$label slice-assign bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+              def axisBound(o: Option[TExpr], default: Int): Long = o match
+                case None    => default.toLong
+                case Some(e) =>
+                  evalExpr(e, env) match
+                    case VInt(x) => x
+                    case other   => trap(s"$label slice-assign bounds must be integers, got ${formatValue(other)}", p)
+              val l     = axisBound(lo, 0)
+              val h     = axisBound(hi, extent)
+              val lI    = wrapNeg(l.toInt, extent).toInt
+              val hI    = wrapNeg(h.toInt, extent).toInt
+              val hExcl = if inclusive then hI + 1 else hI
+              if lI < 0 || hExcl > extent || lI > hExcl then
+                trap(s"$label slice-assign [$l..${if inclusive then "=" else ""}$h] out of bounds for extent $extent", p)
+              (lI, hExcl, false)
 
         val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
         val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")
@@ -1456,6 +1498,16 @@ class NexInterpreter:
     case VReal(x)       => x
     case VComplex(r, 0) => r
     case _              => throw new NexTrap(s"expected numeric, got ${formatValue(v)}", None)
+
+  /** Euclidean distance between two scalar / complex values, treating
+    * integers and reals as points on the real line and complex values
+    * as points in the plane. Used by `assert_approx` over arrays so a
+    * mixed-element-type array still yields a sensible per-element
+    * distance.
+    */
+  private def elementWiseDistance(a: Value, b: Value): Double = (a, b) match
+    case (VComplex(ar, ai), VComplex(br, bi)) => math.hypot(ar - br, ai - bi)
+    case _                                    => math.abs(asReal(a) - asReal(b))
 
   // --------------------------------------------------------------------------
   // Element-wise and broadcast

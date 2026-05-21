@@ -611,14 +611,47 @@ class NexParser extends StandardTokenParsers with PackratParsers:
       (recv: ExprAST) => IndexExpr(recv, ixs)
     }
 
-  /** A single position in an index list. Three shapes:
-    *   - `:` — the rank-2 axis-all marker (spec §4.14 slicing).
-    *   - any other expression (integer, range `lo..hi`, computed bounds).
-    * The `:` form is only legal in index position; the parser doesn't
-    * surface it as a primary expression.
+  /** A single position in an index list (spec §4.14). Shapes:
+    *   - `:` — the rank-2 axis-all marker.
+    *   - `..hi` / `..=hi` — leading-open slice (lo defaults to 0).
+    *   - `lo..` — trailing-open slice (hi defaults to `length(arr)`).
+    *   - `..` — both ends open (full slice).
+    *   - any other expression — integer index, full range `lo..hi`, or
+    *     computed bounds via `exprNoTuple`.
+    *
+    * The open-ended forms (and `:`) are only legal here — the parser
+    * doesn't surface them as primary expressions. The order matters:
+    * leading-open variants must precede the trailing-open / bare forms
+    * so a bare `..` is recognised; trailing-open precedes `exprNoTuple`
+    * so `lo..,` and `lo..]` resolve as open-trailing slices instead of
+    * stranded ranges that fail later.
     */
   lazy val indexElem: PackratParser[ExprAST] =
-    ":" ^^^ AxisAllExpr() | exprNoTuple
+    ":" ^^^ AxisAllExpr() |
+    ("..=" ~> addExpr) ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = true) } |
+    (".." ~> addExpr)  ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = false) } |
+    ".." ^^^ OpenSliceExpr(None, None, inclusive = false) |
+    closedOrTrailingOpenRange |
+    exprNoTuple
+
+  /** A scalar index (`a[i]`), a closed range (`a[lo..hi]` / `a[lo..=hi]`),
+    * or a trailing-open slice (`a[lo..]`). Factored into a single parse
+    * tree so the trailing-open form is detected via `opt(addExpr)` after
+    * the `..` operator — this avoids a greedy `addExpr <~ ".."` from
+    * eating `lo..hi` half-way and leaving `hi` for the outer context.
+    */
+  lazy val closedOrTrailingOpenRange: PackratParser[ExprAST] =
+    addExpr ~ opt(("..=" | "..") ~ opt(addExpr)) ^^ {
+      case e ~ None                  => e
+      case e ~ Some(op ~ Some(rhs))  => BinOpExpr(op, e, rhs)
+      case e ~ Some(op ~ None)       =>
+        // `lo..` (exclusive) or `lo..=` (inclusive) — the elaborator
+        // treats both as a trailing-open slice and fills `hi` from the
+        // array's runtime length. The inclusive variant collapses to
+        // the exclusive form because `lo..=length-1` and `lo..length`
+        // cover the same elements.
+        OpenSliceExpr(Some(e), None, inclusive = op == "..=")
+    }
 
   /** `.name` is a field access; `.name(args)` becomes a method-call sugar
     * node so the analyzer can decide field-vs-method per §4.9.

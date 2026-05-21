@@ -793,19 +793,31 @@ class NexElaborator
               err("named arguments are only allowed when calling a function by its declared name", e)
             TCall(elabExpr(callee), args.map(unwrapNamedArg).map(elabExpr), pos)
       case IndexExpr(arr, idx) =>
-        // `:` (AxisAllExpr) only appears inside an index list — Stage 2
-        // detects it and rewrites the surrounding TIndex into a
-        // TSlice2 (rank-2 slice). Anywhere else the parser refuses the
-        // `:` token; if it somehow slipped through, infExpr handles
-        // the orphan case with an error.
+        // `:` (AxisAllExpr) and `..hi` / `lo..` / `..` (OpenSliceExpr)
+        // only appear inside an index list — Stage 2's `inferIndex`
+        // rewrites the surrounding TIndex into a TSlice / TSlice2 with
+        // the appropriate axis spec. Anywhere else the parser refuses
+        // these tokens; if one slipped through, infExpr's orphan
+        // handler issues a clear error.
         TIndex(elabExpr(arr), idx.map {
-          case AxisAllExpr() => TAxisAllMark(pos)
-          case e             => elabExpr(e)
+          case AxisAllExpr() =>
+            TAxisAllMark(pos)
+          case OpenSliceExpr(lo, hi, inc) =>
+            TOpenSliceMark(lo.map(elabExpr), hi.map(elabExpr), inc, pos)
+          case e =>
+            elabExpr(e)
         }, pos)
 
       case AxisAllExpr() =>
         // Defensive: `:` outside an index list is never a value.
         err("`:` is only legal inside an index list (rank-2 slice)", e)
+        TUnitLit(pos)
+
+      case OpenSliceExpr(_, _, _) =>
+        // Defensive: open-ended slice forms (`..hi`, `lo..`, `..`) are
+        // only legal inside an index list (spec §4.14). Anywhere else
+        // they're a parse / elaboration error.
+        err("open-ended slice (`..hi`, `lo..`, `..`) is only legal inside an index list", e)
         TUnitLit(pos)
       case FieldExpr(r, name) =>
         TField(elabExpr(r), name, pos)
