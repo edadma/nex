@@ -628,6 +628,13 @@ def test_approx_array() =
   assert_approx(xs, ys, 1e-9)
 
 @test
+def test_approx_array2() =
+  // Same shape: rank-2 element-wise. Rows or cols mismatch traps.
+  val A = [[1.0, 2.0], [3.0, 4.0]]
+  val B = [[1.0 + 1e-12, 2.0 - 1e-12], [3.0, 4.0 + 1e-12]]
+  assert_approx(A, B, 1e-9)
+
+@test
 def test_traps_on_bad_division() =
   assert_traps(() -> 1 div 0)
 
@@ -696,3 +703,21 @@ def main() =
   print(pf(3.0))                    // 4.0
   // helper is NOT visible here — it's private to mylib
 ```
+
+## Literate Nex
+
+A file with the `.lnex` extension is Markdown: column-0 prose, code indented one level (tab or four-plus spaces). The compiler strips the prose to blank lines (so error positions still match) and dedents the code before lexing. A module may freely mix `.nex` and `.lnex` files.
+
+```
+A short paragraph above the function explains why it exists.
+
+    def square(x: real): real = x * x
+
+A second paragraph between code blocks renders normally in
+documentation and is invisible to the compiler.
+
+    def main() =
+      print(square(2.5))
+```
+
+See spec §2.9 for fenced-block handling and corner cases.
