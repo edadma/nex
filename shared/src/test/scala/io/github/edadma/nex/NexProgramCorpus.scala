@@ -326,6 +326,7 @@ object NexProgramCorpus:
         |  print(false != false)
       """.stripMargin,
       "true\nfalse\ntrue\nfalse\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -341,6 +342,7 @@ object NexProgramCorpus:
         |  print(0 < x < 10)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -351,6 +353,7 @@ object NexProgramCorpus:
         |  print(0 < x < 10)
       """.stripMargin,
       "false\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -361,6 +364,7 @@ object NexProgramCorpus:
         |  print(0 <= x < 10 <= 100)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -373,6 +377,7 @@ object NexProgramCorpus:
         |    print(chained == explicit)
       """.stripMargin,
       "true\n" * 15,
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -402,6 +407,7 @@ object NexProgramCorpus:
         |  print(a < b < c <= d)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "chained comparison",
@@ -600,6 +606,7 @@ object NexProgramCorpus:
         |  print(r)
       """.stripMargin,
       "[0, 1, 2, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -608,6 +615,7 @@ object NexProgramCorpus:
         |def main() = print(1..=3)
       """.stripMargin,
       "[1, 2, 3]\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -618,6 +626,7 @@ object NexProgramCorpus:
         |  print(8..3)
       """.stripMargin,
       "[]\n[]\n",
+      mlir = true,
     ),
     Case(
       "control flow",

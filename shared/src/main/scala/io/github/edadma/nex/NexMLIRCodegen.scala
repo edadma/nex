@@ -377,6 +377,12 @@ class NexMLIRCodegen:
         case (sty, aty) =>
           notYet(s"broadcast $op on $sty and $aty")
 
+    case TBinOp("..", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _) =>
+      emitRangeCall(lo, hi)
+
+    case TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _) =>
+      emitRangeCall(lo, hi + 1)
+
     case TBinOp("^", lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
@@ -653,9 +659,9 @@ class NexMLIRCodegen:
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
       emitPrintCall(arg)
-    case TBlockExpr(TFor(loopVars, TBinOp("..", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+    case TBlockExpr(TFor(loopVars, TBinOp("..", lo, hi, _, _), body, _, _)) =>
       emitForRange(loopVars, lo, hi, inclusive = false, body)
-    case TBlockExpr(TFor(loopVars, TBinOp("..=", TIntLit(lo, _, _), TIntLit(hi, _, _), _, _), body, _, _)) =>
+    case TBlockExpr(TFor(loopVars, TBinOp("..=", lo, hi, _, _), body, _, _)) =>
       emitForRange(loopVars, lo, hi, inclusive = true, body)
     case TBlockExpr(TFor(loopVars, iter, body, _, _)) =>
       val av = emitExpr(iter)
@@ -669,12 +675,16 @@ class NexMLIRCodegen:
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 
-  /** Statement-form `for i in lo..hi do body` over a constant integer
-    * range. Lowers to `scf.for %iv = %lo to %hi step %c1 { … }`. The
-    * loop var is provided as MLIR `index` type; we cast to i64 and
-    * bind to the symbol id so the body's references resolve as
-    * scalars. Inclusive ranges (`..=`) bump the bound by one (scf.for
-    * is exclusive on its upper bound).
+  /** Statement-form `for i in lo..hi do body` over an integer range.
+    * Lowers to `scf.for %iv = %lo to %hi step %c1 { … }`. The loop
+    * var is provided as MLIR `index` type; we cast to i64 and bind
+    * to the symbol id so the body's references resolve as scalars.
+    * Inclusive ranges (`..=`) bump the upper bound by one via
+    * `arith.addi` (scf.for is exclusive on its upper bound).
+    *
+    * Bounds are arbitrary `TyInteger` expressions — literals, folded
+    * unary minus, var refs, anything that emits to i64. We index-cast
+    * each side to `index` after emission.
     *
     * Body emission delegates to [[emitForBody]], which handles a
     * `TBlock` body (multiple statements) the same way it handles
@@ -682,22 +692,31 @@ class NexMLIRCodegen:
     * `emitBlockItem`, so nested prints / nested for-loops compose
     * naturally.
     */
-  private def emitForRange(loopVars: List[Symbol], lo: Long, hi: Long, inclusive: Boolean, body: TExpr): Unit =
+  private def emitForRange(loopVars: List[Symbol], lo: TExpr, hi: TExpr, inclusive: Boolean, body: TExpr): Unit =
     if loopVars.size != 1 then
       notYet(s"for over range with ${loopVars.size}-way destructuring")
       return
     val loopVar = loopVars.head
+    val loV     = emitExpr(lo)
+    val hiV     = emitExpr(hi)
     val loC     = fresh("flo")
-    out.append(s"  $loC = arith.constant $lo : index\n")
-    val hiVal   = if inclusive then hi + 1L else hi
-    val hiC     = fresh("fhi")
-    out.append(s"  $hiC = arith.constant $hiVal : index\n")
+    out.append(s"  $loC = arith.index_cast ${loV.reg} : i64 to index\n")
+    val hiIdx   = fresh("fhi_idx")
+    out.append(s"  $hiIdx = arith.index_cast ${hiV.reg} : i64 to index\n")
+    val hiC     =
+      if inclusive then
+        val one  = fresh("fone")
+        val bump = fresh("fhi")
+        out.append(s"  $one = arith.constant 1 : index\n")
+        out.append(s"  $bump = arith.addi $hiIdx, $one : index\n")
+        bump
+      else hiIdx
     val stepC   = fresh("fst")
     out.append(s"  $stepC = arith.constant 1 : index\n")
     val ivName  = fresh("iv")
     out.append(s"  scf.for $ivName = $loC to $hiC step $stepC {\n")
     val ivI64   = fresh("ivi")
-    out.append(s"    $ivI64 = arith.index_castui $ivName : index to i64\n")
+    out.append(s"    $ivI64 = arith.index_cast $ivName : index to i64\n")
     val prev    = env.get(loopVar.id)
     env(loopVar.id) = MlirVal(ivI64, MScalar(TyInteger))
     emitForBody(body)
