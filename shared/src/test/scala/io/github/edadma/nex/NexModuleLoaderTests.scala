@@ -212,4 +212,12 @@ class NexModuleLoaderTests extends AnyWordSpec with Matchers:
       modules.find(_.path == List("test_fixtures")).get.isTestOnly shouldBe true
       modules.find(_.path == Nil).get.isTestOnly shouldBe false
     }
+
+    "specialize an imported generic def at each call site" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import helpers.{pickMax, same}\ndef main() =\n  print(pickMax(3, 7))\n  print(pickMax(2.5, 1.5))\n  print(same(\"hi\", \"hi\"))\n",
+        "helpers/gen.nex" -> "module helpers\ndef pickMax[T: Ord](a: T, b: T): T = if a < b then b else a\ndef same[T: Eq](a: T, b: T): bool = a == b\n",
+      ))
+      runProject(entry) shouldBe "7\n2.5\ntrue\n"
+    }
   }

@@ -121,7 +121,7 @@ sum_axis(m: [[T]], axis: integer): [T]  // axis=0 → per-column; axis=1 → per
 map(m: [[T]], f: T -> U): [[U]]         // element-wise
 ```
 
-These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. User-defined polymorphic functions of equivalent generality require generics, *deferred*.
+These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. The equivalent surface for user code is `def foo[T](...)` (Functions §6.10) — Stage 1 covers generic functions; generic structs and enums are deferred (Deferred §11.2).
 
 ## 10.5 Construction
 
