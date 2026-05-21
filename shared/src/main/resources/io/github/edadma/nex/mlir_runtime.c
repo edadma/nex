@@ -38,6 +38,45 @@ static void nex_fmt_i64(int64_t v) {
     printf("%lld", (long long)v);
 }
 
+/* Java-style real post-processing: rewrites a `%g`-produced buffer's
+ * `e±XX` exponent into Java's `E[±]N` form (uppercase E, no leading
+ * `+`, leading zeros stripped except one), inserting `.0` before the
+ * `E` if the mantissa lacks a `.`. Buffers without `e` pass through
+ * unchanged. Mirrors LLVM's `__nex_format_real_java`.
+ */
+static void nex_format_real_java(const char* in, char* out) {
+    const char* e = strchr(in, 'e');
+    if (!e) {
+        strcpy(out, in);
+        return;
+    }
+    size_t mlen = (size_t)(e - in);
+    memcpy(out, in, mlen);
+    char* op = out + mlen;
+    if (!memchr(in, '.', mlen)) {
+        *op++ = '.';
+        *op++ = '0';
+    }
+    *op++ = 'E';
+    const char* ep = e + 1;
+    if (*ep == '+') {
+        ep++;
+    } else if (*ep == '-') {
+        *op++ = '-';
+        ep++;
+    }
+    while (*ep == '0' && *(ep + 1) >= '0' && *(ep + 1) <= '9') {
+        ep++;
+    }
+    strcpy(op, ep);
+}
+
+/* Shortest-round-trip f64 formatter shared by `print(x)`, the array
+ * printers, and `nex_str_from_f64`. NaN / ±inf direct; whole-int fast
+ * path; otherwise `%.<p>g` for p=1..17 picks the smallest p whose
+ * output strtod re-parses bit-equal to v, then Java post-process to
+ * match LLVM byte-for-byte.
+ */
 static void nex_fmt_f64(double v) {
     if (isnan(v)) { printf("nan"); return; }
     if (isinf(v)) { printf(v > 0 ? "inf" : "-inf"); return; }
@@ -45,7 +84,17 @@ static void nex_fmt_f64(double v) {
         printf("%lld.0", (long long)v);
         return;
     }
-    printf("%.17g", v);
+    char tmp[40];
+    char out[48];
+    char fmt[8];
+    int p;
+    for (p = 1; p <= 17; p++) {
+        snprintf(fmt, sizeof(fmt), "%%.%dg", p);
+        snprintf(tmp, sizeof(tmp), fmt, v);
+        if (strtod(tmp, NULL) == v) break;
+    }
+    nex_format_real_java(tmp, out);
+    fputs(out, stdout);
 }
 
 void nex_print_i64(int64_t v) {
@@ -317,42 +366,6 @@ int64_t nex_str_from_bool(int8_t v) {
     char* buf = (char*)malloc((size_t)len + 1);
     memcpy(buf, text, (size_t)len + 1);
     return (int64_t)(intptr_t)nex_str_alloc_descriptor(len, buf);
-}
-
-/* Java-style real post-processing. Takes a `%g`-formatted buffer and
- * rewrites any `e±XX` exponent into `E[±]N` form (uppercase E, no
- * leading `+`, leading zeros stripped except one), inserting `.0`
- * before the `E` if the mantissa lacks a `.` (so `1e-20` becomes
- * `1.0E-20`, matching Java's Double.toString). Buffers without `e`
- * pass through unchanged.
- *
- * Mirrors the LLVM backend's `__nex_format_real_java` byte-for-byte.
- */
-static void nex_format_real_java(const char* in, char* out) {
-    const char* e = strchr(in, 'e');
-    if (!e) {
-        strcpy(out, in);
-        return;
-    }
-    size_t mlen = (size_t)(e - in);
-    memcpy(out, in, mlen);
-    char* op = out + mlen;
-    if (!memchr(in, '.', mlen)) {
-        *op++ = '.';
-        *op++ = '0';
-    }
-    *op++ = 'E';
-    const char* ep = e + 1;
-    if (*ep == '+') {
-        ep++;
-    } else if (*ep == '-') {
-        *op++ = '-';
-        ep++;
-    }
-    while (*ep == '0' && *(ep + 1) >= '0' && *(ep + 1) <= '9') {
-        ep++;
-    }
-    strcpy(op, ep);
 }
 
 /* Double → fresh heap descriptor. Matches the LLVM backend's

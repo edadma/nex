@@ -96,6 +96,30 @@ class NexMLIRCodegen:
     */
   private val libmIntrinsics  = mutable.Map.empty[Int, String]
 
+  /** Per-program registry of user-defined `def`s lowered to
+    * `func.func`. Keyed by the declaration symbol id; value carries
+    * the mangled MLIR symbol name, the param types, and the return
+    * type (`None` for unit-returning defs — not yet supported in this
+    * phase). A non-`main` `TFunDecl` is registered here if and only
+    * if every param type and the return type are emittable
+    * ([[mlirTypeOf]] returns `Some`). Calls whose callee is in this
+    * map lower to `func.call @<name>` ; otherwise the existing
+    * notYet path stays in place.
+    */
+  private val userDefs        = mutable.Map.empty[Int, (String, List[MlirType], Option[MlirType])]
+
+  /** Top-level `const` / `val` bindings whose initialiser is a literal
+    * scalar (real / int / bool). Stored as the original `TExpr`. At
+    * any `TVarRef(sym)` site whose `sym.id` is registered here, the
+    * codegen re-emits the literal expression — that gives user-def
+    * bodies access to prelude constants like `pi`/`e` (which live in
+    * `auxDecls`) and to user top-level constants without needing
+    * module-scope globals. Non-literal initialisers (e.g.
+    * `val s = square(7)`) are left for env-based lookup inside the
+    * main function and notYet inside user-def regions.
+    */
+  private val topLevelLiteralInits = mutable.Map.empty[Int, TExpr]
+
   def compile(tp: TProgram): String =
     val mainDecl = tp.decls.collectFirst {
       case f: TFunDecl if f.sym.name == "main" && f.params.isEmpty => f
@@ -104,12 +128,38 @@ class NexMLIRCodegen:
     libmIntrinsics.clear()
     stringLitPool.clear()
     globalDecls.clear()
+    userDefs.clear()
+    topLevelLiteralInits.clear()
+    tp.allDecls.foreach {
+      case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
+          if isLiteralScalarExpr(value) =>
+        topLevelLiteralInits(sym.id) = value
+      case _ => ()
+    }
     tp.allDecls.foreach {
       case f: TFunDecl =>
         f.body match
           case TIntrinsic(opId, _, _) if opId.startsWith("libm.") =>
             libmIntrinsics(f.sym.id) = opId.stripPrefix("libm.")
           case _ => ()
+      case _ => ()
+    }
+    // Registry of user-defined non-main, non-intrinsic `def`s whose
+    // signatures the MLIR backend can express. Filtering here means
+    // the dispatch site in `emitExpr` can stay narrow and any
+    // call to an un-emittable def naturally falls through to notYet.
+    tp.allDecls.foreach {
+      case f: TFunDecl
+          if f.sym.name != "main" && !libmIntrinsics.contains(f.sym.id) =>
+        val paramTys = f.params.map(p => mlirTypeOf(p.tpe))
+        // Outer Option tracks "supported at all", inner Option tracks
+        // "value-returning vs unit-returning". TyUnit registers with
+        // an inner None.
+        val retSlot: Option[Option[MlirType]] = f.returnType match
+          case TyUnit => Some(None)
+          case other  => mlirTypeOf(other).map(Some(_))
+        if paramTys.forall(_.isDefined) && retSlot.isDefined then
+          userDefs(f.sym.id) = (mangleUserDef(f.sym), paramTys.map(_.get), retSlot.get)
       case _ => ()
     }
 
@@ -150,6 +200,16 @@ class NexMLIRCodegen:
         out.append(s"func.func private @$n(f64) -> f64\n")
     }
     out.append("\n")
+    // Emit user-defined `def`s as `func.func` ops at module level
+    // BEFORE `@main`, so they're visible to call sites inside main
+    // (and to each other for mutual recursion). MLIR module ops are
+    // order-independent, but emitting in declaration order helps when
+    // skimming the lowered text.
+    tp.allDecls.foreach {
+      case f: TFunDecl if userDefs.contains(f.sym.id) =>
+        emitUserDef(f)
+      case _ => ()
+    }
     out.append("func.func @main() -> i32 {\n")
     nextReg = 0
     env.clear()
@@ -164,17 +224,18 @@ class NexMLIRCodegen:
     // ordering puts globals before functions.
     globalDecls.toString + out.toString
 
-  /** Materialise every top-level `val` binding into the env, in
-    * declaration order, by reusing the expression visitor. Emitted
-    * inline at the top of `@main` — top-level vals semantically
-    * execute once at program start, and `@main` is the only function
-    * the backend emits today, so this is the natural place. `var` and
-    * `const` top-level bindings are not yet supported and surface as
-    * `notYet` if the program references them.
+  /** Materialise every top-level `val` and `const` binding into the
+    * env, in declaration order, by reusing the expression visitor.
+    * Iterates `tp.allDecls` so that source-prelude consts (`pi`,
+    * `e`) live in env alongside user-declared top-level vals.
+    * Emitted inline at the top of `@main` — top-level bindings
+    * semantically execute once at program start, and `@main` is the
+    * only function-scope region the backend emits today, so this is
+    * the natural place. `var` top-level bindings remain `notYet`.
     */
   private def emitTopBindings(tp: TProgram): Unit =
-    tp.decls.foreach {
-      case TTopBinding(sym, BindingKind.Val, value, _) =>
+    tp.allDecls.foreach {
+      case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _) =>
         env(sym.id) = emitExpr(value)
       case TTopBinding(sym, kind, _, _) =>
         notYet(s"top-level $kind binding for ${sym.name}")
@@ -677,6 +738,14 @@ class NexMLIRCodegen:
     case TVarRef(sym, _, _) if varSlots.contains(sym.id) =>
       emitVarLoad(sym.id)
 
+    case TVarRef(sym, _, _) if topLevelLiteralInits.contains(sym.id) =>
+      // Re-emit the literal initialiser. Safe because we only
+      // register literal-scalar bindings here, so each call produces
+      // a fresh `arith.constant` op in the current region — which is
+      // exactly what user-def bodies (executing outside `@main`)
+      // need for prelude constants like `pi` / `e`.
+      emitExpr(topLevelLiteralInits(sym.id))
+
     case TVarRef(sym, _, _) =>
       env.getOrElse(sym.id, notYet(s"unbound symbol ${sym.name}#${sym.id}"))
 
@@ -888,6 +957,18 @@ class NexMLIRCodegen:
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
+    case TCall(TVarRef(s, _, _), args, _, _) if userDefs.contains(s.id) =>
+      val (name, paramTys, retTyOpt) = userDefs(s.id)
+      retTyOpt match
+        case Some(retTy) =>
+          emitUserDefCall(name, paramTys, retTyOpt, args, s.name)
+        case None =>
+          // Unit-returning user defs surface only at statement
+          // position (see [[emitBlockItem]]); reaching here means
+          // someone is trying to use a `def foo() = print(...)` as
+          // a value.
+          notYet(s"unit-returning user def `${s.name}` reached value position")
+
     case TMatMul(lhs, rhs, _, _) =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
@@ -1069,6 +1150,9 @@ class NexMLIRCodegen:
       emitWhile(cond, body)
     case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varSlots.contains(sym.id) =>
       emitVarStore(sym.id, emitExpr(value))
+    case TBlockExpr(TCall(TVarRef(s, _, _), args, _, _)) if userDefs.contains(s.id) =>
+      val (name, paramTys, retTyOpt) = userDefs(s.id)
+      val _ = emitUserDefCall(name, paramTys, retTyOpt, args, s.name)
     case TBlockExpr(TIf(cond, thenB, elseB, _, _)) =>
       emitIfStatement(cond, thenB, elseB)
     case TBlockExpr(other) =>
@@ -3048,6 +3132,118 @@ class NexMLIRCodegen:
     case TyBool    => "i1"
     case TyString  => "i64"  // opaque pointer to a C-side nex_str descriptor
     case other     => notYet(s"scalar text for $other")
+
+  /** Convert a Nex elaborator-level `Type` to the codegen's
+    * [[MlirType]] when the backend can express it as a function
+    * parameter or return type. Returns `None` for types this phase
+    * doesn't yet handle (tensors, complex, tuples, structs, enums,
+    * `TyUnit` — units are unit-returning defs which need a
+    * different `func.return` shape).
+    */
+  private def mlirTypeOf(t: Type): Option[MlirType] = t match
+    case TyInteger => Some(MScalar(TyInteger))
+    case TyReal    => Some(MScalar(TyReal))
+    case TyBool    => Some(MScalar(TyBool))
+    case TyString  => Some(MString)
+    case _         => None
+
+  /** True when `e` is a scalar literal (after literal-fold of unary
+    * minus) — i.e. an expression the codegen can re-emit at every
+    * use site without changing semantics. Used to decide whether a
+    * top-level binding is safe to inline at reference sites in user
+    * `def` bodies (which run before `@main` and therefore can't
+    * read the env-bound copy emitted at main's entry).
+    */
+  private def isLiteralScalarExpr(e: TExpr): Boolean = e match
+    case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit       => true
+    case TUnaryOp("-", inner, _, _)                                    => isLiteralScalarExpr(inner)
+    case _                                                             => false
+
+  /** Mangle a user `def`'s name into a unique MLIR symbol. The id
+    * suffix prevents collisions with the runtime print/format
+    * helpers, libm bridges, and any two user defs that happen to
+    * share a name across scopes — uncommon, but cheap insurance.
+    */
+  private def mangleUserDef(sym: Symbol): String =
+    s"@nex_user_${sym.name}_${sym.id}"
+
+  /** Emit a call to a registered user def. Evaluates the args,
+    * applies cheap numeric promotions to match the declared param
+    * types, then writes a single `func.call`. Returns a fresh
+    * `MlirVal` for value-returning calls; for unit-returning calls
+    * the result has dummy register `%`-placeholder and type
+    * `MScalar(TyInteger)` — the caller in [[emitBlockItem]] ignores
+    * the result and uses the call purely for its side-effect.
+    */
+  private def emitUserDefCall(
+      name:     String,
+      paramTys: List[MlirType],
+      retTyOpt: Option[MlirType],
+      args:     List[TExpr],
+      symName:  String,
+  ): MlirVal =
+    if args.size != paramTys.size then
+      notYet(s"arity mismatch on user def `$symName` — ${args.size} args vs ${paramTys.size} params")
+    val argVals = args.zip(paramTys).map { case (a, expectedTy) =>
+      val av = emitExpr(a)
+      (av.ty, expectedTy) match
+        case (lt, rt) if lt == rt                  => av
+        case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
+        case (lt, rt) =>
+          notYet(s"user def `$symName` arg type $lt does not match param type $rt")
+    }
+    val paramTyText = paramTys.map(_.text).mkString(", ")
+    retTyOpt match
+      case Some(retTy) =>
+        val r = fresh("ucall")
+        out.append(
+          s"  $r = func.call $name(${argVals.map(_.reg).mkString(", ")}) : ($paramTyText) -> ${retTy.text}\n",
+        )
+        MlirVal(r, retTy)
+      case None =>
+        out.append(
+          s"  func.call $name(${argVals.map(_.reg).mkString(", ")}) : ($paramTyText) -> ()\n",
+        )
+        MlirVal("%unused", MScalar(TyInteger))
+
+  /** Emit a `func.func` for one registered user def, writing the
+    * signature, the body, and the closing terminator into `out`.
+    * The current `nextReg` and `env` are saved + reset so the body's
+    * SSA names don't collide with the caller's region. Parameter
+    * symbols bind to MLIR block args (`%arg0`, `%arg1`, …) in the
+    * fresh env. Value-returning bodies are emitted via `emitExpr`
+    * and yielded through `func.return %r : T`; unit-returning
+    * bodies are emitted as a statement sequence ([[emitForBody]] is
+    * already the right shape for that) and end with a bare
+    * `func.return`.
+    */
+  private def emitUserDef(f: TFunDecl): Unit =
+    val (name, paramTys, retTyOpt) = userDefs(f.sym.id)
+    val sigParts = f.params.zip(paramTys).zipWithIndex.map { case ((_, ty), i) =>
+      s"%arg$i: ${ty.text}"
+    }
+    val retStr = retTyOpt.fold("")(t => s" -> ${t.text}")
+    out.append(s"func.func $name(${sigParts.mkString(", ")})$retStr {\n")
+    val savedReg = nextReg
+    val savedEnv = env.toMap
+    nextReg = 0
+    env.clear()
+    f.params.zip(paramTys).zipWithIndex.foreach { case ((p, ty), i) =>
+      env(p.id) = MlirVal(s"%arg$i", ty)
+    }
+    retTyOpt match
+      case Some(retTy) =>
+        val v = emitExpr(f.body)
+        if v.ty != retTy then
+          notYet(s"user def `${f.sym.name}` body type ${v.ty} does not match declared return ${retTy}")
+        out.append(s"  func.return ${v.reg} : ${retTy.text}\n")
+      case None =>
+        emitForBody(f.body)
+        out.append("  func.return\n")
+    out.append("}\n")
+    nextReg = savedReg
+    env.clear()
+    savedEnv.foreach { case (k, v) => env(k) = v }
 
   private def zeroLit(t: Type): String = t match
     case TyInteger => "0"

@@ -764,6 +764,7 @@ object NexProgramCorpus:
         |def main() = print(add(3, 4))
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -777,6 +778,7 @@ object NexProgramCorpus:
         |  scale(10.0, 5.0, 1.0)
       """.stripMargin,
       "20.0\n30.0\n51.0\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -791,6 +793,7 @@ object NexProgramCorpus:
         |  greet("Bar", greeting = "Yo")
       """.stripMargin,
       "Hello, World!\nHello, Nex!\nHi, Foo!\nYo, Bar!\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -803,6 +806,7 @@ object NexProgramCorpus:
         |  scale(10.0, factor = 7.0)
       """.stripMargin,
       "25.0\n70.0\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -834,6 +838,7 @@ object NexProgramCorpus:
         |def main() = print(fact(6))
       """.stripMargin,
       "720\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -848,6 +853,7 @@ object NexProgramCorpus:
         |  print(isOdd(7))
       """.stripMargin,
       "true\ntrue\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -2868,6 +2874,7 @@ object NexProgramCorpus:
         |  print(render("gamma", 12345.678))
       """.stripMargin,
       "alpha =   3.1416\ngamma = 12345.6780\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2976,6 +2983,7 @@ object NexProgramCorpus:
         |  print(f(1))
       """.stripMargin,
       "101\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3206,6 +3214,7 @@ object NexProgramCorpus:
         |  print(s"5^2 = ${square(5)}")
       """.stripMargin,
       "5^2 = 25\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3294,6 +3303,7 @@ object NexProgramCorpus:
         |  print(fmt(1.0e20))
       """.stripMargin,
       "x=1.4142135623730951\nx=1.0\nx=0.0\nx=-3.5\nx=1.0E-20\nx=1.0E20\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3306,6 +3316,7 @@ object NexProgramCorpus:
         |  print(fmt(-inf))
       """.stripMargin,
       "x=nan\nx=inf\nx=-inf\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3668,6 +3679,7 @@ object NexProgramCorpus:
         |def main() = print(x)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "top-level initialization",
@@ -3684,6 +3696,7 @@ object NexProgramCorpus:
         |  print(is_odd(7))
       """.stripMargin,
       "true\ntrue\n",
+      mlir = true,
     ),
     Case(
       "top-level initialization",
@@ -3696,6 +3709,7 @@ object NexProgramCorpus:
         |def main() = print(s)
       """.stripMargin,
       "49\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3716,6 +3730,7 @@ object NexProgramCorpus:
         |  print(s"hypotenuse(3, 4) = ${hypotenuse(3.0, 4.0)}")
       """.stripMargin,
       "hypotenuse(3, 4) = 5.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -3790,6 +3805,7 @@ object NexProgramCorpus:
         |  print(newton_sqrt(1000.0, 1.0e-9))
       """.stripMargin,
       "1.414213562373095\n31.622776601683793\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -3901,6 +3917,7 @@ object NexProgramCorpus:
         |  print(s"wave(0.75) = ${wave(0.75)}")
       """.stripMargin,
       "wave(0.0)  = 2.0\nwave(0.25) = 2.0\nwave(0.5)  = 2.0\nwave(0.75) = -6.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
