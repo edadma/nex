@@ -400,7 +400,7 @@ def greet(name: string) =
 // trailing positions; callers can pass `name = value` in any order
 // for any parameter after the positional run.
 def make_box(w: real, h: real = 1.0, depth: real = 1.0) =
-  (w, h, depth)
+  w, h, depth
 
 make_box(3.0)                            // (3.0, 1.0, 1.0)
 make_box(3.0, 5.0)                       // (3.0, 5.0, 1.0)
