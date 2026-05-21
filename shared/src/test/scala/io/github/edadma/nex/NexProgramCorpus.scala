@@ -4141,6 +4141,102 @@ object NexProgramCorpus:
       "result=Converged(1.25)\n",
     ),
     Case(
+      "compound assignment",
+      "+= on a scalar var",
+      """
+        |def main() =
+        |  var n = 0
+        |  n += 5
+        |  n += 3
+        |  print(n)
+      """.stripMargin,
+      "8\n",
+    ),
+    Case(
+      "compound assignment",
+      "-= on a scalar var",
+      """
+        |def main() =
+        |  var n = 100
+        |  n -= 1
+        |  n -= 9
+        |  print(n)
+      """.stripMargin,
+      "90\n",
+    ),
+    Case(
+      "compound assignment",
+      "*= on a scalar var",
+      """
+        |def main() =
+        |  var n = 2
+        |  n *= 3
+        |  n *= 7
+        |  print(n)
+      """.stripMargin,
+      "42\n",
+    ),
+    Case(
+      "compound assignment",
+      "/= on a real var",
+      """
+        |def main() =
+        |  var x = 8.0
+        |  x /= 2.0
+        |  x /= 2.0
+        |  print(x)
+      """.stripMargin,
+      "2.0\n",
+    ),
+    Case(
+      "compound assignment",
+      "%= on an integer var",
+      """
+        |def main() =
+        |  var n = 23
+        |  n %= 10
+        |  print(n)
+      """.stripMargin,
+      "3\n",
+    ),
+    Case(
+      "compound assignment",
+      "+= accumulator inside a for-loop (Fourier-sum idiom)",
+      """
+        |def main() =
+        |  var total = 0
+        |  for k in 1..5 do
+        |    total += k
+        |  end for
+        |  print(total)
+      """.stripMargin,
+      "10\n",
+    ),
+    Case(
+      "compound assignment",
+      "+= on an array index target",
+      """
+        |def main() =
+        |  var a = [10, 20, 30]
+        |  a[1] += 5
+        |  print(a[0])
+        |  print(a[1])
+        |  print(a[2])
+      """.stripMargin,
+      "10\n25\n30\n",
+    ),
+    Case(
+      "compound assignment",
+      "+= RHS is the full expression",
+      """
+        |def main() =
+        |  var n = 1
+        |  n += 2 * 3 + 4
+        |  print(n)
+      """.stripMargin,
+      "11\n",
+    ),
+    Case(
       "docs/examples",
       "13-sum-types: Newton-solver describe() with field interpolation",
       """

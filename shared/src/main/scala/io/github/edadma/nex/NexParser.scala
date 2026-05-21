@@ -322,16 +322,26 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     assignment ^^ Right.apply |
     expr ^^ Right.apply
 
-  /** Assignment statement: `lvalue = rhs`. Only legal at block-item
-    * position. The l-value is parsed greedily as a postfix expression
-    * (covering bare names, field access, and indexing); the elaborator
-    * verifies it's actually assignable. The RHS is `expr`, so a
-    * paren-less tuple (`p = 1, 2, 3`) is accepted — block items are
-    * Newline/`;` separated, so there's no comma ambiguity.
+  /** Assignment statement: `lvalue = rhs` or `lvalue OP= rhs`, where
+    * `OP` is one of `+ - * / %`. Only legal at block-item position.
+    * The l-value is parsed greedily as a postfix expression (covering
+    * bare names, field access, and indexing); the elaborator verifies
+    * it's actually assignable. The RHS is `expr`, so a paren-less tuple
+    * (`p = 1, 2, 3`) is accepted — block items are Newline/`;`
+    * separated, so there's no comma ambiguity.
+    *
+    * Compound forms desugar at parse time to `lhs = lhs OP rhs`. The
+    * l-value is reused as-is on the right of the `=`, so an index
+    * expression like `a[f()] += 5` evaluates `f()` twice — Nex's
+    * surface has no observable side-effects in index expressions in
+    * v0, so this matches user intuition.
     */
   lazy val assignment: PackratParser[ExprAST] =
-    postfixExpr ~ "=" ~ expr ^^ {
-      case lhs ~ _ ~ rhs => AssignExpr(lhs, rhs)
+    postfixExpr ~ ("=" | "+=" | "-=" | "*=" | "/=" | "%=") ~ expr ^^ {
+      case lhs ~ "=" ~ rhs => AssignExpr(lhs, rhs)
+      case lhs ~ op  ~ rhs =>
+        val arith = op.stripSuffix("=")   // "+=" → "+", etc.
+        AssignExpr(lhs, BinOpExpr(arith, lhs, rhs))
     }
 
   private def toBlockItem(item: Either[DeclAST, ExprAST]): BlockItem = item match

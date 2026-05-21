@@ -28,7 +28,7 @@ def fourier_sample(coeffs: [real], t: real) =
   val n = length(coeffs)
   var result = 0.0
   for k in 0..n do
-    result = result + coeffs[k] * sin(2pi * to_real(k + 1) * t)
+    result += coeffs[k] * sin(2pi * to_real(k + 1) * t)
   end for
   result
 

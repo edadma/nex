@@ -18,7 +18,7 @@ def escape_iters(c: complex, max_iter: integer) =
   var k = 0
   while k < max_iter and z.abs() <= 2.0 do
     z = z*z + c
-    k = k + 1
+    k += 1
   end while
   k
 
@@ -56,7 +56,7 @@ def main() =
         elif n > 25 then ":"
         elif n > 10 then "."
         else " "
-      line = line + ch
+      line += ch
     end for
     print(line)
   end for

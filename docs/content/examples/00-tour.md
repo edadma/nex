@@ -96,6 +96,8 @@ val nothing = ()            // the single value of type `unit`
 val x = 10                  // immutable + has storage
 var y = 20                  // mutable + has storage
 y = 30                      // OK
+y += 1                      // OK — compound assignment, same as y = y + 1
+                            // (also: -=  *=  /=  %=)
 
 val n: integer = 7          // explicit type annotation
 var arr: [real] = [1.0, 2.0, 3.0]

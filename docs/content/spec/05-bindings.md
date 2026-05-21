@@ -52,6 +52,21 @@ Module-level `var`s are permitted (for caches, RNG state, configuration set at s
 
 `var` arrays are subject to the uniqueness rule (chapter 8).
 
+**Compound assignment.** The four arithmetic ops `+ - * /` and the integer `%` op pair with `=` to form `+=`, `-=`, `*=`, `/=`, `%=`. Each is desugar-equivalent to evaluating the binop against the current value of the l-value and assigning the result back:
+
+```nex
+n += 5         // identical to: n = n + 5
+n -= 1
+acc *= 2.0
+x /= 2.0
+n %= 10
+
+a[i] += 1      // index target
+b.v *= 3       // field target
+```
+
+The l-value must be a `var`, a field of a `var`, or an index into a `var` array (the same set of forms `=` already accepts). The right-hand side is parsed as a full expression — `n += 2 * 3 + 4` is `n = n + (2 * 3 + 4)`. Compound assignment is a *statement form*: it only appears at block-item position, never inside an expression. There is no `^=`, no `div=`, and no boolean / bitwise compound (`and=`, `or=`).
+
 ## 5.3 `const` bindings
 
 A `const` binding introduces a compile-time constant. The right-hand side must be a *constant expression* — evaluable entirely at compile time. The compiler may inline the value at use sites; there is no guaranteed storage location.
