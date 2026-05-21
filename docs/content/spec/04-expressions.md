@@ -36,7 +36,16 @@ Operators, in order from highest to lowest precedence:
 
 User-defined operators are *deferred*.
 
-Comma binds looser than every other operator. That means `if cond then a else b, c` parses as `(if cond then a else b), c` — a 2-tuple. Use parentheses if you meant the comma inside an `else` branch: `if cond then (a, c) else (b, c)`.
+Comma binds looser than every other operator on a single line. That means `if cond then a else b, c` parses as `(if cond then a else b), c` — a 2-tuple. To put the comma inside an `else` branch, either parenthesize (`if cond then (a, c) else (b, c)`) or use the indented block form, whose last expression accepts a paren-less tuple naturally:
+
+```nex
+if cond then
+  a, c
+else
+  b, c
+```
+
+The same single-line vs. block-form distinction applies to lambda bodies (`f = (x) -> (x, -x)` vs. a block body whose last item is `x, -x`) and to `match` arm bodies. See §4.17.
 
 ## 4.4 Arithmetic operators
 
@@ -435,6 +444,21 @@ val (a, b): (integer, real) = 1, 2.0     // parens required when annotating type
 ```
 
 Single-element tuples do not exist; `1` is just `1`. The empty tuple `()` is already the unit literal (chapter 2) — there is no zero-arity tuple distinct from `unit`.
+
+**Tuples as block results.** Inside an indented block — a `def` body, a `val`/`var`/`const` binding RHS that uses block form, a `then` / `else` / `do` body, a `match` arm body, or a lambda body that uses block form — the block's last item may be a paren-less tuple:
+
+```nex
+def make_box(w: real, h: real, d: real) =
+  w, h, d                            // returns a 3-tuple
+
+def first_positive(xs: [real]) =
+  for x in xs do
+    if x > 0.0 then return x, true    // returns a 2-tuple
+  end for
+  0.0, false                          // fallback 2-tuple
+```
+
+`return` is a statement, so its value also accepts a paren-less tuple (`return a, b, c` returns the 3-tuple `(a, b, c)`).
 
 ## 4.18 Block expressions
 

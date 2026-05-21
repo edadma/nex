@@ -22,7 +22,7 @@ def power_iteration(A: [[real]], iters: integer) =
     lambda = dot(v, A @ v)           // Rayleigh quotient
   end for
 
-  (lambda, v)
+  lambda, v
 
 def main() =
   // Symmetric matrix with eigenvalues 5 and 1
