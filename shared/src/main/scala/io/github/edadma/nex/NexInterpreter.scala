@@ -1202,9 +1202,6 @@ class NexInterpreter:
         indexSet(av, iv, rhs, p)
 
       case TSlice(arr, lo, hi, inclusive, stride, _, _) =>
-        // Strided slice-assign is chunk 2; reject with a clear diag.
-        if stride.isDefined then
-          trap("strided slice-assign (`a[lo..hi by k] = rhs`) — chunk 2", p)
         val av = evalExpr(arr, env)
         def asIntBound(o: Option[TExpr], default: Int): Int = o match
           case None    => default
@@ -1212,6 +1209,12 @@ class NexInterpreter:
             evalExpr(e, env) match
               case VInt(x) => x.toInt
               case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
+        val strideI = stride match
+          case None    => 1
+          case Some(e) => evalExpr(e, env) match
+            case VInt(x) => x.toInt
+            case other   => trap(s"slice stride must be an integer, got ${formatValue(other)}", p)
+        if strideI <= 0 then trap(s"slice stride must be positive, got $strideI", p)
         av match
           case VArray1(b) =>
             val loRaw = asIntBound(lo, 0)
@@ -1221,14 +1224,16 @@ class NexInterpreter:
             val upper = if inclusive then hiI + 1 else hiI
             if loI < 0 || upper > b.size || loI > upper then
               trap(s"slice-assign [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
-            val sliceLen = upper - loI
+            val span     = upper - loI
+            // Strided length matches the corresponding read: ceil(span / k).
+            val sliceLen = if strideI == 1 then span else (math.max(0, span) + strideI - 1) / strideI
             rhs match
               case VArray1(src) =>
                 if src.size != sliceLen then
                   trap(s"slice-assign: length mismatch — rhs length ${src.size}, slice length $sliceLen", p)
                 var i = 0
                 while i < sliceLen do
-                  b(loI + i) = src(i)
+                  b(loI + i * strideI) = src(i)
                   i += 1
               case _ =>
                 trap(s"slice-assign: rhs must be a rank-1 array, got ${formatValue(rhs)}", p)

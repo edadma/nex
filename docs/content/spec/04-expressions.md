@@ -352,7 +352,19 @@ a[..10 by 2]     // combines with open bounds
 a[-5.. by 2]     // combines with negative bounds
 ```
 
-The stride must be a positive integer; a stride of `0` or any negative value traps. Negative strides (reverse iteration) are *deferred*. Strided rank-2 axis ranges (`m[lo..hi by k, :]`) are *deferred*. Strided **slice assignment** (`a[lo..hi by k] = rhs`) is also *deferred* — see `spec/11-deferred.md`.
+The stride must be a positive integer; a stride of `0` or any negative value traps. Negative strides (reverse iteration) are *deferred*. Strided rank-2 axis ranges (`m[lo..hi by k, :]`) are *deferred*.
+
+Strided forms are also valid **assignment targets** (spec §4.15): the RHS supplies one element per selected position. Length mismatch and non-positive stride trap the same way they do on read:
+
+```nex
+var a = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+a[0..10 by 2] = [1, 1, 1, 1, 1]            // every-other slot
+//  a == [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+
+var b = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+b[1..10 by 3] = [200, 500, 800]
+//  b == [10, 200, 30, 40, 500, 60, 70, 800, 90, 100]
+```
 
 **Rank-2 indexing** uses two integer indices separated by a comma:
 

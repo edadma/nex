@@ -722,7 +722,7 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * the destination's underlying buffer. Both descriptor shares (LHS
     * and RHS) are released at exit.
     */
-  protected def emitSliceAssign(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, value: TExpr): Unit =
+  protected def emitSliceAssign(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], value: TExpr): Unit =
     val elem  = arrayElem(arr.tpe)
     val stE   = storageType(elem)
     val langE = llvmType(elem)
@@ -739,6 +739,10 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val hiV = hi match
       case Some(e) => wrapNegBound(emitExpr(e), dstLen)
       case None    => dstLen
+    val strideV = stride match
+      case Some(e) => emitExpr(e)
+      case None    => "1"
+
     val negLo = newReg()
     emitLine(s"  $negLo = icmp slt i64 $loV, 0\n")
     val hiLtLo = newReg()
@@ -748,10 +752,14 @@ protected trait NexLLVMArrays extends NexLLVMState:
       emitLine(s"  $hiBad = icmp sge i64 $hiV, $dstLen\n")
     else
       emitLine(s"  $hiBad = icmp sgt i64 $hiV, $dstLen\n")
+    val strideBad = newReg()
+    emitLine(s"  $strideBad = icmp sle i64 $strideV, 0\n")
     val any01 = newReg()
     emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+    val any02 = newReg()
+    emitLine(s"  $any02 = or i1 $any01, $hiBad\n")
     val any = newReg()
-    emitLine(s"  $any = or i1 $any01, $hiBad\n")
+    emitLine(s"  $any = or i1 $any02, $strideBad\n")
     val okL   = freshLabel("sla1.ok")
     val failL = freshLabel("sla1.fail")
     emitTerminator(s"  br i1 $any, label %$failL, label %$okL\n")
@@ -762,11 +770,25 @@ protected trait NexLLVMArrays extends NexLLVMState:
 
     val rawLen = newReg()
     emitLine(s"  $rawLen = sub i64 $hiV, $loV\n")
-    val length = if inclusive then
+    val span = if inclusive then
       val r = newReg()
       emitLine(s"  $r = add i64 $rawLen, 1\n")
       r
     else rawLen
+    val length = stride match
+      case None    => span
+      case Some(_) =>
+        val nz   = newReg()
+        emitLine(s"  $nz = icmp sle i64 $span, 0\n")
+        val zero = newReg()
+        emitLine(s"  $zero = select i1 $nz, i64 0, i64 $span\n")
+        val adj  = newReg()
+        emitLine(s"  $adj = add i64 $zero, $strideV\n")
+        val adj1 = newReg()
+        emitLine(s"  $adj1 = sub i64 $adj, 1\n")
+        val q = newReg()
+        emitLine(s"  $q = sdiv i64 $adj1, $strideV\n")
+        q
 
     val rhsLen = newReg()
     emitLine(s"  $rhsLen = call i64 @__nex_arr1_len(ptr $rv)\n")
@@ -784,8 +806,11 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val srcBuf = bufPtr(rv, value.tpe)
 
     emitCountingLoop(length, "sla1") { i =>
+      val dOff = if stride.isDefined then
+        val m = newReg(); emitLine(s"  $m = mul i64 $i, $strideV\n"); m
+      else i
       val dIdx = newReg()
-      emitLine(s"  $dIdx = add i64 $loV, $i\n")
+      emitLine(s"  $dIdx = add i64 $loV, $dOff\n")
       val dSlot = newReg()
       emitLine(s"  $dSlot = getelementptr inbounds $stE, ptr $dstBuf, i64 $dIdx\n")
       val sSlot = newReg()

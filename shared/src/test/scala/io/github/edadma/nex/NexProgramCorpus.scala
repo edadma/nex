@@ -1268,6 +1268,59 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "strided slice-assign target (`a[lo..hi by k] = rhs`)",
+      """
+        |def main() =
+        |  var a = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        |  a[0..10 by 2] = [1, 1, 1, 1, 1]
+        |  print(a)
+        |  var b = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        |  b[1..10 by 3] = [200, 500, 800]
+        |  print(b)
+      """.stripMargin,
+      "[1, 0, 1, 0, 1, 0, 1, 0, 1, 0]\n[10, 200, 30, 40, 500, 60, 70, 800, 90, 100]\n",
+    ),
+    Case(
+      "arrays",
+      "strided slice-assign combines with open bounds and inclusive",
+      """
+        |def main() =
+        |  var c = [10, 20, 30, 40, 50]
+        |  c[..5 by 2] = [99, 99, 99]
+        |  c[1.. by 2] = [42, 42]
+        |  print(c)
+        |  var d = [10, 20, 30, 40, 50]
+        |  d[0..=4 by 2] = [77, 77, 77]
+        |  print(d)
+      """.stripMargin,
+      "[99, 42, 99, 42, 99]\n[77, 20, 77, 40, 77]\n",
+    ),
+    Case(
+      "arrays",
+      "strided slice-assign length mismatch traps",
+      """
+        |def assign5by2(v: mut [integer]) = v[0..5 by 2] = [1, 2]
+        |def main() =
+        |  var v = [10, 20, 30, 40, 50]
+        |  assert_traps(() -> assign5by2(v), "length mismatch")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "arrays",
+      "strided slice-assign with non-positive stride traps",
+      """
+        |def assignBadStride(v: mut [integer]) = v[0..5 by 0] = [1, 2, 3]
+        |def main() =
+        |  var v = [10, 20, 30, 40, 50]
+        |  assert_traps(() -> assignBadStride(v), "slice")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))

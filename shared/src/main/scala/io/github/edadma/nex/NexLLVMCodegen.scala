@@ -1340,12 +1340,7 @@ class NexLLVMCodegen
         emitArrDec(av, arr.tpe)
 
       case TSlice(arr, lo, hi, inclusive, stride, _, _) =>
-        // Strided slice-assign is part of chunk 2; reject here so a
-        // user calling `a[..by 2] = rhs` gets a clear diagnostic rather
-        // than a silent miscompile.
-        if stride.isDefined then
-          notImpl("strided slice-assign (`a[lo..hi by k] = rhs`) — chunk 2")
-        emitSliceAssign(arr, lo, hi, inclusive, value)
+        emitSliceAssign(arr, lo, hi, inclusive, stride, value)
 
       case TSlice2(arr, rowAx, colAx, _, _) =>
         emitSlice2Assign(arr, rowAx, colAx, value)
