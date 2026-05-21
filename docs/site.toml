@@ -48,3 +48,4 @@ version    = "v0.0.1"
 getStarted = true
 logo       = "/nex-logo.png"
 icon       = "/nex-icon.png"
+math       = true
