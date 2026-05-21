@@ -729,6 +729,14 @@ trait NexMLIRScalarControl:
     case TyString                                                 => Some(MString)
     case TyArray(elem, 1) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1)))
     case TyArray(elem, 2) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1, -1)))
+    case TyFunc(paramSpecs, retT) =>
+      val paramOpts = paramSpecs.map { case (pt, _) => mlirTypeOf(pt) }
+      val retOpt: Option[Option[MlirType]] = retT match
+        case TyUnit => Some(None)
+        case other  => mlirTypeOf(other).map(Some(_))
+      if paramOpts.forall(_.isDefined) && retOpt.isDefined then
+        Some(MFunc(paramOpts.map(_.get), retOpt.get))
+      else None
     case _                                                        => None
 
   /** True when `e` is a scalar literal (after literal-fold of unary
@@ -823,10 +831,12 @@ trait NexMLIRScalarControl:
     val savedEnv = env.toMap
     val savedVarSlots = varSlots.toMap
     val savedVarTensors = varTensors.toMap
+    val savedBoxes = boxedVarBoxes.toMap
     nextReg = 0
     env.clear()
     varSlots.clear()
     varTensors.clear()
+    boxedVarBoxes.clear()
     f.params.zip(paramTys).zipWithIndex.foreach { case ((p, ty), i) =>
       env(p.id) = MlirVal(s"%arg$i", ty)
     }
@@ -846,6 +856,8 @@ trait NexMLIRScalarControl:
     savedVarSlots.foreach { case (k, v) => varSlots(k) = v }
     varTensors.clear()
     savedVarTensors.foreach { case (k, v) => varTensors(k) = v }
+    boxedVarBoxes.clear()
+    savedBoxes.foreach { case (k, v) => boxedVarBoxes(k) = v }
 
   /** Rewrite a value-returning def body so any leading
     * `if cond then return X` guard becomes an if-expression that

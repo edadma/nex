@@ -24,7 +24,7 @@ import scala.collection.mutable
   *
   * Anything outside the recognised shape throws `notYet`.
   */
-class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIRScalarControl:
+class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIRScalarControl, NexMLIRLambdas:
 
   /** MLIR type of an emitted value. Either an LLVM-like scalar or a
     * static-shape tensor. We don't model rank-2 yet — every tensor in
@@ -59,6 +59,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     * directly, so `i64` is enough.
     */
   protected case object MString extends MlirType:
+    def text: String = "i64"
+
+  /** A first-class function value at the MLIR level. Carries an opaque
+    * `i64` pointer to a heap-allocated closure descriptor (`nex_closure`
+    * — see `mlir_runtime.c`) holding the function pointer and env. The
+    * structural shape (param/return types) is tracked at the codegen
+    * level for indirect-call signature inference; the MLIR type itself
+    * is always `i64`.
+    */
+  protected case class MFunc(paramTys: List[MlirType], retTyOpt: Option[MlirType]) extends MlirType:
     def text: String = "i64"
 
   protected case class MlirVal(reg: String, ty: MlirType)
@@ -139,6 +149,11 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     globalDecls.clear()
     userDefs.clear()
     topLevelLiteralInits.clear()
+    lambdaTable.clear()
+    varBindings.clear()
+    boxedVarSet.clear()
+    boxedVarBoxes.clear()
+    currentLambdaCaptures = Map.empty
     tp.allDecls.foreach {
       case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
           if isLiteralScalarExpr(value) =>
@@ -196,6 +211,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     out.append("func.func private @nex_str_format_i64(i64, i64, i64) -> i64\n")
     out.append("func.func private @nex_str_format_f64(i64, i64, f64) -> i64\n")
     out.append("func.func private @nex_str_format_bin(i64, i64, i8, i8) -> i64\n")
+    out.append("func.func private @nex_env_alloc(i64) -> i64\n")
+    out.append("func.func private @nex_env_load_i64(i64, i64) -> i64\n")
+    out.append("func.func private @nex_env_store_i64(i64, i64, i64)\n")
+    out.append("func.func private @nex_closure_make(i64, i64) -> i64\n")
+    out.append("func.func private @nex_closure_fn(i64) -> i64\n")
+    out.append("func.func private @nex_closure_env(i64) -> i64\n")
     // libm bridges declared by the `@intrinsic` decls discovered above.
     // Two-argument libm fns (atan2, hypot, pow) get a (f64, f64) -> f64
     // signature; everything else is unary. `pow` is also declared
@@ -209,6 +230,13 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         out.append(s"func.func private @$n(f64) -> f64\n")
     }
     out.append("\n")
+    // Closure pre-passes: record every `var` binding, then walk the
+    // program a second time to register each TLambda + its capture
+    // layout (which also marks the captured vars as needing heap
+    // boxes via `boxedVarSet`). Both run before any code is emitted
+    // so user-def and main bodies see consistent state.
+    collectVarBindings(tp)
+    collectLambdas(tp)
     // Emit user-defined `def`s as `func.func` ops at module level
     // BEFORE `@main`, so they're visible to call sites inside main
     // (and to each other for mutual recursion). MLIR module ops are
@@ -219,6 +247,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         emitUserDef(f)
       case _ => ()
     }
+    // Synthetic `llvm.func` for each registered lambda. Emitted
+    // before `@main` so its address (taken via `llvm.mlir.addressof`)
+    // resolves at closure construction sites.
+    emitLambdaFunctions()
     out.append("func.func @main() -> i32 {\n")
     nextReg = 0
     env.clear()
@@ -418,6 +450,18 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val r = fresh("inf")
       out.append(s"  $r = arith.constant 0x7FF0000000000000 : f64\n")
       MlirVal(r, MScalar(TyReal))
+
+    case TVarRef(sym, _, _) if currentLambdaCaptures.contains(sym.id) =>
+      // Reading a captured value from inside a lambda body — go
+      // through the env (and box for ByRef). Takes precedence over
+      // varSlots / env lookups because the captured shadow is the
+      // only legitimate view of the var from inside the lambda.
+      emitCapturedRead(sym.id, sym.name)
+
+    case TVarRef(sym, _, _) if boxedVarBoxes.contains(sym.id) =>
+      // Parent-scope read of a boxed var (one that's captured by
+      // some lambda). The actual value lives in the heap box.
+      emitCapturedRead(sym.id, sym.name)
 
     case TVarRef(sym, _, _) if varSlots.contains(sym.id) =>
       emitVarLoad(sym.id)
@@ -687,6 +731,26 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
           // a value.
           notYet(s"unit-returning user def `${s.name}` reached value position")
 
+    case lam: TLambda if lambdaTable.containsKey(lam) =>
+      // Closure construction at the lambda's source location. The
+      // synthetic top-level function was emitted in the pre-pass;
+      // here we build the env (one i64 slot per capture), populate
+      // it from the parent scope, and hand it to `nex_closure_make`
+      // alongside the function pointer.
+      emitLambdaConstruct(lam)
+
+    case call @ TCall(callee, args, _, _)
+        if mlirTypeOf(callee.tpe).exists(_.isInstanceOf[MFunc]) =>
+      // Indirect call: callee evaluates to a closure (i64 descriptor
+      // address). Extract `(fn_ptr, env_ptr)` and dispatch via
+      // `llvm.call`. The callee's `TyFunc` carries the param/return
+      // types we need.
+      val retTyOpt = callee.tpe match
+        case TyFunc(_, TyUnit) => None
+        case TyFunc(_, other)  => mlirTypeOf(other)
+        case _                 => mlirTypeOf(call.tpe)
+      emitIndirectCall(callee, args, retTyOpt)
+
     case TMatMul(lhs, rhs, _, _) =>
       emitMatMul(emitExpr(lhs), emitExpr(rhs))
 
@@ -856,6 +920,18 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
   protected def emitBlockItem(it: TBlockItem): Unit = it match
     case TBlockBinding(sym, BindingKind.Val, value) =>
       env(sym.id) = emitExpr(value)
+    case TBlockBinding(sym, BindingKind.Var, value) if boxedVarSet.contains(sym.id) =>
+      // Captured by some lambda — promote to a heap-allocated box so
+      // its lifetime can outlive the parent frame and closures can
+      // share writes through the box pointer. Reads / writes in the
+      // parent scope route through [[boxedVarBoxes]] (see TVarRef /
+      // TAssign arms above).
+      val v = emitExpr(value)
+      v.ty match
+        case _: MScalar | MString | _: MFunc =>
+          emitBoxedVarAlloc(sym.id)
+          emitBoxedVarStore(sym.id, v)
+        case other => notYet(s"boxed var ${sym.name} of type $other")
     case TBlockBinding(sym, BindingKind.Var, value) =>
       val v = emitExpr(value)
       v.ty match
@@ -877,6 +953,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case other                   => notYet(s"for over $other")
     case TBlockExpr(TWhile(cond, body, _, _)) =>
       emitWhile(cond, body)
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _))
+        if currentLambdaCaptures.contains(sym.id) =>
+      // Mutation through a captured ByRef var (inside a lambda body)
+      // routes through env+box. See [[emitCapturedWrite]].
+      emitCapturedWrite(sym.id, emitExpr(value))
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if boxedVarBoxes.contains(sym.id) =>
+      // Parent-scope mutation of a boxed var — write directly into
+      // the heap box so any closure sharing the box sees the new
+      // value.
+      emitBoxedVarStore(sym.id, emitExpr(value))
     case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varSlots.contains(sym.id) =>
       emitVarStore(sym.id, emitExpr(value))
     case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varTensors.contains(sym.id) =>

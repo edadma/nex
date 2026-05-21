@@ -642,6 +642,7 @@ object NexProgramCorpus:
         |  print(f(10))
       """.stripMargin,
       "11\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -652,6 +653,7 @@ object NexProgramCorpus:
         |  print(sqr(2.5))
       """.stripMargin,
       "6.25\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -663,6 +665,7 @@ object NexProgramCorpus:
         |  print(f(4))
       """.stripMargin,
       "6\n8\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -673,6 +676,7 @@ object NexProgramCorpus:
         |  print(shout("hi"))
       """.stripMargin,
       "hi!\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -953,6 +957,7 @@ object NexProgramCorpus:
         |  print(f(5))
       """.stripMargin,
       "15\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -966,6 +971,7 @@ object NexProgramCorpus:
         |  print(f(10))
       """.stripMargin,
       "11\n110\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -976,6 +982,7 @@ object NexProgramCorpus:
         |  print(apply(x -> x * 2, 3))
       """.stripMargin,
       "6\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -986,6 +993,7 @@ object NexProgramCorpus:
         |  print((3).apply(x -> x * 2))
       """.stripMargin,
       "6\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -996,6 +1004,7 @@ object NexProgramCorpus:
         |  print(f(7))
       """.stripMargin,
       "14\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1006,6 +1015,7 @@ object NexProgramCorpus:
         |  print(apply2((x, y) -> x + y, 4, 5))
       """.stripMargin,
       "9\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1213,6 +1223,7 @@ object NexProgramCorpus:
         |  print(apply(f, 3))
       """.stripMargin,
       "6\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -3734,6 +3745,7 @@ object NexProgramCorpus:
         |  print(c())
       """.stripMargin,
       "1\n2\n3\n",
+      mlir = true,
     ),
     Case(
       "closure escape (§4.11)",
@@ -3755,6 +3767,7 @@ object NexProgramCorpus:
         |  print(b())
       """.stripMargin,
       "1\n2\n1\n3\n2\n",
+      mlir = true,
     ),
     Case(
       "closure escape (§4.11)",
@@ -3770,6 +3783,7 @@ object NexProgramCorpus:
         |  print(r())
       """.stripMargin,
       "42\n42\n",
+      mlir = true,
     ),
 
     // ========================================================================

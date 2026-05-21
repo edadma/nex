@@ -493,3 +493,60 @@ int64_t nex_str_format_bin(int64_t value, int64_t width, int8_t zero_pad, int8_t
     buf[total] = '\0';
     return (int64_t)(intptr_t)nex_str_alloc_descriptor(total, buf);
 }
+
+// ---------------------------------------------------------------------------
+// Closures (escaping lambdas).
+//
+// A closure value is the i64 address of a heap descriptor
+//   { int64_t fn_ptr; int64_t env_ptr; }
+// where fn_ptr is the address of the synthetic `nex_lambda_<N>` function
+// (taken in MLIR via `llvm.mlir.addressof` + `llvm.ptrtoint`) and env_ptr
+// is the address of a heap-allocated env blob.
+//
+// Each lambda's env is a flat byte buffer: 8 bytes per capture slot. ByRef
+// captures store a pointer to a separately heap-allocated "var box" (also
+// an 8-byte cell holding the var's current value); ByVal captures store
+// the captured value directly. The codegen sees env / boxes through plain
+// load_i64 / store_i64 — type information is per-slot at the codegen
+// level only.
+//
+// Refcounting is NOT YET implemented; envs, boxes, and descriptors leak
+// for the duration of the process. Test programs are short-running so
+// the leak is acceptable for the first slice; refcount infrastructure
+// lands when the closure surface expands (see roadmap memo).
+// ---------------------------------------------------------------------------
+
+int64_t nex_env_alloc(int64_t size) {
+    void *p = calloc(1, (size_t)size);
+    return (int64_t)(intptr_t)p;
+}
+
+int64_t nex_env_load_i64(int64_t env, int64_t offset) {
+    int64_t v;
+    memcpy(&v, (char *)(intptr_t)env + offset, sizeof(int64_t));
+    return v;
+}
+
+void nex_env_store_i64(int64_t env, int64_t offset, int64_t value) {
+    memcpy((char *)(intptr_t)env + offset, &value, sizeof(int64_t));
+}
+
+typedef struct {
+    int64_t fn_ptr;
+    int64_t env_ptr;
+} nex_closure;
+
+int64_t nex_closure_make(int64_t fn_ptr, int64_t env) {
+    nex_closure *cl = (nex_closure *)malloc(sizeof(nex_closure));
+    cl->fn_ptr = fn_ptr;
+    cl->env_ptr = env;
+    return (int64_t)(intptr_t)cl;
+}
+
+int64_t nex_closure_fn(int64_t closure) {
+    return ((nex_closure *)(intptr_t)closure)->fn_ptr;
+}
+
+int64_t nex_closure_env(int64_t closure) {
+    return ((nex_closure *)(intptr_t)closure)->env_ptr;
+}
