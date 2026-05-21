@@ -371,14 +371,15 @@ class NexMonomorphize(symbols: SymbolTable):
       case TField(r, n, p, t)         => TField(go(r), n, p, goT(t))
       case TTupleProj(r, i, p, t)     => TTupleProj(go(r), i, p, goT(t))
       case TSlice(a, lo, hi, inc, p, t) =>
-        TSlice(go(a), go(lo), go(hi), inc, p, goT(t))
+        TSlice(go(a), lo.map(go), hi.map(go), inc, p, goT(t))
       case TSlice2(a, rAx, cAx, p, t) =>
         def axGo(ax: TAxisSpec): TAxisSpec = ax match
           case TAxisAll              => TAxisAll
           case TAxisIndex(x)         => TAxisIndex(go(x))
-          case TAxisRange(lo, hi, i) => TAxisRange(go(lo), go(hi), i)
+          case TAxisRange(lo, hi, i) => TAxisRange(lo.map(go), hi.map(go), i)
         TSlice2(go(a), axGo(rAx), axGo(cAx), p, goT(t))
       case _: TAxisAllMark            => e
+      case _: TOpenSliceMark          => e
       case TMethodCall(r, n, args, p, t) =>
         TMethodCall(go(r), n, args.map(go), p, goT(t))
 
@@ -466,7 +467,7 @@ class NexMonomorphize(symbols: SymbolTable):
     def go(x: TExpr): TExpr = rewriteExpr(x)
     e match
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TIntrinsic => e
+         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => e
       case TInterpStringLit(parts, p, t) =>
         TInterpStringLit(parts.map {
           case TInterpExpr(x) => TInterpExpr(go(x))
@@ -497,12 +498,12 @@ class NexMonomorphize(symbols: SymbolTable):
       case TIndex(a, idx, p, t)       => TIndex(go(a), idx.map(go), p, t)
       case TField(r, n, p, t)         => TField(go(r), n, p, t)
       case TTupleProj(r, i, p, t)     => TTupleProj(go(r), i, p, t)
-      case TSlice(a, lo, hi, inc, p, t) => TSlice(go(a), go(lo), go(hi), inc, p, t)
+      case TSlice(a, lo, hi, inc, p, t) => TSlice(go(a), lo.map(go), hi.map(go), inc, p, t)
       case TSlice2(a, rAx, cAx, p, t) =>
         def axGo(ax: TAxisSpec): TAxisSpec = ax match
           case TAxisAll              => TAxisAll
           case TAxisIndex(x)         => TAxisIndex(go(x))
-          case TAxisRange(lo, hi, i) => TAxisRange(go(lo), go(hi), i)
+          case TAxisRange(lo, hi, i) => TAxisRange(lo.map(go), hi.map(go), i)
         TSlice2(go(a), axGo(rAx), axGo(cAx), p, t)
       case TMethodCall(r, n, args, p, t) => TMethodCall(go(r), n, args.map(go), p, t)
       case TLambda(ps, body, p, t)      => TLambda(ps, go(body), p, t)

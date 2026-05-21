@@ -778,15 +778,20 @@ class NexInterpreter:
                 (k, k + 1, true)
               case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
           case TAxisRange(lo, hi, inclusive) =>
-            (evalExpr(lo, env), evalExpr(hi, env)) match
-              case (VInt(l), VInt(h)) =>
-                val lI    = wrapNeg(l.toInt, extent).toInt
-                val hI    = wrapNeg(h.toInt, extent).toInt
-                val hExcl = if inclusive then hI + 1 else hI
-                if lI < 0 || hExcl > extent || lI > hExcl then
-                  trap(s"$label slice [$l..${if inclusive then "=" else ""}${h}] out of bounds for extent $extent", p)
-                (lI, hExcl, false)
-              case (l, h) => trap(s"$label slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+            def axisBound(o: Option[TExpr], default: Int): Long = o match
+              case None    => default.toLong
+              case Some(e) =>
+                evalExpr(e, env) match
+                  case VInt(x) => x
+                  case other   => trap(s"$label slice bounds must be integers, got ${formatValue(other)}", p)
+            val l     = axisBound(lo, 0)
+            val h     = axisBound(hi, extent)
+            val lI    = wrapNeg(l.toInt, extent).toInt
+            val hI    = wrapNeg(h.toInt, extent).toInt
+            val hExcl = if inclusive then hI + 1 else hI
+            if lI < 0 || hExcl > extent || lI > hExcl then
+              trap(s"$label slice [$l..${if inclusive then "=" else ""}${h}] out of bounds for extent $extent", p)
+            (lI, hExcl, false)
 
       val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
       val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")
@@ -814,6 +819,9 @@ class NexInterpreter:
     case _: TAxisAllMark =>
       trap("internal: TAxisAllMark survived to interpreter; should be Stage-2-only", e.pos)
 
+    case _: TOpenSliceMark =>
+      trap("internal: TOpenSliceMark survived to interpreter; should be Stage-2-only", e.pos)
+
     case TClone(arr, p, _) =>
       // Spec §8.3: deep-copy an array. Inserted by NexLifetime at move
       // sites where the source has a later use. The result is a freshly-
@@ -830,15 +838,23 @@ class NexInterpreter:
       // `lo..=hi`. Negative bounds count from the end (`a[-1] ==
       // a[length(a)-1]`); the wrap happens BEFORE the bounds check
       // so an over-negative bound (`a[-10..2]` on a 3-element array)
-      // still traps. The result is a fresh VArray1.
+      // still traps. Open-ended bounds (`a[..hi]`, `a[lo..]`, `a[..]`)
+      // arrive with `lo` or `hi` as `None`; they fill from the array's
+      // runtime extent (0 for lo, length for hi). The result is a
+      // fresh VArray1.
       val av = evalExpr(arr, env)
-      val (loRaw, hiRaw) = (evalExpr(lo, env), evalExpr(hi, env)) match
-        case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
-        case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+      def asIntBound(o: Option[TExpr], default: Int): Int = o match
+        case None    => default
+        case Some(e) =>
+          evalExpr(e, env) match
+            case VInt(x) => x.toInt
+            case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
       av match
         case VArray1(b) =>
-          val loI  = wrapNeg(loRaw, b.size).toInt
-          val hiI  = wrapNeg(hiRaw, b.size).toInt
+          val loRaw = asIntBound(lo, 0)
+          val hiRaw = asIntBound(hi, b.size)
+          val loI   = wrapNeg(loRaw, b.size).toInt
+          val hiI   = wrapNeg(hiRaw, b.size).toInt
           val upper = if inclusive then hiI + 1 else hiI
           if loI < 0 || upper > b.size || loI > upper then
             trap(s"slice [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
@@ -1173,13 +1189,18 @@ class NexInterpreter:
 
       case TSlice(arr, lo, hi, inclusive, _, _) =>
         val av = evalExpr(arr, env)
-        val (loRaw, hiRaw) = (evalExpr(lo, env), evalExpr(hi, env)) match
-          case (VInt(l), VInt(h)) => (l.toInt, h.toInt)
-          case (l, h)             => trap(s"slice bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+        def asIntBound(o: Option[TExpr], default: Int): Int = o match
+          case None    => default
+          case Some(e) =>
+            evalExpr(e, env) match
+              case VInt(x) => x.toInt
+              case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
         av match
           case VArray1(b) =>
-            val loI  = wrapNeg(loRaw, b.size).toInt
-            val hiI  = wrapNeg(hiRaw, b.size).toInt
+            val loRaw = asIntBound(lo, 0)
+            val hiRaw = asIntBound(hi, b.size)
+            val loI   = wrapNeg(loRaw, b.size).toInt
+            val hiI   = wrapNeg(hiRaw, b.size).toInt
             val upper = if inclusive then hiI + 1 else hiI
             if loI < 0 || upper > b.size || loI > upper then
               trap(s"slice-assign [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
@@ -1214,15 +1235,20 @@ class NexInterpreter:
                   (k, k + 1, true)
                 case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
             case TAxisRange(lo, hi, inclusive) =>
-              (evalExpr(lo, env), evalExpr(hi, env)) match
-                case (VInt(l), VInt(h)) =>
-                  val lI    = wrapNeg(l.toInt, extent).toInt
-                  val hI    = wrapNeg(h.toInt, extent).toInt
-                  val hExcl = if inclusive then hI + 1 else hI
-                  if lI < 0 || hExcl > extent || lI > hExcl then
-                    trap(s"$label slice-assign [$l..${if inclusive then "=" else ""}$h] out of bounds for extent $extent", p)
-                  (lI, hExcl, false)
-                case (l, h) => trap(s"$label slice-assign bounds must be integers, got ${formatValue(l)} and ${formatValue(h)}", p)
+              def axisBound(o: Option[TExpr], default: Int): Long = o match
+                case None    => default.toLong
+                case Some(e) =>
+                  evalExpr(e, env) match
+                    case VInt(x) => x
+                    case other   => trap(s"$label slice-assign bounds must be integers, got ${formatValue(other)}", p)
+              val l     = axisBound(lo, 0)
+              val h     = axisBound(hi, extent)
+              val lI    = wrapNeg(l.toInt, extent).toInt
+              val hI    = wrapNeg(h.toInt, extent).toInt
+              val hExcl = if inclusive then hI + 1 else hI
+              if lI < 0 || hExcl > extent || lI > hExcl then
+                trap(s"$label slice-assign [$l..${if inclusive then "=" else ""}$h] out of bounds for extent $extent", p)
+              (lI, hExcl, false)
 
         val (rLo, rHi, rCollapsed) = resolveAxis(rowAx, rows, "row")
         val (cLo, cHi, cCollapsed) = resolveAxis(colAx, cols, "col")

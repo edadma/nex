@@ -60,15 +60,17 @@ protected trait NexElabLowering extends NexElabState:
     case TUnaryOp(op, x, p, t)         => TUnaryOp(op, lowerExpr(x), p, t)
     case TCall(c, args, p, t)          => TCall(lowerExpr(c), args.map(lowerExpr), p, t)
     case TIndex(a, i, p, t)            => TIndex(lowerExpr(a), i.map(lowerExpr), p, t)
-    case TSlice(a, lo, hi, inc, p, t)  => TSlice(lowerExpr(a), lowerExpr(lo), lowerExpr(hi), inc, p, t)
+    case TSlice(a, lo, hi, inc, p, t)  => TSlice(lowerExpr(a), lo.map(lowerExpr), hi.map(lowerExpr), inc, p, t)
     case TSlice2(a, rAx, cAx, p, t)    =>
       def lowAxis(s: TAxisSpec): TAxisSpec = s match
         case TAxisAll              => TAxisAll
         case TAxisIndex(e)         => TAxisIndex(lowerExpr(e))
-        case TAxisRange(lo, hi, i) => TAxisRange(lowerExpr(lo), lowerExpr(hi), i)
+        case TAxisRange(lo, hi, i) => TAxisRange(lo.map(lowerExpr), hi.map(lowerExpr), i)
       TSlice2(lowerExpr(a), lowAxis(rAx), lowAxis(cAx), p, t)
     case _: TAxisAllMark =>
       sys.error("internal: TAxisAllMark survived Stage 2; should have been consumed by inferIndex")
+    case _: TOpenSliceMark =>
+      sys.error("internal: TOpenSliceMark survived Stage 2; should have been consumed by inferIndex")
     case TField(r, n, p, t)            => TField(lowerExpr(r), n, p, t)
     case TTupleProj(r, idx, p, t)      => TTupleProj(lowerExpr(r), idx, p, t)
     case TLambda(params, body, p, t)   => TLambda(params, lowerExpr(body), p, t)
@@ -235,15 +237,20 @@ protected trait NexElabLowering extends NexElabState:
       case TCall(c, args, _, _)        => walkForMutations(c, reads, names); args.foreach(a => walkForMutations(a, reads, names))
       case TIndex(a, idx, _, _)        => walkForMutations(a, reads, names); idx.foreach(i => walkForMutations(i, reads, names))
       case TSlice(a, lo, hi, _, _, _)  =>
-        walkForMutations(a, reads, names); walkForMutations(lo, reads, names); walkForMutations(hi, reads, names)
+        walkForMutations(a, reads, names)
+        lo.foreach(e => walkForMutations(e, reads, names))
+        hi.foreach(e => walkForMutations(e, reads, names))
       case TSlice2(a, rAx, cAx, _, _)  =>
         walkForMutations(a, reads, names)
         List(rAx, cAx).foreach {
           case TAxisIndex(e)         => walkForMutations(e, reads, names)
-          case TAxisRange(lo, hi, _) => walkForMutations(lo, reads, names); walkForMutations(hi, reads, names)
+          case TAxisRange(lo, hi, _) =>
+            lo.foreach(e => walkForMutations(e, reads, names))
+            hi.foreach(e => walkForMutations(e, reads, names))
           case TAxisAll              => ()
         }
       case _: TAxisAllMark             => ()
+      case _: TOpenSliceMark           => ()
       case TField(r, _, _, _)          => walkForMutations(r, reads, names)
       case TTupleProj(r, _, _, _)      => walkForMutations(r, reads, names)
       case TMethodCall(r, _, args, _,_) => walkForMutations(r, reads, names); args.foreach(a => walkForMutations(a, reads, names))

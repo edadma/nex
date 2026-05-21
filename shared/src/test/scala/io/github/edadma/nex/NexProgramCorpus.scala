@@ -1170,6 +1170,55 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "open-ended slice bounds (`a[lo..]`, `a[..hi]`, `a[..]`)",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[2..])
+        |  print(a[..3])
+        |  print(a[..])
+        |  print(a[..=2])
+      """.stripMargin,
+      "[30, 40, 50]\n[10, 20, 30]\n[10, 20, 30, 40, 50]\n[10, 20, 30]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended slice bounds combine with negative indices",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a[-3..])
+        |  print(a[..-1])
+        |  print(a[..=-1])
+      """.stripMargin,
+      "[30, 40, 50]\n[10, 20, 30, 40]\n[10, 20, 30, 40, 50]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended axis bounds on rank-2 slices",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  print(m[1.., :])
+        |  print(m[1.., 1..])
+        |  print(m[..2, ..2])
+      """.stripMargin,
+      "[[4, 5, 6], [7, 8, 9]]\n[[5, 6], [8, 9]]\n[[1, 2], [4, 5]]\n",
+    ),
+    Case(
+      "arrays",
+      "open-ended slice-assign target (`v[-2..] = rhs`)",
+      """
+        |def main() =
+        |  var v = [100, 200, 300, 400, 500]
+        |  v[-2..] = [44, 55]
+        |  v[..2] = [11, 22]
+        |  print(v)
+      """.stripMargin,
+      "[11, 22, 300, 44, 55]\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))
