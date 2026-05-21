@@ -1,6 +1,23 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
+
+/* Runtime traps. These mirror the LLVM-backend trap messages — the
+ * MLIR backend has no setjmp/longjmp / `assert_traps` machinery yet, so
+ * a trap prints to stdout (where parity tests compare) and exits with
+ * status 1. The message text matches `NexLLVMPreamble`'s `slice_oob_msg`
+ * and `axis_oob_msg` byte-for-byte.
+ */
+void nex_trap_slice_oob(void) {
+    printf("trap: slice out of bounds\n");
+    exit(1);
+}
+
+void nex_trap_axis_oob(void) {
+    printf("trap: axis index out of bounds\n");
+    exit(1);
+}
 
 /* ---------------------------------------------------------------------------
  * Scalar formatting helpers used by both scalar print and the per-element

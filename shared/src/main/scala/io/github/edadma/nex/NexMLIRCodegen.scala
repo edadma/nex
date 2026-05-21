@@ -100,6 +100,8 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_array_1d_bool(i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_bool(i64, i64, i64)\n")
     out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
+    out.append("func.func private @nex_trap_slice_oob()\n")
+    out.append("func.func private @nex_trap_axis_oob()\n")
     // libm bridges declared by the `@intrinsic` decls discovered above.
     // Two-argument libm fns (atan2, hypot, pow) get a (f64, f64) -> f64
     // signature; everything else is unary. `pow` is also declared
@@ -915,35 +917,40 @@ class NexMLIRCodegen:
         AxisSliceD(c0Idx, srcDimIdx(), c1Idx, collapsed = false)
 
       case TAxisIndex(e) =>
+        val total = srcDimIdx()
         val v = emitExpr(e)
-        val offsetR = fresh("aix")
-        out.append(s"  $offsetR = arith.index_cast ${v.reg} : i64 to index\n")
+        val rawR = fresh("airaw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        val offsetR = wrapNegBound(rawR, total)
+        emitAxisIndexTrap(offsetR, total, c0Idx)
         AxisSliceD(offsetR, "1", "1", collapsed = true)
 
       case TAxisRange(loE, hiE, inclusive, strideE) =>
+        val total = srcDimIdx()
         val loIdx = loE match
           case Some(e) =>
             val v = emitExpr(e)
-            val r = fresh("loix")
-            out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
-            r
+            val rawR = fresh("loraw")
+            out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+            wrapNegBound(rawR, total)
           case None => c0Idx
         val hiIdx = hiE match
           case Some(e) =>
             val v = emitExpr(e)
-            val hiBase = fresh("hix")
-            out.append(s"  $hiBase = arith.index_cast ${v.reg} : i64 to index\n")
+            val rawR = fresh("hiraw")
+            out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+            val wrapped = wrapNegBound(rawR, total)
             if inclusive then
               val r = fresh("hix1")
-              out.append(s"  $r = arith.addi $hiBase, $c1Idx : index\n")
+              out.append(s"  $r = arith.addi $wrapped, $c1Idx : index\n")
               r
-            else hiBase
+            else wrapped
           case None =>
             if inclusive then
               val r = fresh("hix1")
-              out.append(s"  $r = arith.addi ${srcDimIdx()}, $c1Idx : index\n")
+              out.append(s"  $r = arith.addi $total, $c1Idx : index\n")
               r
-            else srcDimIdx()
+            else total
         val strideIdx = strideE match
           case Some(e) =>
             val v = emitExpr(e)
@@ -951,6 +958,7 @@ class NexMLIRCodegen:
             out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
             r
           case None => c1Idx
+        emitSliceBoundsTrap(loIdx, hiIdx, total, strideIdx, c0Idx, strideE.isDefined)
         val rawSpan = fresh("span")
         out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
         val spanC = fresh("spanc")
@@ -1023,11 +1031,11 @@ class NexMLIRCodegen:
     *   - Stride defaults to 1; runtime stride uses ceil-divide for the
     *     output length: `(max(0, span) + stride - 1) / stride`.
     *
-    * Out-of-range bounds aren't trapped here (the static path doesn't
-    * either) — MLIR's `tensor.extract_slice` will assert at run time
-    * if the inputs violate the op's invariants. Tightening this to
-    * match the LLVM backend's user-facing trap (`slice oob`) is a
-    * separate concern from the dynamic-shape plumbing.
+    * Negative-bound wrap (spec §4.14): `lo`/`hi` < 0 maps to
+    * `bound + len` before the bounds check, so `a[-3..len]` selects
+    * the last three elements. The check itself trips `lo < 0` after
+    * wrap (over-negative input) or `hi > len`, routing through
+    * `nex_trap_slice_oob`. Stride <= 0 also traps.
     */
   private def emitRank1SliceDynamic(
       av:        MlirVal,
@@ -1059,21 +1067,22 @@ class NexMLIRCodegen:
     val loIdx = loE match
       case Some(e) =>
         val v = emitExpr(e)
-        val r = fresh("loix")
-        out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
-        r
+        val rawR = fresh("loraw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        wrapNegBound(rawR, srcLenIdx)
       case None => c0Idx
 
     val hiIdx = hiE match
       case Some(e) =>
         val v = emitExpr(e)
-        val hiBase = fresh("hix")
-        out.append(s"  $hiBase = arith.index_cast ${v.reg} : i64 to index\n")
+        val rawR = fresh("hiraw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        val wrapped = wrapNegBound(rawR, srcLenIdx)
         if inclusive then
           val r = fresh("hix1")
-          out.append(s"  $r = arith.addi $hiBase, $c1Idx : index\n")
+          out.append(s"  $r = arith.addi $wrapped, $c1Idx : index\n")
           r
-        else hiBase
+        else wrapped
       case None =>
         if inclusive then
           val r = fresh("hix1")
@@ -1088,6 +1097,8 @@ class NexMLIRCodegen:
         out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
         r
       case None => c1Idx
+
+    emitSliceBoundsTrap(loIdx, hiIdx, srcLenIdx, strideIdx, c0Idx, strideE.isDefined)
 
     val rawSpan = fresh("span")
     out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
@@ -1105,6 +1116,73 @@ class NexMLIRCodegen:
       s"  $r = tensor.extract_slice ${av.reg}[$loIdx] [$sliceLen] [$strideIdx] : ${srcTy.text} to ${outTy.text}\n",
     )
     MlirVal(r, outTy)
+
+  /** Negative-bound wrap (spec §4.14): if `raw < 0` return `raw + extent`,
+    * otherwise `raw`. Mirrors the LLVM backend's `wrapNegBound`. The
+    * caller's bounds check still runs on the result, so an
+    * over-negative input (e.g. `lo = -10` on a length-3 array)
+    * still trips the `< 0` clause and traps.
+    */
+  private def wrapNegBound(raw: String, extent: String): String =
+    val c0 = fresh("wc0")
+    out.append(s"  $c0 = arith.constant 0 : index\n")
+    val isNeg = fresh("wneg")
+    out.append(s"  $isNeg = arith.cmpi slt, $raw, $c0 : index\n")
+    val wrapped = fresh("wwrap")
+    out.append(s"  $wrapped = arith.addi $raw, $extent : index\n")
+    val out0 = fresh("wout")
+    out.append(s"  $out0 = arith.select $isNeg, $wrapped, $raw : index\n")
+    out0
+
+  /** Emit the rank-1 slice bounds-check trap. Conditions match the LLVM
+    * backend: post-wrap `lo < 0` (over-negative), `hi < lo`, `hi >
+    * srcLen`, plus stride `<= 0` when the slice was user-stride'd.
+    * Branch to `nex_trap_slice_oob` on failure; the function exits.
+    */
+  private def emitSliceBoundsTrap(
+      loIdx:    String,
+      hiIdx:    String,
+      srcLen:   String,
+      stride:   String,
+      c0Idx:    String,
+      hasStride: Boolean,
+  ): Unit =
+    val negLo = fresh("nlo")
+    out.append(s"  $negLo = arith.cmpi slt, $loIdx, $c0Idx : index\n")
+    val hiLtLo = fresh("hlt")
+    out.append(s"  $hiLtLo = arith.cmpi slt, $hiIdx, $loIdx : index\n")
+    val hiBad = fresh("hbad")
+    out.append(s"  $hiBad = arith.cmpi sgt, $hiIdx, $srcLen : index\n")
+    val any01 = fresh("any1")
+    out.append(s"  $any01 = arith.ori $negLo, $hiLtLo : i1\n")
+    val any02 = fresh("any2")
+    out.append(s"  $any02 = arith.ori $any01, $hiBad : i1\n")
+    val any = if hasStride then
+      val sBad = fresh("sbad")
+      out.append(s"  $sBad = arith.cmpi sle, $stride, $c0Idx : index\n")
+      val a = fresh("any")
+      out.append(s"  $a = arith.ori $any02, $sBad : i1\n")
+      a
+    else any02
+    out.append(s"  scf.if $any {\n")
+    out.append(s"    func.call @nex_trap_slice_oob() : () -> ()\n")
+    out.append(s"    scf.yield\n")
+    out.append(s"  }\n")
+
+  /** Axis-index trap for the rank-2 `TAxisIndex` case: after wrap,
+    * `iv < 0` or `iv >= total` routes through `nex_trap_axis_oob`.
+    */
+  private def emitAxisIndexTrap(iv: String, total: String, c0Idx: String): Unit =
+    val neg = fresh("aneg")
+    out.append(s"  $neg = arith.cmpi slt, $iv, $c0Idx : index\n")
+    val ge = fresh("age")
+    out.append(s"  $ge = arith.cmpi sge, $iv, $total : index\n")
+    val bad = fresh("abad")
+    out.append(s"  $bad = arith.ori $neg, $ge : i1\n")
+    out.append(s"  scf.if $bad {\n")
+    out.append(s"    func.call @nex_trap_axis_oob() : () -> ()\n")
+    out.append(s"    scf.yield\n")
+    out.append(s"  }\n")
 
   /** Allocate a stack slot for a `var <sym>` scalar binding and store
     * the initial value. The slot lives in `varSlots` keyed by symbol
