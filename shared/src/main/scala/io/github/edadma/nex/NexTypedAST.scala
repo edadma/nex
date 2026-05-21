@@ -106,6 +106,29 @@ enum KindConstraint:
     case (Eq,      TyComplex) => true
     case _                    => false
 
+/** Substitute every [[TyKindVar]] in `t` whose name appears in `subs`
+  * with the corresponding concrete type. The same helper is shared by
+  * the elaborator (for resolving [[AppliedType]] annotations and field
+  * types in generic struct decls) and the monomorphizer (for cloning
+  * specialized bodies). Names not present in `subs` are passed through
+  * — so a partial substitution applied to a deeper template leaves the
+  * remaining kind-variables in place.
+  */
+def substituteTyKindVars(t: Type, subs: Map[String, Type]): Type = t match
+  case TyKindVar(name, _) => subs.getOrElse(name, t)
+  case TyArray(e, r)      => TyArray(substituteTyKindVars(e, subs), r)
+  case TyTuple(es)        => TyTuple(es.map(substituteTyKindVars(_, subs)))
+  case TyStruct(n, fs)    => TyStruct(n, fs.map { case (fn, ft) => (fn, substituteTyKindVars(ft, subs)) })
+  case TyEnum(n, vs)      => TyEnum(n, vs.map { case (vn, vfs) =>
+      (vn, vfs.map { case (fn, ft) => (fn, substituteTyKindVars(ft, subs)) })
+    })
+  case TyFunc(ps, r) =>
+    TyFunc(
+      ps.map { case (pt, m) => (substituteTyKindVars(pt, subs), m) },
+      substituteTyKindVars(r, subs),
+    )
+  case _ => t
+
 // ============================================================================
 // Symbols (resolved names)
 // ============================================================================
@@ -446,10 +469,11 @@ case class TFunDecl(
 ) extends TDecl
 
 case class TStructDecl(
-    sym:       Symbol,
-    fields:    List[(String, Type)],
-    isPrivate: Boolean,
-    pos:       Option[Position] = None,
+    sym:        Symbol,
+    fields:     List[(String, Type)],
+    isPrivate:  Boolean,
+    typeParams: List[Symbol] = Nil,
+    pos:        Option[Position] = None,
 ) extends TDecl
 
 /** Sum-type declaration. `sym` is the type's name (kind=TypeName); each
@@ -459,10 +483,11 @@ case class TStructDecl(
   * runtime tag.
   */
 case class TEnumDecl(
-    sym:       Symbol,
-    variants:  List[(Symbol, List[(String, Type)])],
-    isPrivate: Boolean,
-    pos:       Option[Position] = None,
+    sym:        Symbol,
+    variants:   List[(Symbol, List[(String, Type)])],
+    isPrivate:  Boolean,
+    typeParams: List[Symbol] = Nil,
+    pos:        Option[Position] = None,
 ) extends TDecl
 
 case class TTopBinding(

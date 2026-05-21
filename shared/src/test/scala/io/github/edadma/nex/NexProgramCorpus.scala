@@ -4815,4 +4815,353 @@ object NexProgramCorpus:
       """.stripMargin,
       "yes\nord\nord\n",
     ),
+
+    // ========================================================================
+    // user-defined generics — Stage 2 (generic structs)
+    // ========================================================================
+
+    Case(
+      "user generic structs",
+      "single-param Box[T] construct + field access (integer)",
+      """
+        |struct Box[T]
+        |  value: T
+        |end Box
+        |
+        |def main() =
+        |  val b = Box(42)
+        |  print(b.value)
+      """.stripMargin,
+      "42\n",
+    ),
+    Case(
+      "user generic structs",
+      "single-param Box[T] specialized for string in the same program",
+      """
+        |struct Box[T]
+        |  value: T
+        |end Box
+        |
+        |def main() =
+        |  val a = Box(42)
+        |  val b = Box("hi")
+        |  print(a.value)
+        |  print(b.value)
+      """.stripMargin,
+      "42\nhi\n",
+    ),
+    Case(
+      "user generic structs",
+      "multi-param Pair[A, B] heterogeneous specialization",
+      """
+        |struct Pair[A, B]
+        |  fst: A
+        |  snd: B
+        |end Pair
+        |
+        |def main() =
+        |  val p = Pair(1, "hi")
+        |  print(p.fst)
+        |  print(p.snd)
+      """.stripMargin,
+      "1\nhi\n",
+    ),
+    Case(
+      "user generic structs",
+      "nested generic: Pair of Pairs",
+      """
+        |struct Pair[A, B]
+        |  fst: A
+        |  snd: B
+        |end Pair
+        |
+        |def main() =
+        |  val p = Pair(Pair(1, 2), Pair(3, 4))
+        |  print(p.fst.fst)
+        |  print(p.fst.snd)
+        |  print(p.snd.fst)
+        |  print(p.snd.snd)
+      """.stripMargin,
+      "1\n2\n3\n4\n",
+    ),
+    Case(
+      "user generic structs",
+      "generic struct passed to a generic function",
+      """
+        |struct Box[T]
+        |  value: T
+        |end Box
+        |
+        |def unbox[T](b: Box[T]): T = b.value
+        |
+        |def main() =
+        |  print(unbox(Box(7)))
+        |  print(unbox(Box("hi")))
+      """.stripMargin,
+      "7\nhi\n",
+    ),
+    Case(
+      "user generic structs",
+      "Pair specialized for integer reused across construction sites",
+      """
+        |struct Pair[A, B]
+        |  fst: A
+        |  snd: B
+        |end Pair
+        |
+        |def main() =
+        |  val p = Pair(1, 2)
+        |  val q = Pair(3, 4)
+        |  print(p.fst + q.snd)
+      """.stripMargin,
+      "5\n",
+    ),
+    Case(
+      "user generic structs",
+      "ord-constrained type param accepts ordered comparisons via field",
+      """
+        |struct OrdBox[T: Ord]
+        |  value: T
+        |end OrdBox
+        |
+        |def main() =
+        |  val a = OrdBox(3)
+        |  val b = OrdBox(7)
+        |  print(if a.value < b.value then "less" else "geq")
+      """.stripMargin,
+      "less\n",
+    ),
+    Case(
+      "user generic structs",
+      "explicit type annotation Pair[integer, string]",
+      """
+        |struct Pair[A, B]
+        |  fst: A
+        |  snd: B
+        |end Pair
+        |
+        |def main() =
+        |  val p: Pair[integer, string] = Pair(1, "hi")
+        |  print(p.fst)
+        |  print(p.snd)
+      """.stripMargin,
+      "1\nhi\n",
+    ),
+    Case(
+      "user generic structs",
+      "field write through a specialized generic struct (var binding)",
+      """
+        |struct Box[T]
+        |  value: T
+        |end Box
+        |
+        |def main() =
+        |  var b = Box(1)
+        |  b.value = 99
+        |  print(b.value)
+      """.stripMargin,
+      "99\n",
+    ),
+
+    // ========================================================================
+    // user-defined generics — Stage 2 (generic enums)
+    // ========================================================================
+
+    Case(
+      "user generic enums",
+      "Opt[T] Some(integer) match",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val x = Some(42)
+        |  val msg: string = x match
+        |    Some(v) -> "got"
+        |    None    -> "none"
+        |  print(msg)
+      """.stripMargin,
+      "got\n",
+    ),
+    Case(
+      "user generic enums",
+      "Opt[T] bound to bare variant via annotation",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val x: Opt[integer] = None
+        |  val msg: string = x match
+        |    Some(_) -> "got"
+        |    None    -> "nothing"
+        |  print(msg)
+      """.stripMargin,
+      "nothing\n",
+    ),
+    Case(
+      "user generic enums",
+      "Opt[T] payload binding read in arm body",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val x = Some(7)
+        |  val v: integer = x match
+        |    Some(n) -> n
+        |    None    -> 0
+        |  print(v)
+      """.stripMargin,
+      "7\n",
+    ),
+    Case(
+      "user generic enums",
+      "Opt[T] specialized for string + integer in the same program",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val a = Some(1)
+        |  val b = Some("hi")
+        |  val sa: string = a match
+        |    Some(_) -> "int"
+        |    None    -> "none"
+        |  val sb: string = b match
+        |    Some(_) -> "str"
+        |    None    -> "none"
+        |  print(sa)
+        |  print(sb)
+      """.stripMargin,
+      "int\nstr\n",
+    ),
+    Case(
+      "user generic enums",
+      "Result[T, E] heterogeneous match",
+      """
+        |enum Result[T, E] =
+        |  Ok(value: T)
+        |  Err(error: E)
+        |end Result
+        |
+        |def main() =
+        |  val r: Result[integer, string] = Ok(7)
+        |  val v: integer = r match
+        |    Ok(n)  -> n
+        |    Err(_) -> -1
+        |  print(v)
+      """.stripMargin,
+      "7\n",
+    ),
+    Case(
+      "user generic enums",
+      "Result[T, E] specialized differently across sites",
+      """
+        |enum Result[T, E] =
+        |  Ok(value: T)
+        |  Err(error: E)
+        |end Result
+        |
+        |def main() =
+        |  val r1: Result[integer, string] = Ok(7)
+        |  val r2: Result[integer, string] = Err("oops")
+        |  val a: integer = r1 match
+        |    Ok(n)  -> n
+        |    Err(_) -> -1
+        |  val b: string = r2 match
+        |    Ok(_)  -> "ok"
+        |    Err(m) -> m
+        |  print(a)
+        |  print(b)
+      """.stripMargin,
+      "7\noops\n",
+    ),
+    Case(
+      "user generic enums",
+      "generic enum read through a generic function",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def unwrap_or[T](o: Opt[T], d: T): T =
+        |  o match
+        |    Some(v) -> v
+        |    None    -> d
+        |
+        |def main() =
+        |  print(unwrap_or(Some(7), 0))
+        |  print(unwrap_or(Some("hi"), "miss"))
+      """.stripMargin,
+      "7\nhi\n",
+    ),
+    Case(
+      "user generic enums",
+      "Ord-constrained enum payload comparison",
+      """
+        |enum Opt[T: Ord] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val a = Some(3)
+        |  val b = Some(7)
+        |  val aOk: bool = a match
+        |    Some(n) -> n < 5
+        |    None    -> false
+        |  val bOk: bool = b match
+        |    Some(n) -> n < 5
+        |    None    -> false
+        |  print(aOk)
+        |  print(bOk)
+      """.stripMargin,
+      "true\nfalse\n",
+    ),
+    Case(
+      "user generic enums",
+      "explicit Opt[integer] annotation drives spec",
+      """
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |end Opt
+        |
+        |def main() =
+        |  val x: Opt[integer] = Some(99)
+        |  val v: integer = x match
+        |    Some(n) -> n
+        |    None    -> 0
+        |  print(v)
+      """.stripMargin,
+      "99\n",
+    ),
+    Case(
+      "user generic enums",
+      "wildcard arm covers the rest",
+      """
+        |enum Result[T, E] =
+        |  Ok(value: T)
+        |  Err(error: E)
+        |end Result
+        |
+        |def main() =
+        |  val r: Result[integer, string] = Ok(1)
+        |  val s: string = r match
+        |    Ok(_) -> "ok"
+        |    _     -> "other"
+        |  print(s)
+      """.stripMargin,
+      "ok\n",
+    ),
   )

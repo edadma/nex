@@ -126,6 +126,35 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
           isPrivate = true),
       )
     }
+
+    "parse generic struct with one type parameter" in {
+      val src =
+        """struct Box[T]
+          |  value: T""".stripMargin
+      parseProg(src).decls shouldBe List(
+        StructDeclAST("Box",
+          List(StructField("value", NamedType("T"))),
+          typeParams = List(TypeParamAST("T", None))),
+      )
+    }
+
+    "parse generic struct with constrained type parameters" in {
+      val src =
+        """struct Pair[A, B: Numeric]
+          |  fst: A
+          |  snd: B""".stripMargin
+      parseProg(src).decls shouldBe List(
+        StructDeclAST("Pair",
+          List(
+            StructField("fst", NamedType("A")),
+            StructField("snd", NamedType("B")),
+          ),
+          typeParams = List(
+            TypeParamAST("A", None),
+            TypeParamAST("B", Some("Numeric")),
+          )),
+      )
+    }
   }
 
   // ========================================================================
@@ -176,6 +205,39 @@ class NexParserPass2Tests extends AnyWordSpec with Matchers:
         EnumDeclAST("Hidden",
           List(EnumVariantAST("One", Nil), EnumVariantAST("Two", Nil)),
           isPrivate = true),
+      )
+    }
+
+    "parse generic enum with one type parameter" in {
+      val src =
+        """enum Opt[T] =
+          |  Some(value: T)
+          |  None""".stripMargin
+      parseProg(src).decls shouldBe List(
+        EnumDeclAST("Opt",
+          List(
+            EnumVariantAST("Some", List(StructField("value", NamedType("T")))),
+            EnumVariantAST("None", Nil),
+          ),
+          typeParams = List(TypeParamAST("T", None))),
+      )
+    }
+
+    "parse generic enum with two type parameters" in {
+      val src =
+        """enum Either[L, R] =
+          |  Left(value: L)
+          |  Right(value: R)""".stripMargin
+      parseProg(src).decls shouldBe List(
+        EnumDeclAST("Either",
+          List(
+            EnumVariantAST("Left",  List(StructField("value", NamedType("L")))),
+            EnumVariantAST("Right", List(StructField("value", NamedType("R")))),
+          ),
+          typeParams = List(
+            TypeParamAST("L", None),
+            TypeParamAST("R", None),
+          )),
       )
     }
   }

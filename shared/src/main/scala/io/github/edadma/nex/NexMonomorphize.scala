@@ -37,22 +37,16 @@ class NexMonomorphize(symbols: SymbolTable):
   // ==========================================================================
 
   private def hasKindVar(t: Type): Boolean = t match
-    case _: TyKindVar  => true
-    case TyArray(e, _) => hasKindVar(e)
-    case TyTuple(es)   => es.exists(hasKindVar)
-    case TyFunc(ps, r) => ps.exists((pt, _) => hasKindVar(pt)) || hasKindVar(r)
-    case _             => false
+    case _: TyKindVar    => true
+    case TyArray(e, _)   => hasKindVar(e)
+    case TyTuple(es)     => es.exists(hasKindVar)
+    case TyStruct(_, fs) => fs.exists { case (_, ft) => hasKindVar(ft) }
+    case TyEnum(_, vs)   => vs.exists { case (_, vfs) => vfs.exists { case (_, ft) => hasKindVar(ft) } }
+    case TyFunc(ps, r)   => ps.exists((pt, _) => hasKindVar(pt)) || hasKindVar(r)
+    case _               => false
 
-  private def substituteKindVars(t: Type, subs: Map[String, Type]): Type = t match
-    case TyKindVar(name, _) => subs.getOrElse(name, t)
-    case TyArray(e, r)      => TyArray(substituteKindVars(e, subs), r)
-    case TyTuple(es)        => TyTuple(es.map(substituteKindVars(_, subs)))
-    case TyFunc(ps, r) =>
-      TyFunc(
-        ps.map { case (pt, m) => (substituteKindVars(pt, subs), m) },
-        substituteKindVars(r, subs),
-      )
-    case _ => t
+  private def substituteKindVars(t: Type, subs: Map[String, Type]): Type =
+    substituteTyKindVars(t, subs)
 
   /** Re-derive the kind-variable substitution for a call site, by
     * matching the generic's formal parameter types against the
@@ -92,10 +86,72 @@ class NexMonomorphize(symbols: SymbolTable):
         matchType(e1, e2, subs)
       case (TyTuple(es1), TyTuple(es2)) if es1.size == es2.size =>
         es1.zip(es2).foreach((a, b) => matchType(a, b, subs))
+      case (TyStruct(n1, f1), TyStruct(n2, f2)) if n1 == n2 && f1.size == f2.size =>
+        f1.zip(f2).foreach { case ((_, a), (_, b)) => matchType(a, b, subs) }
+      case (TyEnum(n1, v1), TyEnum(n2, v2)) if n1 == n2 && v1.size == v2.size =>
+        v1.zip(v2).foreach {
+          case ((_, fs1), (_, fs2)) if fs1.size == fs2.size =>
+            fs1.zip(fs2).foreach { case ((_, a), (_, b)) => matchType(a, b, subs) }
+          case _ => ()
+        }
       case (TyFunc(p1, r1), TyFunc(p2, r2)) if p1.size == p2.size =>
         p1.zip(p2).foreach { case ((a, _), (b, _)) => matchType(a, b, subs) }
         matchType(r1, r2, subs)
       case _ => ()
+
+  /** Derive the concrete type arguments for a generic struct
+    * construction. The template's `typeParams` give the declared
+    * ordering; matching each template field against the corresponding
+    * actual-argument type fills the substitution map; we then read
+    * back the arguments in declared order so the resulting spec key
+    * is stable.
+    */
+  private def deriveStructTypeArgs(template: TStructDecl, args: List[TExpr]): List[Type] =
+    val subs = mutable.Map.empty[String, Type]
+    template.fields.zip(args).foreach { case ((_, ft), a) =>
+      matchType(ft, a.tpe, subs)
+    }
+    template.typeParams.map { tp =>
+      subs.getOrElse(tp.name, TyUnknown)
+    }
+
+  /** Derive the concrete type arguments for a generic enum from a
+    * concrete `TyEnum` instance (the type pinned by inference at a
+    * variant ctor call site or at a bare-variant push-down). The
+    * template's stored `TyEnum` carries the same variant order with
+    * `TyKindVar`s in the payload positions; matching it pairwise
+    * against `concrete` fills the substitution map.
+    */
+  private def deriveEnumTypeArgs(template: TEnumDecl, concrete: TyEnum): List[Type] =
+    val subs = mutable.Map.empty[String, Type]
+    template.sym.tpe match
+      case te: TyEnum => matchType(te, concrete, subs)
+      case _          => ()
+    template.typeParams.map { tp =>
+      subs.getOrElse(tp.name, TyUnknown)
+    }
+
+  /** Derive the concrete type arguments for a variant ctor TCall, by
+    * matching the variant's template field types against the actual
+    * argument types. Used in addition to `deriveEnumTypeArgs` because
+    * a TCall's `args` carry richer information than a bare TyEnum (when
+    * the call site is `Pair(1, "hi")` style construction).
+    */
+  private def deriveVariantTypeArgs(
+      enumTemplate: TEnumDecl,
+      variantSym:   Symbol,
+      args:         List[TExpr],
+  ): List[Type] =
+    val subs = mutable.Map.empty[String, Type]
+    enumTemplate.variants.find(_._1.id == variantSym.id) match
+      case Some((_, fs)) =>
+        fs.zip(args).foreach { case ((_, ft), a) =>
+          matchType(ft, a.tpe, subs)
+        }
+      case None => ()
+    enumTemplate.typeParams.map { tp =>
+      subs.getOrElse(tp.name, TyUnknown)
+    }
 
   /** Walk a generic's signature in declaration order, returning every
     * `TyKindVar` name in the order it first appears. This is the order
@@ -134,8 +190,18 @@ class NexMonomorphize(symbols: SymbolTable):
     case TyArray(e, 1)    => s"array_${mangleType(e)}"
     case TyArray(e, r)    => s"array${r}_${mangleType(e)}"
     case TyTuple(es)      => es.map(mangleType).mkString("tup_", "_", "")
-    case TyStruct(n, _)   => n
-    case TyEnum(n, _)     => n
+    case TyStruct(n, fs)  =>
+      // Two specializations of the same generic struct share the base
+      // name but differ by field types — include them so a function
+      // specialized on `Pair[integer, integer]` doesn't collide with
+      // one specialized on `Pair[real, real]`.
+      if fs.isEmpty then n
+      else fs.map { case (_, ft) => mangleType(ft) }.mkString(s"${n}_", "_", "")
+    case TyEnum(n, vs)    =>
+      // Same logic as TyStruct — variant payload types distinguish specs.
+      if vs.isEmpty then n
+      else vs.flatMap { case (_, fs) => fs.map { case (_, ft) => mangleType(ft) } }
+        .mkString(s"${n}_", "_", "")
     case TyFunc(ps, r)    => ps.map((pt, _) => mangleType(pt)).mkString("fn_", "_", s"_to_${mangleType(r)}")
     case TyKindVar(n, _)  => n  // shouldn't reach here for a specialized clone
     case TyUnknown        => "unknown"
@@ -161,11 +227,70 @@ class NexMonomorphize(symbols: SymbolTable):
   /** Newly-emitted specialized decls, in mint order. */
   private val emitted = mutable.ListBuffer.empty[TFunDecl]
 
+  /** Generic struct decl specialization registry, keyed by
+    * `(genericTypeSymId, concreteTypeArgs)`. The value is the fresh
+    * `Symbol` whose id stands in for the spec everywhere — TVarRef on
+    * a constructor call site, `structFields(specSym.id)` in the
+    * interpreter's struct-fields map, and the spec's own `TStructDecl`
+    * in the rewritten program output.
+    */
+  private val structSpecs = mutable.Map.empty[(Int, List[Type]), Symbol]
+
+  /** Generic-struct typeSymId → original `TStructDecl`. Populated up-front. */
+  private val structTemplates = mutable.Map.empty[Int, TStructDecl]
+
+  /** Pairs queued for struct-spec materialization. Drained at the end
+    * of [[rewrite]] alongside the function worklist.
+    */
+  private val structWorklist = mutable.Queue.empty[(Int, List[Type])]
+
+  /** Newly-emitted specialized struct decls, in mint order. */
+  private val structEmitted = mutable.ListBuffer.empty[TStructDecl]
+
+  /** Generic enum decl specialization registry, keyed by
+    * `(genericTypeSymId, concreteTypeArgs)`. The value is `(enumSym,
+    * variantTemplateId → specVariantSym)` — every variant of the spec
+    * gets its own fresh `Symbol`, so backends emit per-spec variant
+    * names and so `enumVariantInfo` registers concrete field types.
+    */
+  private val enumSpecs = mutable.Map.empty[(Int, List[Type]), (Symbol, Map[Int, Symbol])]
+
+  /** Generic-enum typeSymId → original `TEnumDecl`. */
+  private val enumTemplates = mutable.Map.empty[Int, TEnumDecl]
+
+  /** Variant symbol id → parent enum symbol id. Populated for every
+    * enum decl (generic or monomorphic) at scan time, so a TCall on a
+    * variant ctor or a bare TVarRef to a variant can walk up to its
+    * declaring enum without scanning.
+    */
+  private val variantToEnumId = mutable.Map.empty[Int, Int]
+
+  /** Pairs queued for enum-spec materialization. Drained alongside the
+    * function and struct worklists.
+    */
+  private val enumWorklist = mutable.Queue.empty[(Int, List[Type])]
+
+  /** Newly-emitted specialized enum decls, in mint order. */
+  private val enumEmitted = mutable.ListBuffer.empty[TEnumDecl]
+
   /** True iff the function's signature mentions any `TyKindVar`. */
-  private def isGenericDecl(d: TDecl): Boolean = d match
+  private def isGenericFunDecl(d: TDecl): Boolean = d match
     case f: TFunDecl =>
       f.params.exists(p => hasKindVar(p.tpe)) || hasKindVar(f.returnType)
     case _ => false
+
+  /** True iff this is a user-declared generic struct (has typeParams). */
+  private def isGenericStructDecl(d: TDecl): Boolean = d match
+    case s: TStructDecl => s.typeParams.nonEmpty
+    case _              => false
+
+  /** True iff this is a user-declared generic enum (has typeParams). */
+  private def isGenericEnumDecl(d: TDecl): Boolean = d match
+    case e: TEnumDecl => e.typeParams.nonEmpty
+    case _            => false
+
+  private def isGenericDecl(d: TDecl): Boolean =
+    isGenericFunDecl(d) || isGenericStructDecl(d) || isGenericEnumDecl(d)
 
   // ==========================================================================
   // Entry point
@@ -176,11 +301,31 @@ class NexMonomorphize(symbols: SymbolTable):
     templates.clear()
     worklist.clear()
     emitted.clear()
+    structSpecs.clear()
+    structTemplates.clear()
+    structWorklist.clear()
+    structEmitted.clear()
+    enumSpecs.clear()
+    enumTemplates.clear()
+    variantToEnumId.clear()
+    enumWorklist.clear()
+    enumEmitted.clear()
 
-    val (allGenerics, allNonGenerics) = (p.decls ::: p.auxDecls).partition(isGenericDecl)
+    // Populate variantToEnumId for every enum decl (generic or not) so
+    // a variant TVarRef can walk up to its declaring enum from a Symbol id
+    // alone — the variant ctor and bare-variant rewriting paths need this
+    // even for monomorphic enums whose ctor TCalls aren't rewritten.
+    for d <- p.decls ::: p.auxDecls do d match
+      case e: TEnumDecl =>
+        e.variants.foreach { case (vs, _) => variantToEnumId(vs.id) = e.sym.id }
+      case _ => ()
+
+    val (allGenerics, _) = (p.decls ::: p.auxDecls).partition(isGenericDecl)
     allGenerics.foreach {
-      case f: TFunDecl => templates(f.sym.id) = f
-      case _           => ()
+      case f: TFunDecl    => templates(f.sym.id) = f
+      case s: TStructDecl => structTemplates(s.sym.id) = s
+      case e: TEnumDecl   => enumTemplates(e.sym.id) = e
+      case _              => ()
     }
 
     // Track which generic templates came from auxDecls so each generic's
@@ -188,8 +333,14 @@ class NexMonomorphize(symbols: SymbolTable):
     // generics (in auxDecls) keep their clones out of user-visible
     // decls — structural test assertions like `tp.decls.size shouldBe 1`
     // stay accurate after monomorph runs over a prelude call.
-    val auxGenericIds = p.auxDecls.collect {
-      case f: TFunDecl if isGenericDecl(f) => f.sym.id
+    val auxGenericFnIds = p.auxDecls.collect {
+      case f: TFunDecl if isGenericFunDecl(f) => f.sym.id
+    }.toSet
+    val auxGenericStructIds = p.auxDecls.collect {
+      case s: TStructDecl if isGenericStructDecl(s) => s.sym.id
+    }.toSet
+    val auxGenericEnumIds = p.auxDecls.collect {
+      case e: TEnumDecl if isGenericEnumDecl(e) => e.sym.id
     }.toSet
 
     // Walk non-generic decls. Each TCall to a generic registers a
@@ -199,23 +350,160 @@ class NexMonomorphize(symbols: SymbolTable):
     val rewrittenDecls    = p.decls.filterNot(isGenericDecl).map(rewriteDecl)
     val rewrittenAuxDecls = p.auxDecls.filterNot(isGenericDecl).map(rewriteDecl)
 
-    // Drain the worklist. Each iteration specializes one (gid, args)
-    // body, which may queue more specializations through nested
-    // generic calls.
-    val auxEmitted  = mutable.ListBuffer.empty[TFunDecl]
-    val userEmitted = mutable.ListBuffer.empty[TFunDecl]
-    while worklist.nonEmpty do
-      val (gid, typeArgs) = worklist.dequeue()
-      val generic = templates(gid)
-      val specSym = specs((gid, typeArgs))
-      val specDecl = specializeBody(generic, typeArgs, specSym)
-      emitted += specDecl
-      if auxGenericIds.contains(gid) then auxEmitted += specDecl
-      else userEmitted += specDecl
+    // Drain all three worklists. Function-body specialization may queue
+    // more function, struct, or enum specs through nested generic calls.
+    // Struct/enum specs materialize body-free (substitution only), so
+    // they can't enqueue further work — but a later function-body
+    // specialization may still refer to a struct/enum spec already on
+    // the worklist.
+    val auxEmittedFn   = mutable.ListBuffer.empty[TFunDecl]
+    val userEmittedFn  = mutable.ListBuffer.empty[TFunDecl]
+    val auxEmittedSt   = mutable.ListBuffer.empty[TStructDecl]
+    val userEmittedSt  = mutable.ListBuffer.empty[TStructDecl]
+    val auxEmittedEn   = mutable.ListBuffer.empty[TEnumDecl]
+    val userEmittedEn  = mutable.ListBuffer.empty[TEnumDecl]
+    while worklist.nonEmpty || structWorklist.nonEmpty || enumWorklist.nonEmpty do
+      while structWorklist.nonEmpty do
+        val (gid, typeArgs) = structWorklist.dequeue()
+        val generic  = structTemplates(gid)
+        val specSym  = structSpecs((gid, typeArgs))
+        val specDecl = specializeStructDecl(generic, typeArgs, specSym)
+        structEmitted += specDecl
+        if auxGenericStructIds.contains(gid) then auxEmittedSt += specDecl
+        else userEmittedSt += specDecl
+      while enumWorklist.nonEmpty do
+        val (gid, typeArgs) = enumWorklist.dequeue()
+        val generic  = enumTemplates(gid)
+        val (specSym, variantMap) = enumSpecs((gid, typeArgs))
+        val specDecl = specializeEnumDecl(generic, typeArgs, specSym, variantMap)
+        enumEmitted += specDecl
+        if auxGenericEnumIds.contains(gid) then auxEmittedEn += specDecl
+        else userEmittedEn += specDecl
+      if worklist.nonEmpty then
+        val (gid, typeArgs) = worklist.dequeue()
+        val generic = templates(gid)
+        val specSym = specs((gid, typeArgs))
+        val specDecl = specializeBody(generic, typeArgs, specSym)
+        emitted += specDecl
+        if auxGenericFnIds.contains(gid) then auxEmittedFn += specDecl
+        else userEmittedFn += specDecl
 
     p.copy(
-      decls    = rewrittenDecls ++ userEmitted.toList,
-      auxDecls = rewrittenAuxDecls ++ auxEmitted.toList,
+      decls    = rewrittenDecls ++ userEmittedSt.toList ++ userEmittedEn.toList ++ userEmittedFn.toList,
+      auxDecls = rewrittenAuxDecls ++ auxEmittedSt.toList ++ auxEmittedEn.toList ++ auxEmittedFn.toList,
+    )
+
+  /** Get-or-mint the specialized struct-type symbol for `(gid, typeArgs)`.
+    * The mint enqueues the pair for materialization (no body to walk —
+    * just substitution into the field list). The spec keeps the same
+    * struct name as the template so the resulting TyStruct compares
+    * structurally against the elaborator-inferred constructor-call
+    * type; collision avoidance for ARC helpers and function specs
+    * happens via `typeMangle` / `mangleType`, both of which include
+    * field types.
+    */
+  private def getOrMintStructSpec(gid: Int, typeArgs: List[Type]): Symbol =
+    structSpecs.getOrElseUpdate(
+      (gid, typeArgs), {
+        val template = structTemplates(gid)
+        val paramNames = template.typeParams.map(_.name)
+        val substMap   = paramNames.zip(typeArgs).toMap
+        val specFs     = template.fields.map { case (fn, ft) =>
+          (fn, substituteKindVars(ft, substMap))
+        }
+        val specTy = TyStruct(template.sym.name, specFs)
+        val sym    = symbols.mint(template.sym.name, specTy, SymKind.TypeName)
+        structWorklist.enqueue((gid, typeArgs))
+        sym
+      },
+    )
+
+  /** Materialize a `TStructDecl` for one struct specialization. The
+    * decl shares its source template's privacy and position; type
+    * parameters are dropped (the spec is concrete).
+    */
+  private def specializeStructDecl(
+      template: TStructDecl,
+      typeArgs: List[Type],
+      specSym:  Symbol,
+  ): TStructDecl =
+    val paramNames = template.typeParams.map(_.name)
+    val substMap   = paramNames.zip(typeArgs).toMap
+    val specFs     = template.fields.map { case (fn, ft) =>
+      (fn, substituteKindVars(ft, substMap))
+    }
+    TStructDecl(
+      sym        = specSym,
+      fields     = specFs,
+      isPrivate  = template.isPrivate,
+      typeParams = Nil,
+      pos        = template.pos,
+    )
+
+  /** Get-or-mint the specialized enum-type Symbol plus per-variant
+    * Symbols for `(gid, typeArgs)`. The variant map is keyed by the
+    * template's variant Symbol ids, so a TVarRef rewriter can look up
+    * each template variant by id and replace with the corresponding
+    * spec variant. Enum specs share their source template's name (like
+    * struct specs); collision avoidance for ARC helpers and function
+    * specs is handled by `mangleType` / `typeMangle`, which include
+    * variant payload types.
+    */
+  private def getOrMintEnumSpec(gid: Int, typeArgs: List[Type]): (Symbol, Map[Int, Symbol]) =
+    enumSpecs.getOrElseUpdate(
+      (gid, typeArgs), {
+        val template   = enumTemplates(gid)
+        val paramNames = template.typeParams.map(_.name)
+        val substMap   = paramNames.zip(typeArgs).toMap
+        val specVs = template.variants.map { case (_, fs) =>
+          fs.map { case (fn, ft) => (fn, substituteKindVars(ft, substMap)) }
+        }
+        val variantsByName = template.variants.zip(specVs).map {
+          case ((vs, _), fs) => (vs.name, fs)
+        }
+        val specTy   = TyEnum(template.sym.name, variantsByName)
+        val enumSym  = symbols.mint(template.sym.name, specTy, SymKind.TypeName)
+        val variantSyms: List[(Int, Symbol)] = template.variants.zip(specVs).map {
+          case ((vs, _), fs) =>
+            val variantTpe =
+              if fs.isEmpty then specTy
+              else TyFunc(fs.map { case (_, ft) => (ft, ParamMode.Read) }, specTy)
+            val sym = symbols.mint(vs.name, variantTpe, SymKind.EnumVariant)
+            // Mirror variantToEnumId for the freshly minted spec variant
+            // so subsequent walks (e.g. matched-arm patterns inside
+            // generic-function bodies that recursively yield variants of
+            // this same spec) can still dispatch via variantToEnumId.
+            variantToEnumId(sym.id) = enumSym.id
+            (vs.id, sym)
+        }
+        enumWorklist.enqueue((gid, typeArgs))
+        (enumSym, variantSyms.toMap)
+      },
+    )
+
+  /** Materialize a `TEnumDecl` for one enum specialization. The decl
+    * shares its source template's privacy and position; type parameters
+    * are dropped, and each variant Symbol is the fresh spec variant
+    * registered in `variantMap`.
+    */
+  private def specializeEnumDecl(
+      template:   TEnumDecl,
+      typeArgs:   List[Type],
+      specSym:    Symbol,
+      variantMap: Map[Int, Symbol],
+  ): TEnumDecl =
+    val paramNames = template.typeParams.map(_.name)
+    val substMap   = paramNames.zip(typeArgs).toMap
+    val specVariants = template.variants.map { case (vs, fs) =>
+      val specFs = fs.map { case (fn, ft) => (fn, substituteKindVars(ft, substMap)) }
+      (variantMap(vs.id), specFs)
+    }
+    TEnumDecl(
+      sym        = specSym,
+      variants   = specVariants,
+      isPrivate  = template.isPrivate,
+      typeParams = Nil,
+      pos        = template.pos,
     )
 
   /** Get-or-mint the specialized symbol for `(gid, typeArgs)`. First
@@ -337,15 +625,30 @@ class NexMonomorphize(symbols: SymbolTable):
         TIntrinsic(opId, p, goT(t))
 
       // -- References --------------------------------------------------
-      case TVarRef(s, p, _) =>
+      case TVarRef(s, p, refT) =>
         symMap.get(s.id) match
           case Some(fresh) => TVarRef(fresh, p, fresh.tpe)
           case None        =>
-            // Outer reference. Its `.tpe` might still mention a kind
-            // var if it pointed at the generic itself (recursion) —
-            // substitute. The .sym stays the same; if it points at a
-            // generic, the TCall path below handles the rewrite.
-            TVarRef(s, p, goT(s.tpe))
+            // Outer reference. Its `.tpe` might still mention a kind var
+            // if it pointed at the generic itself (recursion) — substitute.
+            // For a bare variant of a generic enum the substituted .tpe is
+            // a concrete `TyEnum`; mint the spec and replace the Symbol
+            // here so the TVarRef doesn't go to codegen with a template
+            // variant id. Ctor TCalls hit the TCall path below.
+            val newT = goT(refT match
+              case TyUnknown => s.tpe
+              case other     => other,
+            )
+            variantOfGenericEnum(s) match
+              case Some(template) =>
+                newT match
+                  case te: TyEnum if !hasKindVar(te) =>
+                    val typeArgs = deriveEnumTypeArgs(template, te)
+                    val (_, variantMap) = getOrMintEnumSpec(template.sym.id, typeArgs)
+                    val spec = variantMap.getOrElse(s.id, s)
+                    TVarRef(spec, p, spec.tpe)
+                  case _ => TVarRef(s, p, newT)
+              case None => TVarRef(s, p, newT)
 
       // -- Operators ---------------------------------------------------
       case TBinOp(op, l, r, p, t)         => TBinOp(op, go(l), go(r), p, goT(t))
@@ -386,6 +689,25 @@ class NexMonomorphize(symbols: SymbolTable):
             val mergedSubs = substMap ++ localSubs
             val rewalkedArgs = newArgs.map(a => specializeExpr(a, mergedSubs, symMap))
             TCall(rewrittenCallee, rewalkedArgs, p, substituteKindVars(goT(t), localSubs))
+          case TVarRef(s, vp, _) if structTemplates.contains(s.id) =>
+            // Generic-struct constructor call inside a generic body. The
+            // substMap carrying the outer specialization already resolved
+            // every kind-var in `newArgs`; derive the spec by matching
+            // the template fields against the resolved arg types.
+            val template = structTemplates(s.id)
+            val typeArgs = deriveStructTypeArgs(template, newArgs)
+            val specSym  = getOrMintStructSpec(s.id, typeArgs)
+            TCall(TVarRef(specSym, vp, specSym.tpe), newArgs, p, specSym.tpe)
+          case TVarRef(s, vp, _) if variantOfGenericEnum(s).isDefined =>
+            // Variant ctor call inside a generic body. Derive typeArgs
+            // from the variant's template fields matched against the
+            // (already-substituted) arg types, mint the enum spec, and
+            // rewrite to the spec variant Symbol with the spec enum tpe.
+            val template = variantOfGenericEnum(s).get
+            val typeArgs = deriveVariantTypeArgs(template, s, newArgs)
+            val (enumSym, variantMap) = getOrMintEnumSpec(template.sym.id, typeArgs)
+            val specVariantSym = variantMap.getOrElse(s.id, s)
+            TCall(TVarRef(specVariantSym, vp, specVariantSym.tpe), newArgs, p, enumSym.tpe)
           case _ =>
             TCall(newCallee, newArgs, p, goT(t))
 
@@ -440,10 +762,13 @@ class NexMonomorphize(symbols: SymbolTable):
       case TMatch(s, cases, p, t) =>
         // Match arms introduce per-arm bindings via the patterns; mint
         // fresh symbols so the substitution map stays consistent with the
-        // rest of the generic specialization machinery.
+        // rest of the generic specialization machinery. Variant symbols
+        // pointing at a generic enum template are also retargeted to the
+        // spec variant matching the (now-concrete) scrutinee type.
         val newS = go(s)
         val newCases = cases.map { c =>
-          val (pat2, pendingIds) = substPattern(c.pat)
+          val pat1 = rewriteVariantPat(c.pat, newS.tpe)
+          val (pat2, pendingIds) = substPattern(pat1)
           val body2 = go(c.body)
           pendingIds.foreach(id => symMap -= id)
           TMatchCase(pat2, body2)
@@ -481,6 +806,42 @@ class NexMonomorphize(symbols: SymbolTable):
       b.copy(value = rewriteExpr(b.value))
     case other => other
 
+  /** Variant-of-generic-enum lookup helper. Returns `Some(template)` iff
+    * `s` names a variant whose declaring enum is in `enumTemplates`.
+    */
+  private def variantOfGenericEnum(s: Symbol): Option[TEnumDecl] =
+    if s.kind != SymKind.EnumVariant then None
+    else variantToEnumId.get(s.id).flatMap(eid => enumTemplates.get(eid))
+
+  /** Rewrite a match pattern so any variant symbol still pointing at a
+    * generic-enum template is replaced with the spec'd variant Symbol.
+    * The scrutinee's concrete `TyEnum` provides the type arguments;
+    * nested variant patterns recurse with their own slot types.
+    */
+  private def rewriteVariantPat(pat: TPattern, scrutTpe: Type): TPattern = pat match
+    case _: TWildcardPat | _: TVarPat => pat
+    case TVariantPat(vs, args, pp) =>
+      val (newVs, fieldTypes) = variantOfGenericEnum(vs) match
+        case Some(template) =>
+          scrutTpe match
+            case te: TyEnum if !hasKindVar(te) =>
+              val typeArgs = deriveEnumTypeArgs(template, te)
+              val (_, variantMap) = getOrMintEnumSpec(template.sym.id, typeArgs)
+              val spec = variantMap.getOrElse(vs.id, vs)
+              val fs = te.variants.find(_._1 == vs.name).map(_._2).getOrElse(Nil)
+              (spec, fs.map(_._2))
+            case _ => (vs, args.map(_ => TyUnknown))
+        case None =>
+          // Monomorphic enum or a sibling spec — derive field types
+          // straight from the scrutinee's TyEnum if available so nested
+          // variant patterns recurse with the right slot tpe.
+          val fs = scrutTpe match
+            case te: TyEnum => te.variants.find(_._1 == vs.name).map(_._2).getOrElse(Nil)
+            case _          => Nil
+          (vs, fs.map(_._2))
+      val newArgs = args.zip(fieldTypes).map { case (a, ft) => rewriteVariantPat(a, ft) }
+      TVariantPat(newVs, newArgs, pp)
+
   /** Walk a non-generic body, rewriting TCalls that target generic
     * templates. No type substitution happens here — these decls don't
     * mention `TyKindVar` themselves. We only update callee TVarRefs.
@@ -489,7 +850,23 @@ class NexMonomorphize(symbols: SymbolTable):
     def go(x: TExpr): TExpr = rewriteExpr(x)
     e match
       case _: TIntLit | _: TRealLit | _: TBoolLit | _: TStringLit
-         | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => e
+         | _: TUnitLit | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => e
+      case v: TVarRef =>
+        // Bare variant of a generic enum: the surrounding context has
+        // already pinned the concrete `TyEnum` on the `TVarRef.tpe` (via
+        // `inferArg` push-down). Derive the spec from that, mint if
+        // needed, rewrite the Symbol.
+        variantOfGenericEnum(v.sym) match
+          case Some(template) =>
+            v.tpe match
+              case te: TyEnum if !hasKindVar(te) =>
+                val typeArgs = deriveEnumTypeArgs(template, te)
+                val (_, variantMap) = getOrMintEnumSpec(template.sym.id, typeArgs)
+                variantMap.get(v.sym.id) match
+                  case Some(spec) => TVarRef(spec, v.pos, spec.tpe)
+                  case None       => v
+              case _ => v
+          case None => v
       case TInterpStringLit(parts, p, t) =>
         TInterpStringLit(parts.map {
           case TInterpExpr(x, sp) => TInterpExpr(go(x), sp)
@@ -531,6 +908,28 @@ class NexMonomorphize(symbols: SymbolTable):
                 args.map(a => specializeExpr(a, localSubs, mutable.Map.empty))
               else args.map(go)
             TCall(TVarRef(specSym, vp, specSym.tpe), rewalkedArgs, p, substituteKindVars(t, localSubs))
+          case TVarRef(s, vp, _) if structTemplates.contains(s.id) =>
+            // Generic-struct constructor call. The elaborator already
+            // substituted the field kindvars to concrete types in the
+            // call's `.tpe`; derive the spec by matching template fields
+            // against the rewritten arg types.
+            val rewrittenArgs = args.map(go)
+            val template      = structTemplates(s.id)
+            val typeArgs      = deriveStructTypeArgs(template, rewrittenArgs)
+            val specSym       = getOrMintStructSpec(s.id, typeArgs)
+            TCall(TVarRef(specSym, vp, specSym.tpe), rewrittenArgs, p, specSym.tpe)
+          case TVarRef(s, vp, _) if variantOfGenericEnum(s).isDefined =>
+            // Variant ctor call on a generic enum. Derive typeArgs from
+            // the variant's template field types matched against the
+            // rewritten argument types; mint the spec; rewrite the
+            // callee to the spec variant Symbol and the call's tpe to
+            // the spec'd `TyEnum`.
+            val rewrittenArgs = args.map(go)
+            val template      = variantOfGenericEnum(s).get
+            val typeArgs      = deriveVariantTypeArgs(template, s, rewrittenArgs)
+            val (enumSym, variantMap) = getOrMintEnumSpec(template.sym.id, typeArgs)
+            val specVariantSym = variantMap.getOrElse(s.id, s)
+            TCall(TVarRef(specVariantSym, vp, specVariantSym.tpe), rewrittenArgs, p, enumSym.tpe)
           case _ => TCall(newCallee, args.map(go), p, t)
       case TIndex(a, idx, p, t)       => TIndex(go(a), idx.map(go), p, t)
       case TField(r, n, p, t)         => TField(go(r), n, p, t)
@@ -550,7 +949,11 @@ class NexMonomorphize(symbols: SymbolTable):
       case TFor(vs, it, b, p, t)        => TFor(vs, go(it), go(b), p, t)
       case TWhile(c, b, p, t)           => TWhile(go(c), go(b), p, t)
       case TMatch(s, cs, p, t)          =>
-        TMatch(go(s), cs.map(c => TMatchCase(c.pat, go(c.body))), p, t)
+        val newS = go(s)
+        val rewrittenCases = cs.map { c =>
+          TMatchCase(rewriteVariantPat(c.pat, newS.tpe), go(c.body))
+        }
+        TMatch(newS, rewrittenCases, p, t)
       case TReturn(v, p, t)             => TReturn(v.map(go), p, t)
       case TAssign(tgt, v, p, t)        => TAssign(go(tgt), go(v), p, t)
       case TBlock(items, r, p, t) =>

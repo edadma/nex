@@ -72,7 +72,7 @@ Each control-flow body introduces a new scope. Bindings declared in a body are n
 
 ## 7.5 `match` expressions
 
-`match` inspects a sum-type value ([§3.6](/spec/03-types/#36-sum-types)) and dispatches on its variant. The scrutinee sits to the *left* of `match`; arms follow on indented lines, each `pattern -> body`:
+`match` inspects a sum-type value ([§3.7](/spec/03-types/#37-sum-types)) and dispatches on its variant. The scrutinee sits to the *left* of `match`; arms follow on indented lines, each `pattern -> body`:
 
 ```nex
 enum Solver =

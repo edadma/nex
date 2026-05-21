@@ -171,6 +171,18 @@ protected trait NexElabInference extends NexElabState:
           TArrayLit(coerced, p, TyArray(elemT, 2))
         case _ => infExpr(arg)
 
+    // Bare variant of a generic enum: a reference like `None` produces a
+    // `TVarRef` whose declared type still mentions the enum's kind-vars.
+    // When the surrounding context (a binding's declared type, a function
+    // return type, a function-argument's expected type) pins the concrete
+    // enum, push it down so monomorphization can mint the right spec.
+    case TVarRef(s, p, _) if s.kind == SymKind.EnumVariant =>
+      val refTy = currentType(s)
+      (refTy, expected) match
+        case (TyEnum(n1, _), e @ TyEnum(n2, _)) if n1 == n2 && hasKindVar(refTy) =>
+          TVarRef(s, p, e)
+        case _ => infExpr(arg)
+
     case _ => infExpr(arg)
 
   /** A lambda is "partially inferred" iff at least one param's type in
@@ -1309,6 +1321,8 @@ protected trait NexElabInference extends NexElabState:
     case _: TyKindVar  => true
     case TyArray(e, _) => hasKindVar(e)
     case TyTuple(es)   => es.exists(hasKindVar)
+    case TyStruct(_, fs) => fs.exists { case (_, ft) => hasKindVar(ft) }
+    case TyEnum(_, vs)   => vs.exists { case (_, vfs) => vfs.exists { case (_, ft) => hasKindVar(ft) } }
     case TyFunc(ps, r) => ps.exists((pt, _) => hasKindVar(pt)) || hasKindVar(r)
     case _             => false
 
@@ -1316,16 +1330,8 @@ protected trait NexElabInference extends NexElabState:
     * absent from `subs` is left in place (so we can detect under-determined
     * generic calls after unification).
     */
-  protected def substituteKindVars(t: Type, subs: Map[String, Type]): Type = t match
-    case TyKindVar(name, _) => subs.getOrElse(name, t)
-    case TyArray(e, r)      => TyArray(substituteKindVars(e, subs), r)
-    case TyTuple(es)        => TyTuple(es.map(substituteKindVars(_, subs)))
-    case TyFunc(ps, r) =>
-      TyFunc(
-        ps.map { case (pt, m) => (substituteKindVars(pt, subs), m) },
-        substituteKindVars(r, subs),
-      )
-    case _ => t
+  protected def substituteKindVars(t: Type, subs: Map[String, Type]): Type =
+    substituteTyKindVars(t, subs)
 
   /** Outcome of unifying one formal parameter type against an actual
     * argument type while building a kind-variable substitution.
@@ -1392,6 +1398,20 @@ protected trait NexElabInference extends NexElabState:
         paramRes match
           case UnifyOk => unifyKindVars(r1, r2, subs)
           case other   => other
+      case (TyStruct(n1, f1), TyStruct(n2, f2)) if n1 == n2 && f1.size == f2.size =>
+        f1.zip(f2).foldLeft[UnifyResult](UnifyOk) {
+          case (UnifyOk, ((_, a), (_, b))) => unifyKindVars(a, b, subs)
+          case (err, _)                    => err
+        }
+      case (TyEnum(n1, v1), TyEnum(n2, v2)) if n1 == n2 && v1.size == v2.size =>
+        v1.zip(v2).foldLeft[UnifyResult](UnifyOk) {
+          case (UnifyOk, ((_, fs1), (_, fs2))) if fs1.size == fs2.size =>
+            fs1.zip(fs2).foldLeft[UnifyResult](UnifyOk) {
+              case (UnifyOk, ((_, a), (_, b))) => unifyKindVars(a, b, subs)
+              case (err, _)                    => err
+            }
+          case (err, _) => err
+        }
       case (a, b) if a == b                  => UnifyOk
       case (a, b) if isNumeric(a) && isNumeric(b) && promote(a, b).contains(a) =>
         // Numeric widening — the callee's formal is the wider type and the
@@ -1522,13 +1542,15 @@ protected trait NexElabInference extends NexElabState:
       case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
         // Struct construction.
         currentType(s) match
-          case TyStruct(_, fs) =>
+          case ts @ TyStruct(_, fs) =>
             if fs.size != args.size then
               err(s"struct `${s.name}` expects ${fs.size} args, got ${args.size}", p)
-              TCall(resolvedCallee, args, p, currentType(s))
+              TCall(resolvedCallee, args, p, ts)
+            else if fs.exists { case (_, ft) => hasKindVar(ft) } then
+              inferGenericStructConstruct(resolvedCallee, s, ts, args, p)
             else
               val coercedArgs = fs.zip(args).map { case ((_, ft), a) => coerceTo(a, ft) }
-              TCall(resolvedCallee, coercedArgs, p, currentType(s))
+              TCall(resolvedCallee, coercedArgs, p, ts)
           case _ => TCall(resolvedCallee, args, p, TyUnknown)
 
       case _ =>
@@ -1607,6 +1629,52 @@ protected trait NexElabInference extends NexElabState:
       // type and re-derives the inner call's type arguments — there is
       // nothing to report here.
       TCall(callee, coercedArgs, p, substRet)
+
+  /** Generic-struct construction path. The struct's template carries
+    * `TyKindVar`s in its field types; we unify each field against the
+    * corresponding actual-argument type, then substitute through the
+    * field list to produce a concrete `TyStruct` for the call's `.tpe`.
+    * The callee Symbol stays the template — monomorphization mints a
+    * fresh specialized type symbol with a mangled name and rewrites the
+    * call site to point at it.
+    */
+  protected def inferGenericStructConstruct(
+      callee:   TExpr,
+      typeSym:  Symbol,
+      template: TyStruct,
+      args:     List[TExpr],
+      p:        Option[Position],
+  ): TExpr =
+    val subs   = mutable.Map.empty[String, Type]
+    var failed = false
+    template.fields.zip(args).foreach { case ((_, ft), a) =>
+      if failed then ()
+      else
+        unifyKindVars(ft, a.tpe, subs) match
+          case UnifyOk => ()
+          case UnifyConstraintViolation(name, c, actual) =>
+            err(
+              s"type argument `$name` for struct `${typeSym.name}` cannot be `$actual`: constraint `${constraintLabel(c)}` does not admit it",
+              a.pos.orElse(p),
+            )
+            failed = true
+          case UnifyInconsistent(name, prior, actual) =>
+            err(
+              s"type argument `$name` for struct `${typeSym.name}` was inferred as `$prior` but the next field requires `$actual`",
+              a.pos.orElse(p),
+            )
+            failed = true
+          case UnifyShapeMismatch(f, b) =>
+            err(s"cannot pass `$b` where `$f` is expected for struct `${typeSym.name}`", a.pos.orElse(p))
+            failed = true
+    }
+    if failed then TCall(callee, args, p, template)
+    else
+      val substMap   = subs.toMap
+      val substFs    = template.fields.map { case (fn, ft) => (fn, substituteKindVars(ft, substMap)) }
+      val substTy    = TyStruct(template.name, substFs)
+      val coercedArgs = substFs.zip(args).map { case ((_, ft), a) => coerceTo(a, ft) }
+      TCall(callee, coercedArgs, p, substTy)
 
   /** Lookup table for prelude functions whose return type is known
     * statically and doesn't depend on argument types. HOFs (map/reduce/

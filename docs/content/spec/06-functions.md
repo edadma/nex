@@ -202,7 +202,9 @@ Within the concrete bucket the existing numeric-promotion ranking still picks th
 
 Specialization recurses: a generic body that itself calls a generic produces a chain of specializations, with the outer call's type arguments threaded through to the inner call.
 
-**Limitations (Stage 1).** Generics in this milestone are *functions only*. Generic structs, generic enums, and user-defined trait/type-class constraints are deferred. Lambda bodies that thread a kind variable through to a nested generic call are supported; arrays and aggregates parameterized by a kind variable inherit the limitations of the current array-element-type rules.
+**Generic structs and enums.** The same constraint set, call-site inference, and specialization model extend to user-declared `struct` and `enum` types. See [§3.6](/spec/03-types/#36-generic-structs) and [§3.8](/spec/03-types/#38-generic-enums) for declaration syntax and the rules around bare-variant inference.
+
+**Limitations.** User-defined trait/type-class constraints are deferred — the constraint set is the closed list above. Lambda bodies that thread a kind variable through to a nested generic call are supported; arrays and aggregates parameterized by a kind variable inherit the limitations of the current array-element-type rules.
 
 ## 6.11 `@intrinsic` declarations
 

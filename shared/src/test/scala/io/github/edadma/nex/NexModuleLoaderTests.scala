@@ -220,4 +220,20 @@ class NexModuleLoaderTests extends AnyWordSpec with Matchers:
       ))
       runProject(entry) shouldBe "7\n2.5\ntrue\n"
     }
+
+    "specialize an imported generic struct at each construction site (spec §3.6)" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"        -> "import shapes.{Pair}\ndef main() =\n  val a = Pair(1, 2)\n  val b = Pair(\"hi\", 3)\n  print(a.fst)\n  print(b.fst)\n  print(b.snd)\n",
+        "shapes/p.nex"    -> "module shapes\nstruct Pair[A, B]\n  fst: A\n  snd: B\nend\n",
+      ))
+      runProject(entry) shouldBe "1\nhi\n3\n"
+    }
+
+    "specialize an imported generic enum at each match site (spec §3.8)" in {
+      val (_, entry) = mkProject("main.nex", Map(
+        "main.nex"     -> "import opt.{Opt, Some, None}\ndef main() =\n  val x = Some(42)\n  val y: Opt[integer] = None\n  val ms: string = x match\n    Some(v) -> \"got\"\n    None    -> \"nothing\"\n  val ns: string = y match\n    Some(v) -> \"got\"\n    None    -> \"nothing\"\n  print(ms)\n  print(ns)\n",
+        "opt/o.nex"    -> "module opt\nenum Opt[T] =\n  Some(value: T)\n  None\n",
+      ))
+      runProject(entry) shouldBe "got\nnothing\n"
+    }
   }

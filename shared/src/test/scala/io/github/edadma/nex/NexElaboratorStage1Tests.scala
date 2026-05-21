@@ -1007,3 +1007,82 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       specs should not contain "id$T"
     }
   }
+
+  // ==========================================================================
+  // Stage 2 of the user-generics roadmap: generic structs now elaborate;
+  // generic enums remain rejected until Stage 2 chunk 3 lands.
+  // ==========================================================================
+
+  "generic struct / enum declarations (Stage 2)" should {
+    "elaborate a single-param generic struct" in {
+      val tp = elab("""
+        |struct Box[T]
+        |  value: T
+        |
+        |def main() =
+        |  val b = Box(42)
+        |  print(b.value)
+      """.stripMargin)
+      tp.decls.collect { case s: TStructDecl => s.sym.name } should contain ("Box")
+    }
+
+    "elaborate a multi-parameter generic struct" in {
+      val tp = elab("""
+        |struct Pair[A, B]
+        |  fst: A
+        |  snd: B
+        |
+        |def main() =
+        |  val p = Pair(1, "hi")
+        |  print(p.fst)
+        |  print(p.snd)
+      """.stripMargin)
+      tp.decls.collect { case s: TStructDecl => s.sym.name } should contain ("Pair")
+    }
+
+    "elaborate a single-param generic enum" in {
+      val tp = elab("""
+        |enum Opt[T] =
+        |  Some(value: T)
+        |  None
+        |
+        |def main() =
+        |  val x = Some(42)
+        |  val msg: string = x match
+        |    Some(v) -> "got it"
+        |    None    -> "none"
+        |  print(msg)
+      """.stripMargin)
+      tp.decls.collect { case e: TEnumDecl => e.sym.name } should contain ("Opt")
+    }
+
+    "elaborate a multi-parameter generic enum" in {
+      val tp = elab("""
+        |enum Either[L, R] =
+        |  Left(value: L)
+        |  Right(value: R)
+        |
+        |def main() =
+        |  val e = Left(1)
+        |  val msg: string = e match
+        |    Left(_)  -> "left"
+        |    Right(_) -> "right"
+        |  print(msg)
+      """.stripMargin)
+      tp.decls.collect { case e: TEnumDecl => e.sym.name } should contain ("Either")
+    }
+
+    "monomorphic struct + enum still elaborate cleanly (no regression)" in {
+      val tp = elab("""
+        |struct Point
+        |  x: real
+        |  y: real
+        |enum Color =
+        |  Red
+        |  Green
+        |  Blue
+      """.stripMargin)
+      tp.decls.collect { case s: TStructDecl => s.sym.name } should contain ("Point")
+      tp.decls.collect { case e: TEnumDecl   => e.sym.name } should contain ("Color")
+    }
+  }
