@@ -114,9 +114,16 @@ def newton(f: real -> real, x0: real) =
   const LOCAL_TOL = 1.0e-8
   // ...
 
-// Function calls are NOT allowed in `const` RHS (deferred).
-// Use val for runtime-computed module-level values:
-val SQRT_2 = sqrt(2.0)      // function call → must be val, not const
+// Calls to pure functions (prelude or user-defined) returning a scalar
+// are constant expressions:
+const SQRT_2 = sqrt(2.0)            // OK — sqrt is pure
+const HYP    = hypot(3.0, 4.0)      // OK — 5.0
+
+def square(x: real): real = x * x
+const NINE   = square(3.0)          // OK — square is pure
+
+// Calls that return non-scalars (arrays, tuples, structs) still need val:
+val SAMPLES = linspace(0.0, 1.0, 100)
 
 // Shadowing in a new scope is allowed:
 val p = 1
@@ -241,6 +248,14 @@ w[-4.. by 2]           // [50.0, 70.0]                 and with negative bounds
 val a = [1.0, 2.0, 3.0]
 val b = [4.0, 5.0, 6.0]
 val c = 2a + b - 1.0   // [6.0, 9.0, 12.0]  — fuses to one loop
+
+// View-style slicing — non-copying borrow into the source's buffer.
+// Reads and writes alias the source; every rank-1 prelude function
+// (sum, length, map, dot, ...) accepts a view transparently.
+var src = [10, 20, 30, 40, 50]
+val win = src.view(1..4)             // borrows src[1..4] — [20, 30, 40]
+win[0] = 99                          // writes through: src is [10, 99, 30, 40, 50]
+sum(win)                             // 99 + 30 + 40 = 169
 ```
 
 ## Arrays — rank-2 (matrices)
@@ -271,6 +286,12 @@ val u = [5.0, 6.0]
 val Au = A @ u                       // [17.0, 39.0]   matrix-vector
 val AA = A @ A                       // [[7.0, 10.0], [15.0, 22.0]]  matrix-matrix
 val d  = u @ u                       // 61.0           dot (rank-1 @ rank-1)
+
+// Rank-2 view: borrow a contiguous row range. Row-major layout keeps
+// the window contiguous, so no stride field is needed.
+var grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+val band = grid.view(1..3)           // rows 1..3 — a 2×3 view
+band[0, 1] = 99                      // writes through: grid[1, 1] is now 99
 ```
 
 ## Slice assignment — Fortran-90 array sections
