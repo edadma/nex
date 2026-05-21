@@ -574,9 +574,12 @@ Rank-2 construction takes a `(rows, cols)` tuple as the shape argument (single-i
 ```nex
 print("hello")                                  // with newline
 print()                                         // newline alone
-print(s"x = $x")                                // interpolated (preferred)
-val s = format("x =", x, "y =", y)              // join args with spaces
+print(s"x = $x")                                // plain interpolation
+print(f"x = $x%5d, y = $y%.3f")                 // f-string with printf-style spec
+val s = f"alpha = $a%8.4f"                      // value-position is fine too
 ```
+
+`f"..."` accepts the same `$ident` / `${expr}` interpolations as `s"..."`, plus an optional Scala/printf-style spec right after each value: `%[flags][width][.precision]conv` with conv ∈ `d f e g s x X o b`. Flags `-` (left-align), `0` (zero-pad). See spec §10.6.
 
 ## Prelude — conversions
 

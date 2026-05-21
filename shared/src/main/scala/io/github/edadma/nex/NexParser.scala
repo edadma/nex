@@ -821,9 +821,9 @@ class NexParser extends StandardTokenParsers with PackratParsers:
   lazy val interpStringLit: PackratParser[ExprAST] =
     acceptMatch("interpolated string", { case t: lexical.InterpStringTok => t }) ^^ { tok =>
       InterpStringLitExpr(tok.parts.map {
-        case lexical.IText(s)   => InterpText(s)
-        case lexical.IIdent(n)  => InterpVar(n)
-        case lexical.IExpr(raw) => InterpExprPart(raw)
+        case lexical.IText(s)         => InterpText(s)
+        case lexical.IIdent(n, sp)    => InterpVar(n, sp)
+        case lexical.IExpr(raw, sp)   => InterpExprPart(raw, sp)
       })
     }
 

@@ -442,8 +442,8 @@ protected trait NexElabInference extends NexElabState:
       // mut-call-site check skips them. `TInterpRef` also needs a
       // refresh — its captured Symbol is a Stage-1 snapshot.
       val inferredParts = parts.map {
-        case TInterpExpr(x) => TInterpExpr(infExpr(x))
-        case TInterpRef(s)  => TInterpRef(refreshSym(s))
+        case TInterpExpr(x, sp) => TInterpExpr(infExpr(x), sp)
+        case TInterpRef(s, sp)  => TInterpRef(refreshSym(s), sp)
         case other          => other
       }
       TInterpStringLit(inferredParts, p, TyString)
@@ -1379,7 +1379,6 @@ protected trait NexElabInference extends NexElabState:
     "assert_eq"      -> TyUnit,
     "assert_approx"  -> TyUnit,
     "assert_traps"   -> TyUnit,
-    "format"         -> TyString,
     "to_integer"     -> TyInteger,
     "to_real"        -> TyReal,
     "to_complex"     -> TyComplex,

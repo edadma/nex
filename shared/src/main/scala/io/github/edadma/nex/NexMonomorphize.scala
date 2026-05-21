@@ -311,11 +311,11 @@ class NexMonomorphize(symbols: SymbolTable):
       case lit: TUnitLit   => lit
       case TInterpStringLit(parts, p, t) =>
         val newParts = parts.map {
-          case TInterpExpr(x) => TInterpExpr(go(x))
-          case TInterpRef(s) =>
+          case TInterpExpr(x, sp) => TInterpExpr(go(x), sp)
+          case TInterpRef(s, sp) =>
             symMap.get(s.id) match
-              case Some(fresh) => TInterpRef(fresh)
-              case None        => TInterpRef(s)
+              case Some(fresh) => TInterpRef(fresh, sp)
+              case None        => TInterpRef(s, sp)
           case other => other
         }
         TInterpStringLit(newParts, p, t)
@@ -470,8 +470,8 @@ class NexMonomorphize(symbols: SymbolTable):
          | _: TUnitLit | _: TVarRef | _: TAxisAllMark | _: TOpenSliceMark | _: TIntrinsic => e
       case TInterpStringLit(parts, p, t) =>
         TInterpStringLit(parts.map {
-          case TInterpExpr(x) => TInterpExpr(go(x))
-          case other          => other
+          case TInterpExpr(x, sp) => TInterpExpr(go(x), sp)
+          case other              => other
         }, p, t)
       case TBinOp(op, l, r, p, t)         => TBinOp(op, go(l), go(r), p, t)
       case TUnaryOp(op, x, p, t)          => TUnaryOp(op, go(x), p, t)

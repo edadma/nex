@@ -158,12 +158,35 @@ identity(3)              // rank-2 integer identity matrix
 ```nex
 print(x: T)                  // print value with newline
 print()                      // print newline alone
-format(args...): string      // join args (in default form) with single spaces
 ```
 
-For string composition, prefer interpolated string literals (`s"x = $x"`, see the Lexical chapter) — they are the idiomatic form. The `format` function is currently a minimal helper that converts each argument with the same rules as `print` (whole reals as `n.0`, strings unquoted, structs as `Name { ... }`) and joins them with single spaces; it does not interpret a format string.
+For string composition, Nex provides two interpolated string forms (see also the Lexical chapter):
 
-Positional `{}` substitution and type-aware formatting (precision, padding, hex specifiers, the `f"..."` literal form) are *deferred*.
+- **`s"..."` — plain interpolation.** `$ident` and `${expr}` are replaced by the default printed form of the value (whole reals as `n.0`, strings unquoted, structs as `Name { ... }`, etc.).
+
+  ```nex
+  val x = 42
+  print(s"x = $x")            // x = 42
+  print(s"sum = ${x + 1}")    // sum = 43
+  ```
+
+- **`f"..."` — formatted interpolation.** Same as `s"..."`, but each `$ident` or `${expr}` may be followed by a printf-style format spec `%[flags][width][.precision]conversion`. Conversion characters: `d` (integer), `f e g` (real, fixed / scientific / shortest), `s` (string), `x X o b` (integer in hex / upper-hex / octal / binary). Flags: `-` left-align, `0` zero-pad. The spec follows immediately after the value with no space.
+
+  ```nex
+  val n  = 42
+  val pi = 3.14159
+  print(f"|$n%5d|")           // |   42|
+  print(f"|$n%-5d|")          // |42   |
+  print(f"|$n%05d|")          // |00042|
+  print(f"$pi%.3f")           // 3.142
+  print(f"$pi%10.3f")         //      3.142
+  print(f"hex = $n%x")        // hex = 2a
+  print(f"bin = $n%08b")      // bin = 00101010
+  ```
+
+  Inside an `f"..."` literal, `%` in plain text is literal (no `%%` escape needed — `100% sure` works). `$$` still emits a literal `$`.
+
+The conversion-vs-value-type compatibility is checked at runtime: `f"$str%d"` traps because `%d` expects an integer. `%s` accepts any value and uses the default printed form.
 
 ## 10.7 Type conversions
 

@@ -20,10 +20,29 @@ protected trait NexLLVMPrint extends NexLLVMState:
           case TInterpText(text) =>
             val ptr = internStringLiteral(text)
             emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $ptr)\n")
-          case TInterpRef(sym) =>
-            emitPrintValue(TVarRef(sym, None, sym.tpe))
-          case TInterpExpr(e) =>
-            emitPrintValue(e)
+          case TInterpRef(sym, spec) =>
+            // `f"..."` spec routes through emitFormattedDesc which
+            // produces a fresh %nex_str descriptor — extract its data
+            // ptr before handing to printf, then release the share.
+            // Bare `s"..."` interpolation stays on the direct print
+            // path which avoids the descriptor allocation entirely.
+            if spec.isDefined then
+              val desc = emitFormattedDesc(TVarRef(sym, None, sym.tpe), spec.get)
+              val data = newReg()
+              emitLine(s"  $data = call ptr @__nex_str_data(ptr $desc)\n")
+              emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $data)\n")
+              emitLine(s"  call void @__nex_str_dec(ptr $desc)\n")
+            else
+              emitPrintValue(TVarRef(sym, None, sym.tpe))
+          case TInterpExpr(e, spec) =>
+            if spec.isDefined then
+              val desc = emitFormattedDesc(e, spec.get)
+              val data = newReg()
+              emitLine(s"  $data = call ptr @__nex_str_data(ptr $desc)\n")
+              emitLine(s"  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr $data)\n")
+              emitLine(s"  call void @__nex_str_dec(ptr $desc)\n")
+            else
+              emitPrintValue(e)
           case _: TInterpRaw =>
             notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")

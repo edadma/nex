@@ -143,10 +143,10 @@ case class TStringLit(value: String,pos: Option[Position] = None, tpe: Type = Ty
 case class TInterpStringLit(parts: List[TInterpPart], pos: Option[Position] = None, tpe: Type = TyString) extends TExpr
 
 sealed trait TInterpPart
-case class TInterpText(text: String)        extends TInterpPart
-case class TInterpRef(sym: Symbol)          extends TInterpPart
-case class TInterpRaw(rawExpr: String)      extends TInterpPart
-case class TInterpExpr(expr: TExpr)         extends TInterpPart
+case class TInterpText(text: String)                                extends TInterpPart
+case class TInterpRef(sym: Symbol, spec: Option[String] = None)     extends TInterpPart
+case class TInterpRaw(rawExpr: String, spec: Option[String] = None) extends TInterpPart
+case class TInterpExpr(expr: TExpr, spec: Option[String] = None)    extends TInterpPart
 
 case class TUnitLit(pos: Option[Position] = None) extends TExpr:
   val tpe: Type = TyUnit

@@ -192,13 +192,17 @@ case class InterpStringLitExpr(parts: List[InterpPart]) extends ExprAST
 sealed trait InterpPart
 /** Literal text between interpolations. */
 case class InterpText(text: String) extends InterpPart
-/** `$name` — substitute a binding. */
-case class InterpVar(name: String) extends InterpPart
+/** `$name` — substitute a binding. `spec` carries the optional
+  * Scala-style printf format spec from an `f"..."` literal
+  * (e.g. `Some("%5d")`); always `None` for `s"..."` interpolations.
+  */
+case class InterpVar(name: String, spec: Option[String] = None) extends InterpPart
 /** `${expr}` — the raw source text between the braces, to be re-parsed
   * by the elaborator. (Doing the re-parse at parse time would require
-  * a fresh lexer instance per nesting level — easier to defer.)
+  * a fresh lexer instance per nesting level — easier to defer.) `spec`
+  * carries the optional `f"..."` printf format spec.
   */
-case class InterpExprPart(rawExpr: String) extends InterpPart
+case class InterpExprPart(rawExpr: String, spec: Option[String] = None) extends InterpPart
 
 /** `()` — the unit value. */
 case class UnitLitExpr() extends ExprAST

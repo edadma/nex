@@ -2413,31 +2413,73 @@ object NexProgramCorpus:
       mlir = true,
     ),
     Case(
-      "prelude",
-      "format returns a string",
+      "string interpolation",
+      "f-string without spec behaves like s-string",
       """
         |def main() =
-        |  val s = format(2 + 3)
-        |  print(s)
-        |  print(s == "5")
+        |  val x = 42
+        |  print(f"x = $x")
+        |  print(f"sum = ${1 + 2}")
       """.stripMargin,
-      "5\ntrue\n",
+      "x = 42\nsum = 3\n",
     ),
     Case(
-      "prelude",
-      "format joins multiple args with a single space",
+      "string interpolation",
+      "f-string width / left-align / zero-pad on integers",
       """
-        |def main() = print(format(1, 2, 3))
+        |def main() =
+        |  val x = 42
+        |  print(f"|$x%5d|")
+        |  print(f"|$x%-5d|")
+        |  print(f"|$x%05d|")
       """.stripMargin,
-      "1 2 3\n",
+      "|   42|\n|42   |\n|00042|\n",
     ),
     Case(
-      "prelude",
-      "format with mixed types (int / real / string)",
+      "string interpolation",
+      "f-string precision on reals",
       """
-        |def main() = print(format(1, 2.5, "ok"))
+        |def main() =
+        |  val pi = 3.14159265
+        |  print(f"$pi%.3f")
+        |  print(f"$pi%.10f")
+        |  print(f"$pi%10.3f")
       """.stripMargin,
-      "1 2.5 ok\n",
+      "3.142\n3.1415926500\n     3.142\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string hex / octal / binary",
+      """
+        |def main() =
+        |  val n = 255
+        |  print(f"$n%x")
+        |  print(f"$n%X")
+        |  print(f"$n%o")
+        |  print(f"$n%b")
+        |  print(f"$n%016b")
+      """.stripMargin,
+      "ff\nFF\n377\n11111111\n0000000011111111\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string value-position (function returns formatted string)",
+      """
+        |def render(label: string, x: real): string = f"$label = $x%8.4f"
+        |def main() =
+        |  print(render("alpha", 3.14159))
+        |  print(render("gamma", 12345.678))
+      """.stripMargin,
+      "alpha =   3.1416\ngamma = 12345.6780\n",
+    ),
+    Case(
+      "string interpolation",
+      "f-string literal `%` and `$$` escape",
+      """
+        |def main() =
+        |  print(f"100% sure $$dollar")
+      """.stripMargin,
+      "100% sure $dollar\n",
     ),
     Case(
       "prelude",

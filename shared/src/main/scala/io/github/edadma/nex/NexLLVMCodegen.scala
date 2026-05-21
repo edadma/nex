@@ -2078,14 +2078,126 @@ class NexLLVMCodegen
     */
   protected def emitInterpStringValue(parts: List[TInterpPart]): String =
     val partDescs: List[String] = parts.map {
-      case TInterpText(text) => internStringDescriptor(text)
-      case TInterpRef(sym)   => emitValueToString(TVarRef(sym, None, sym.tpe))
-      case TInterpExpr(x)    => emitValueToString(x)
-      case _: TInterpRaw     =>
+      case TInterpText(text)        => internStringDescriptor(text)
+      case TInterpRef(sym, None)    => emitValueToString(TVarRef(sym, None, sym.tpe))
+      case TInterpRef(sym, Some(s)) => emitFormattedDesc(TVarRef(sym, None, sym.tpe), s)
+      case TInterpExpr(x, None)     => emitValueToString(x)
+      case TInterpExpr(x, Some(s))  => emitFormattedDesc(x, s)
+      case _: TInterpRaw            =>
         notYet("interpolated `${...}` raw fragment (should have been re-parsed in Stage 1)")
         internStringDescriptor("")
     }
     concatChain(partDescs)
+
+  /** Format `e` using a printf-style spec (`%5d`, `%.3f`, etc.) from an
+    * `f"..."` literal, producing a fresh %nex_str descriptor. Routes
+    * through libc `snprintf` for the standard conversions (`d e f g s
+    * x X o`) and a small inline loop for `%b` (binary). The conversion
+    * char is the spec's last character; the elaborator/lexer already
+    * validated the shape.
+    */
+  protected def emitFormattedDesc(e: TExpr, spec: String): String =
+    val conv = spec.last
+    conv match
+      case 'd' =>
+        emitSnprintfDesc(spec, "i64", emitInt(e, spec))
+      case 'f' | 'e' | 'g' | 'E' | 'G' =>
+        emitSnprintfDesc(spec, "double", emitReal(e, spec))
+      case 's' =>
+        // String arg: the value already lands as a %nex_str ptr; we need
+        // the data ptr for snprintf's `%s`. Route through __nex_str_data
+        // and release the descriptor after snprintf reads from it.
+        val sv  = emitExpr(e)
+        val tt  = e.tpe
+        val sp  = newReg()
+        emitLine(s"  $sp = call ptr @__nex_str_data(ptr $sv)\n")
+        val desc = emitSnprintfDesc(spec, "ptr", sp)
+        if tt == TyString then emitArrDec(sv, tt)
+        desc
+      case 'x' | 'X' | 'o' =>
+        emitSnprintfDesc(spec, "i64", emitInt(e, spec))
+      case 'b' =>
+        emitBinaryDesc(emitInt(e, spec), spec)
+      case other =>
+        notImpl(s"unknown format conversion `$other` in spec `$spec`")
+
+  /** Coerce a numeric expression to i64 for an integer-typed spec. */
+  private def emitInt(e: TExpr, spec: String): String = e.tpe match
+    case TyInteger => emitExpr(e)
+    case other     =>
+      notImpl(s"format spec `$spec` expects integer, got $other")
+
+  /** Coerce a numeric expression to double for a real-typed spec.
+    * Integers are sitofp-lifted; reals pass through.
+    */
+  private def emitReal(e: TExpr, spec: String): String = e.tpe match
+    case TyReal    => emitExpr(e)
+    case TyInteger =>
+      val v = emitExpr(e)
+      val r = newReg()
+      emitLine(s"  $r = sitofp i64 $v to double\n")
+      r
+    case other     =>
+      notImpl(s"format spec `$spec` expects real, got $other")
+
+  /** Emit a `snprintf` call producing a fresh %nex_str descriptor. The
+    * format-string literal lives in the string-literal pool; the
+    * sizing pre-pass calls snprintf with a NULL buffer to learn the
+    * length, then a real call writes into the descriptor's data buffer.
+    */
+  private def emitSnprintfDesc(spec: String, argLLT: String, argReg: String): String =
+    val fmtPtr = internStringLiteral(spec)
+    val lenR   = newReg()
+    emitLine(s"  $lenR = call i32 (ptr, i64, ptr, ...) @snprintf(ptr null, i64 0, ptr $fmtPtr, $argLLT $argReg)\n")
+    val len64  = newReg()
+    emitLine(s"  $len64 = sext i32 $lenR to i64\n")
+    val desc   = newReg()
+    emitLine(s"  $desc = call ptr @__nex_str_alloc(i64 $len64)\n")
+    val dp     = newReg()
+    emitLine(s"  $dp = getelementptr inbounds %nex_str, ptr $desc, i32 0, i32 2\n")
+    val dat    = newReg()
+    emitLine(s"  $dat = load ptr, ptr $dp\n")
+    val cap    = newReg()
+    emitLine(s"  $cap = add i64 $len64, 1\n")
+    emitLine(s"  call i32 (ptr, i64, ptr, ...) @snprintf(ptr $dat, i64 $cap, ptr $fmtPtr, $argLLT $argReg)\n")
+    desc
+
+  /** Emit a `%b` (binary) formatted string for an i64 value. Java/C
+    * `printf` don't agree on `%b`, so we build it inline: extract the
+    * raw binary digits via a runtime helper, then optionally pad to
+    * the spec's width with `0`/' ' / left-alignment from the flag set.
+    * For chunk 1, only unflagged + width is handled by routing to a
+    * runtime `__nex_str_from_bin(i64, ...)` — but to keep the runtime
+    * surface small we stamp a small inline LLVM loop here. The
+    * width/flag parsing happens at codegen time on the spec literal.
+    */
+  private def emitBinaryDesc(argReg: String, spec: String): String =
+    // Parse width / flags from the spec at compile time (the lexer
+    // already accepted the shape). Spec = `%[flags][width]b`.
+    val body  = spec.substring(1, spec.length - 1)
+    var i     = 0
+    var leftAlign = false
+    var zeroPad   = false
+    while i < body.length && "-+0 ".contains(body.charAt(i)) do
+      body.charAt(i) match
+        case '-' => leftAlign = true
+        case '0' => zeroPad   = true
+        case _   => ()
+      i += 1
+    val widthStr = body.substring(i).takeWhile(_.isDigit)
+    val width    = if widthStr.isEmpty then 0 else widthStr.toInt
+    // Compute raw binary via the runtime helper, then pad via the
+    // shared __nex_str_pad helper if width > 0.
+    val raw = newReg()
+    emitLine(s"  $raw = call ptr @__nex_str_from_bin(i64 $argReg)\n")
+    if width <= 0 then raw
+    else
+      val padChar = if zeroPad && !leftAlign then 48 else 32  // '0' vs ' '
+      val side    = if leftAlign then 1 else 0                // 0 = right-justify, 1 = left-justify
+      val padded = newReg()
+      emitLine(s"  $padded = call ptr @__nex_str_pad(ptr $raw, i64 $width, i8 $padChar, i32 $side)\n")
+      emitLine(s"  call void @__nex_str_dec(ptr $raw)\n")
+      padded
 
   // ===========================================================================
   // Sum-type codegen: variant construction, match dispatch, ARC / print helpers.

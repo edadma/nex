@@ -280,34 +280,8 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("flatten",   List(a))              => emitFlattenCall(a, resultT)
       case ("sum_axis",  List(m, ax))          => emitSumAxisCall(m, ax, resultT)
 
-      case ("format", _) => emitFormatCall(args)
-
       case _ =>
         notYet(s"prelude `$name`/${args.size}"); "0"
-
-  /** Lower `format(arg0, arg1, ...)` — interpreter equivalent is
-    * `args.map(formatValue).mkString(" ")`. Each arg routes through
-    * [[emitValueToString]] which produces a fresh %nex_str descriptor;
-    * intermediate results are chained via `__nex_str_concat` with
-    * literal " " separators between them. Every per-arg descriptor and
-    * every intermediate-concat result is dec'd once chained.
-    */
-  private def emitFormatCall(args: List[TExpr]): String =
-    if args.isEmpty then internStringDescriptor("")
-    else
-      val space = internStringDescriptor(" ")
-      var acc   = emitValueToString(args.head)
-      for a <- args.tail do
-        val withSep = newReg()
-        emitLine(s"  $withSep = call ptr @__nex_str_concat(ptr $acc, ptr $space)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $acc)\n")
-        val part = emitValueToString(a)
-        val next = newReg()
-        emitLine(s"  $next = call ptr @__nex_str_concat(ptr $withSep, ptr $part)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $withSep)\n")
-        emitLine(s"  call void @__nex_str_dec(ptr $part)\n")
-        acc = next
-      acc
 
   /** Lift an integer-typed expression to double via `sitofp`; pass-through
     * for double-typed expressions. Used by every libm bridge so callers
