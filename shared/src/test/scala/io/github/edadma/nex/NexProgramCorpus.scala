@@ -1016,6 +1016,7 @@ object NexProgramCorpus:
         |  print(flatMap(xs, x -> [x, x * 10]))
       """.stripMargin,
       "[1, 10, 2, 20, 3, 30]\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1025,6 +1026,7 @@ object NexProgramCorpus:
         |  print([1, 2, 3].flatMap(x -> [x, -x]))
       """.stripMargin,
       "[1, -1, 2, -2, 3, -3]\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1034,6 +1036,62 @@ object NexProgramCorpus:
         |  print([1, 2, 3].flatMap(x -> [x * x]))
       """.stripMargin,
       "[1, 4, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap on a dynamic-bound range with two-element inner arrays",
+      """
+        |def main() =
+        |  val n = 4
+        |  print(flatMap(range(1, n), x -> [x, x + 10]))
+      """.stripMargin,
+      "[1, 11, 2, 12, 3, 13]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap where inner length itself depends on the element (variable inner length)",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(flatMap(xs, x -> range(0, x)))
+      """.stripMargin,
+      "[0, 0, 1, 0, 1, 2]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "length of flatMap result",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(length(flatMap(xs, x -> [x, x + 1, x + 2])))
+      """.stripMargin,
+      "9\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap on real elements promotes through inner arrays",
+      """
+        |def main() =
+        |  val xs = [1.0, 2.0, 3.0]
+        |  print(flatMap(xs, x -> [x, x * 2.0]))
+      """.stripMargin,
+      "[1.0, 2.0, 2.0, 4.0, 3.0, 6.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "sum of flatMap result",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(sum(flatMap(xs, x -> [x, x])))
+      """.stripMargin,
+      "20\n",
+      mlir = true,
     ),
     Case(
       "functions",

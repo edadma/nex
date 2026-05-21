@@ -509,6 +509,16 @@ class NexMLIRCodegen:
         case t @ MTensor(_, List(_)) => emitFilterInlineLambda(av, t, lam)
         case other                   => notYet(s"filter over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, lam: TLambda), _, tpe)
+        if s.kind == SymKind.Prelude && s.name == "flatMap" && lam.params.size == 1 =>
+      val av = emitExpr(arr)
+      val outElem = tpe match
+        case TyArray(e, _) => e
+        case other         => notYet(s"flatMap returns non-array $other")
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitFlatMapInlineLambda(av, t, lam, outElem)
+        case other                   => notYet(s"flatMap over $other")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
       val av = emitExpr(arr)
@@ -1183,6 +1193,136 @@ class NexMLIRCodegen:
     out.append(s"      scf.yield $outIter, $wposIter : ${outTy.text}, index\n")
     out.append("    }\n")
     out.append(s"    scf.yield $nrPair#0, $nrPair#1 : ${outTy.text}, index\n")
+    out.append("  }\n")
+
+    prev match
+      case Some(v) => env(paramSym.id) = v
+      case None    => env.remove(paramSym.id)
+
+    MlirVal(s"$resPair#0", outTy)
+
+  /** `flatMap(arr, x -> [...])` on rank-1. The lambda returns a
+    * rank-1 array each call; the result concatenates them. Output
+    * length is the sum of inner lengths, so the codegen mirrors
+    * [[emitFilterInlineLambda]] with an extra dimension of nesting:
+    *
+    *   1. Pass 1 walks the input, emits the lambda body once per
+    *      iteration, reads the inner tensor's first dim via
+    *      `tensor.dim`, and accumulates the i64 sum.
+    *   2. Pass 2 allocates `tensor<?xU>` of that size and walks
+    *      again. For each iteration it emits the lambda body a
+    *      second time, then runs a nested `scf.for` over the inner
+    *      tensor that copies element-by-element into the output at
+    *      `wpos + j`. The output tensor flows through the nested
+    *      loop as an iter_arg; `wpos` advances by the inner length
+    *      after each outer iteration.
+    *
+    * Two re-emissions of the lambda body (vs. one for filter) is
+    * accepted: lambda bodies are pure Nex value-level expressions.
+    */
+  private def emitFlatMapInlineLambda(
+      av:      MlirVal,
+      srcTy:   MTensor,
+      lam:     TLambda,
+      outElem: Type,
+  ): MlirVal =
+    val srcElemT = srcTy.elem
+    val outTy    = MTensor(outElem, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val c0I64 = fresh("c0i")
+    out.append(s"  $c0I64 = arith.constant 0 : i64\n")
+
+    val lenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("flen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("flen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val paramSym = lam.params.head
+    val prev     = env.get(paramSym.id)
+
+    val ivPass1  = fresh("fi1")
+    val accName  = fresh("acc")
+    val totalOut = fresh("total")
+    out.append(
+      s"  $totalOut = scf.for $ivPass1 = $c0Idx to $lenIdx step $c1Idx iter_args($accName = $c0I64) -> (i64) {\n",
+    )
+    val elt1 = fresh("elt")
+    out.append(s"    $elt1 = tensor.extract ${av.reg}[$ivPass1] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt1, MScalar(srcElemT))
+    val inner1 = emitExpr(lam.body)
+    val innerTy1 = inner1.ty match
+      case t @ MTensor(_, List(_)) => t
+      case other =>
+        notYet(s"flatMap lambda body did not produce rank-1 tensor: $other")
+    val innerLenIdx1 = fresh("ilen")
+    if innerTy1.shape.head >= 0 then
+      out.append(s"    $innerLenIdx1 = arith.constant ${innerTy1.shape.head} : index\n")
+    else
+      val iaxis = fresh("iaxis")
+      out.append(s"    $iaxis = arith.constant 0 : index\n")
+      out.append(s"    $innerLenIdx1 = tensor.dim ${inner1.reg}, $iaxis : ${innerTy1.text}\n")
+    val innerLenI64 = fresh("ileni")
+    out.append(s"    $innerLenI64 = arith.index_castui $innerLenIdx1 : index to i64\n")
+    val newAcc = fresh("nacc")
+    out.append(s"    $newAcc = arith.addi $accName, $innerLenI64 : i64\n")
+    out.append(s"    scf.yield $newAcc : i64\n")
+    out.append("  }\n")
+
+    val totalIdx = fresh("totalidx")
+    out.append(s"  $totalIdx = arith.index_cast $totalOut : i64 to index\n")
+    val outInit  = emitTensorEmpty(outTy, List(totalIdx))
+
+    val ivPass2  = fresh("fi2")
+    val outIter  = fresh("oit")
+    val wposIter = fresh("wp")
+    val resPair  = fresh("res")
+    out.append(
+      s"  $resPair:2 = scf.for $ivPass2 = $c0Idx to $lenIdx step $c1Idx " +
+        s"iter_args($outIter = $outInit, $wposIter = $c0Idx) -> (${outTy.text}, index) {\n",
+    )
+    val elt2 = fresh("elt")
+    out.append(s"    $elt2 = tensor.extract ${av.reg}[$ivPass2] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt2, MScalar(srcElemT))
+    val inner2 = emitExpr(lam.body)
+    val innerTy2 = inner2.ty.asInstanceOf[MTensor]
+    val innerLenIdx2 = fresh("ilen2")
+    if innerTy2.shape.head >= 0 then
+      out.append(s"    $innerLenIdx2 = arith.constant ${innerTy2.shape.head} : index\n")
+    else
+      val iaxis = fresh("iaxis2")
+      out.append(s"    $iaxis = arith.constant 0 : index\n")
+      out.append(s"    $innerLenIdx2 = tensor.dim ${inner2.reg}, $iaxis : ${innerTy2.text}\n")
+
+    val ivInner  = fresh("ij")
+    val outInner = fresh("oin")
+    val outAfter = fresh("oaft")
+    out.append(
+      s"    $outAfter = scf.for $ivInner = $c0Idx to $innerLenIdx2 step $c1Idx " +
+        s"iter_args($outInner = $outIter) -> (${outTy.text}) {\n",
+    )
+    val v = fresh("v")
+    out.append(s"      $v = tensor.extract ${inner2.reg}[$ivInner] : ${innerTy2.text}\n")
+    val destIdx = fresh("dst")
+    out.append(s"      $destIdx = arith.addi $wposIter, $ivInner : index\n")
+    val ins = fresh("ins")
+    out.append(s"      $ins = tensor.insert $v into $outInner[$destIdx] : ${outTy.text}\n")
+    out.append(s"      scf.yield $ins : ${outTy.text}\n")
+    out.append("    }\n")
+
+    val newWpos = fresh("nwp")
+    out.append(s"    $newWpos = arith.addi $wposIter, $innerLenIdx2 : index\n")
+    out.append(s"    scf.yield $outAfter, $newWpos : ${outTy.text}, index\n")
     out.append("  }\n")
 
     prev match
