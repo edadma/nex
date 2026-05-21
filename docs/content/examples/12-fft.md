@@ -1,30 +1,21 @@
 ---
 title: FFT
-summary: Cooley-Tukey radix-2 recursive FFT for any power-of-2 N — complex numbers, the `fill` constructor, per-element array-literal coercion, and slice assignment to stitch the two output halves.
+summary: Cooley-Tukey radix-2 recursive FFT for any power-of-2 N — complex numbers, strided slicing for the even/odd split, element-wise array arithmetic, and slice assignment to stitch the two output halves.
 weight: 120
 ---
 
-A recursive discrete Fourier transform that showcases Nex's complex number support, the prelude `fill(n, v)` array constructor, per-element array-literal coercion, and slice assignment to write the two output halves in one statement each. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
+A recursive discrete Fourier transform that showcases Nex's complex number support, per-element array-literal coercion, strided slices for the even/odd split, and open-bound slice assignment for stitching the two output halves. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
 
 ```nex
 def fft(x: [complex]): [complex] =
   val n = length(x)
   if n == 1 then return x
 
+  // Split into even/odd-indexed sub-arrays via strided slices.
+  val ef = fft(x[..n by 2])     // even-indexed: 0, 2, 4, ...
+  val of = fft(x[1..n by 2])    // odd-indexed:  1, 3, 5, ...
+
   val half = n div 2
-
-  // Split into even/odd-indexed sub-arrays. `fill(half, 0.0 + 0i)`
-  // gives us a writable rank-1 complex buffer of the right size.
-  // (Strided slice forms like `x[0..n by 2]` are deferred, so we
-  // walk the indices by hand here.)
-  var even = fill(half, 0.0 + 0i)
-  var odd  = fill(half, 0.0 + 0i)
-  for k in 0..half do
-    even[k] = x[2 * k]
-    odd[k]  = x[2 * k + 1]
-
-  val ef = fft(even)
-  val of = fft(odd)
 
   // Cooley-Tukey butterfly: Y[k]     = E[k] + W^k · O[k]
   //                        Y[k+N/2] = E[k] - W^k · O[k]   for k ∈ [0, N/2)
