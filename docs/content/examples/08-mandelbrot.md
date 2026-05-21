@@ -4,13 +4,21 @@ summary: Rank-2 matrix plus complex iteration — escape-time rendered as ASCII 
 weight: 80
 ---
 
+For each complex parameter $c$, the Mandelbrot set studies the iteration
+
+$$
+z_0 = 0, \qquad z_{n+1} = z_n^2 + c.
+$$
+
+The point $c$ belongs to the set if the sequence $\{z_n\}$ stays bounded; otherwise it escapes to infinity. A simple sufficient escape test is $\lvert z_n \rvert > 2$ — once the orbit leaves the disk of radius 2, it never returns. The renderer records the first $n$ at which that happens (the *escape time*) and maps it to an ASCII gradient; pixels that never escape after `max_iter` are drawn solid.
+
 ```nex
 def escape_iters(c: complex, max_iter: integer) =
   var z = 0i
   var k = 0
   while k < max_iter and z.abs() <= 2.0 do
     z = z*z + c
-    k = k + 1
+    k += 1
   end while
   k
 
@@ -48,7 +56,7 @@ def main() =
         elif n > 25 then ":"
         elif n > 10 then "."
         else " "
-      line = line + ch
+      line += ch
     end for
     print(line)
   end for

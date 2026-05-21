@@ -479,6 +479,91 @@ class NexParserTests extends AnyWordSpec with Matchers:
   }
 
   // ========================================================================
+  // Compound assignment (spec §5.2)
+  // ========================================================================
+
+  "compound assignment" should {
+
+    def bodyOf(src: String): ExprAST =
+      val Right(prog) = new NexParser().parseProgram(src): @unchecked
+      prog.decls.head.asInstanceOf[FunDeclAST].body.get
+
+    "desugar `+=` on a name to `name = name + rhs`" in {
+      bodyOf("def bump(x: mut integer) = x += 5") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("+", VarRefExpr("x"), IntLitExpr(5)),
+      )
+    }
+
+    "desugar `-=` on a name" in {
+      bodyOf("def dec(x: mut integer) = x -= 1") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("-", VarRefExpr("x"), IntLitExpr(1)),
+      )
+    }
+
+    "desugar `*=` on a name" in {
+      bodyOf("def scale(x: mut integer) = x *= 2") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("*", VarRefExpr("x"), IntLitExpr(2)),
+      )
+    }
+
+    "desugar `/=` on a name" in {
+      bodyOf("def half(x: mut real) = x /= 2.0") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("/", VarRefExpr("x"), RealLitExpr(2.0)),
+      )
+    }
+
+    "desugar `%=` on a name" in {
+      bodyOf("def wrap(x: mut integer) = x %= 10") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("%", VarRefExpr("x"), IntLitExpr(10)),
+      )
+    }
+
+    "desugar `+=` on a field target" in {
+      bodyOf("def add(b: mut Box) = b.v += 3") shouldBe AssignExpr(
+        FieldExpr(VarRefExpr("b"), "v"),
+        BinOpExpr("+", FieldExpr(VarRefExpr("b"), "v"), IntLitExpr(3)),
+      )
+    }
+
+    "desugar `+=` on an index target" in {
+      bodyOf("def bump(a: mut [integer], i: integer) = a[i] += 1") shouldBe AssignExpr(
+        IndexExpr(VarRefExpr("a"), List(VarRefExpr("i"))),
+        BinOpExpr("+",
+          IndexExpr(VarRefExpr("a"), List(VarRefExpr("i"))),
+          IntLitExpr(1)),
+      )
+    }
+
+    "RHS is the full expr (binds the whole right-hand side, not just an atom)" in {
+      bodyOf("def f(x: mut integer, y: integer) = x += y * 2 + 1") shouldBe AssignExpr(
+        VarRefExpr("x"),
+        BinOpExpr("+",
+          VarRefExpr("x"),
+          BinOpExpr("+",
+            BinOpExpr("*", VarRefExpr("y"), IntLitExpr(2)),
+            IntLitExpr(1))),
+      )
+    }
+
+    "compound assignment is allowed inside a block body" in {
+      val src =
+        """def sum_into(acc: mut integer, xs: [integer]) =
+          |  for x in xs do
+          |    acc += x
+          |  end for""".stripMargin
+      // Just verify it parses without error — shape-check would duplicate
+      // the for-loop AST and obscure the assignment shape.
+      val r = new NexParser().parseProgram(src)
+      r.isRight shouldBe true
+    }
+  }
+
+  // ========================================================================
   // Cross-cutting small program shapes
   // ========================================================================
 

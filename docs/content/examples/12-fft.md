@@ -6,6 +6,21 @@ weight: 120
 
 A recursive discrete Fourier transform that showcases Nex's complex number support, per-element array-literal coercion, strided slices for the even/odd split, and open-bound slice assignment for stitching the two output halves. Works for any power-of-2 length; the recursion bottoms out at the trivial one-point transform.
 
+The DFT of length $N$ is
+
+$$
+X_k = \sum_{n=0}^{N-1} x_n \, e^{-2\pi i\, k n / N}, \qquad k = 0, 1, \ldots, N-1.
+$$
+
+A direct evaluation is $\Theta(N^2)$. Cooley-Tukey splits the sum by even / odd index — $E_k$ is the DFT of the even-indexed samples, $O_k$ the DFT of the odd-indexed ones — and reuses each half twice:
+
+$$
+X_k         = E_k + W_N^{\,k}\, O_k, \qquad
+X_{k+N/2}   = E_k - W_N^{\,k}\, O_k,
+$$
+
+for $k \in [0, N/2)$, where $W_N = e^{-2\pi i / N}$ is the principal $N$-th root of unity. Each recursive level halves the problem, giving $\Theta(N \log N)$ overall.
+
 ```nex
 def fft(x: [complex]): [complex] =
   val n = length(x)
@@ -17,10 +32,7 @@ def fft(x: [complex]): [complex] =
 
   val half = n div 2
 
-  // Cooley-Tukey butterfly: Y[k]     = E[k] + W^k · O[k]
-  //                        Y[k+N/2] = E[k] - W^k · O[k]   for k ∈ [0, N/2)
-  //
-  // Build the twiddled odd half as a vector first — t[k] = W^k · O[k].
+  // Build the twiddled odd half as a vector first: t[k] = W_N^k · O[k].
   var t = fill(half, 0.0 + 0i)
   for k in 0..half do
     val angle = -2.0 * pi * to_real(k) / to_real(n)
@@ -49,7 +61,7 @@ def main() =
     print(y[k])
 ```
 
-Output (DC term `Y[0]` is the sum of inputs; real input gives `Y[k] = conj(Y[N-k])` for k > 0):
+Output (the DC term $X_0$ is the sum of inputs; real input gives the Hermitian symmetry $X_k = \overline{X_{N-k}}$ for $k > 0$):
 
 ```
 FFT of [1, 1, 1, 1, 0, 0, 0, 0]:

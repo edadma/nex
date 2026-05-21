@@ -34,6 +34,8 @@ min, max
 
 Each is overloaded over numeric types as appropriate. `sqrt`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan` apply to both `real` and `complex` (the complex variants are source-level Nex `def`s in the prelude that compose the real-libm primitives — overload resolution picks the right one by argument type at the call site).
 
+`hypot(x, y)` returns the Euclidean norm $\sqrt{x^2 + y^2}$ without the intermediate overflow that a naive `sqrt(x*x + y*y)` would suffer for large $\lvert x \rvert$ or $\lvert y \rvert$. `sign(x)` is the signum function: $-1$, $0$, or $+1$ for negative, zero, and positive real $x$ respectively.
+
 ## 10.3 Complex-specific operations
 
 The real and imaginary parts of a `complex` value are accessed as fields with `.`:
@@ -242,6 +244,6 @@ assert_traps(thunk: () -> T, expected_substring: string)
 
 All assertions trap on failure with a message naming the assertion type and (where applicable) the user-supplied `msg`. The test runner catches the trap and reports the failure without halting the rest of the test suite.
 
-**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. The `complex` overload checks the Euclidean distance `|a - b|` against `tol`. The array overloads run element-wise on rank-1 and rank-2 arrays of integer, real, or complex; integers lift to real, complex elements use the Euclidean distance, and a shape mismatch (length for rank-1, rows or cols for rank-2) traps.
+**Prefer `assert_approx` over `assert_eq` for `real` and `complex` values** — exact floating-point equality is almost always incorrect. The check is the absolute-distance predicate $\lvert a - b \rvert \le \text{tol}$, where the metric depends on the operand type: $\lvert a - b \rvert$ for `real`, and the Euclidean distance $\lvert a - b \rvert = \sqrt{(a_r - b_r)^2 + (a_i - b_i)^2}$ for `complex`. The array overloads run element-wise on rank-1 and rank-2 arrays of integer, real, or complex; integers lift to real, complex elements use the same Euclidean distance, and a shape mismatch (length for rank-1, rows or cols for rank-2) traps.
 
 `assert_traps` takes a zero-argument closure and passes if invoking it traps; it fails if the thunk returns normally. The 2-arg form additionally checks that the trap message contains `expected_substring` — useful for asserting a specific failure mode rather than "any trap fires".
