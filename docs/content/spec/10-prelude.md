@@ -153,6 +153,20 @@ identity(3)              // rank-2 integer identity matrix
 
 `zeros`, `ones`, and `identity` currently return **integer** element type. When you need a real-typed buffer, use `fill(n, 0.0)`, `fill(n, 1.0)`, or `linspace`; for a real identity, multiply by `1.0` (`identity(n) * 1.0`) or fill manually. A future refinement is expected once overload-by-return-type lands.
 
+**View-style slicing.** Alongside the copying slice `a[lo..hi]` (spec §4.14), a rank-1 array exposes a non-copying `view` form:
+
+```nex
+val a = [10, 20, 30, 40, 50]
+val v = a.view(1..4)        // borrows a[1..4] — [20, 30, 40]
+v[0] = 99                   // writes through: a is now [10, 99, 30, 40, 50]
+print(length(v))            // 3
+print(sum(v))               // 99 + 30 + 40 = 169
+```
+
+`a.view(r)` returns a non-copying borrow into `a` covering the index range `r` (exclusive `lo..hi` or inclusive `lo..=hi`; negative bounds wrap from the end). Reads through the view see the source's current contents; writes (`v[i] = x`) update the source. Every `[T]` prelude function (`sum`, `length`, `map`, `dot`, …) accepts a view transparently. View-of-view collapses to a window into the original source — no chains. An out-of-bounds range traps.
+
+Spec §4.14 — `a[lo..hi]` allocates a fresh array and copies elements in. `a.view(lo..hi)` is the alternative for places where copying is wasteful: in-place algorithms (FFT, row pivoting), passing windows to reduction kernels, or working on a sub-range without changing the source. `.view(...)` is rank-1 only at present; rank-2 views are a deferred extension.
+
 ## 10.6 I/O
 
 ```nex

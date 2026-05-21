@@ -273,6 +273,13 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("ones",     List(n))               => emitConstFill(n, "1", TyInteger, resultT)
       case ("identity", List(n))               => emitIdentityCall(n, resultT)
 
+      // view-style slicing (rank-1 contiguous). The range arg is a
+      // `TBinOp("..", lo, hi)` (exclusive) or `("..=", lo, hi)`
+      // (inclusive) — we unpack both bounds, lower an inclusive range
+      // to the equivalent exclusive `hi+1`, then call the runtime
+      // helper. The result descriptor borrows from the source.
+      case ("view", List(arr, r))               => emitViewCall(arr, r, resultT)
+
       // §10.4 rank-2 ops.
       case ("shape",     List(a))              => emitShapeCall(a, resultT)
       case ("transpose", List(a))              => emitTransposeCall(a, resultT)
@@ -1430,6 +1437,46 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   /** Emit `range(lo, hi)` — integer half-open range. Length is
     * `max(0, hi - lo)`; element i is `lo + i`.
     */
+  /** Emit `view(a, lo..hi)` — a non-copying borrow into `a`'s buffer.
+    * The range argument is a `TBinOp("..", lo, hi)` (exclusive) or
+    * `("..=", lo, hi)` (inclusive); we unpack both bounds, wrap any
+    * negative indices against the source length, normalise inclusive
+    * to exclusive (`hi+1`), and call `__nex_arr1_view`. The runtime
+    * helper does its own bounds check and incs the owner refcount.
+    *
+    * Result is a fresh rank-1 descriptor whose `data` field aliases
+    * the source's buffer at offset `lo*elem_size` and whose `owner`
+    * field points at the source (or, for view-of-view, the root
+    * owner — the runtime collapses chains).
+    */
+  private def emitViewCall(arr: TExpr, r: TExpr, resultT: Type): String =
+    val (loE, hiE, inclusive) = r match
+      case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
+        (lo, hi, op == "..=")
+      case _ =>
+        notImpl(s"view requires a range argument, got ${r.tpe}")
+    val esz = elemSize(arrayElem(arr.tpe))
+    val av  = emitExpr(arr)
+    val srcLen = newReg(); emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
+    // Wrap negative bounds against srcLen, mirroring `__nex_arr1_slot`
+    // and `wrapNegBound` in NexLLVMArrays. Replicated locally because
+    // the sibling trait's protected helper isn't reachable from here.
+    def wrapNegHere(raw: String): String =
+      val isNeg = newReg(); emitLine(s"  $isNeg = icmp slt i64 $raw, 0\n")
+      val wrapped = newReg(); emitLine(s"  $wrapped = add i64 $raw, $srcLen\n")
+      val out = newReg(); emitLine(s"  $out = select i1 $isNeg, i64 $wrapped, i64 $raw\n")
+      out
+    val loV = wrapNegHere(emitExpr(loE))
+    val hiRaw = wrapNegHere(emitExpr(hiE))
+    val hiV =
+      if inclusive then
+        val r = newReg(); emitLine(s"  $r = add i64 $hiRaw, 1\n"); r
+      else hiRaw
+    val res = newReg()
+    emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+    emitArrDec(av, arr.tpe)
+    res
+
   private def emitRangeCall(loE: TExpr, hiE: TExpr): String =
     val lo = emitExpr(loE)
     val hi = emitExpr(hiE)

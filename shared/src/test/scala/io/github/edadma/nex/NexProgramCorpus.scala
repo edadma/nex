@@ -3853,4 +3853,114 @@ object NexProgramCorpus:
       """.stripMargin,
       "converged at x=1.4142135623730951\ndiverged\nran 3 iters, last x=125000000.0\n",
     ),
+
+    // ============================================================
+    // view-style slicing — non-copying borrows via `a.view(lo..hi)`.
+    // Spec §4.14: `a[lo..hi]` keeps copy semantics; `view` is the
+    // opt-in non-copying counterpart, with writes through to source.
+    // ============================================================
+    Case(
+      "view-style slicing",
+      "view reads the source's elements through the window",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val v = a.view(1..4)
+        |  print(v[0])
+        |  print(v[1])
+        |  print(v[2])
+      """.stripMargin,
+      "20\n30\n40\n",
+    ),
+    Case(
+      "view-style slicing",
+      "view length reflects the window, not the source",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(length(a.view(1..4)))
+      """.stripMargin,
+      "3\n",
+    ),
+    Case(
+      "view-style slicing",
+      "writes through a view update the source array",
+      """
+        |def main() =
+        |  var a = [10, 20, 30, 40, 50]
+        |  val v = a.view(1..4)
+        |  v[0] = 99
+        |  v[2] = 77
+        |  print(a)
+      """.stripMargin,
+      "[10, 99, 30, 77, 50]\n",
+    ),
+    Case(
+      "view-style slicing",
+      "sum / map / dot work transparently on a view",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5, 6]
+        |  val v = a.view(1..5)
+        |  print(sum(v))
+        |  print(v.map(x -> x * 10))
+        |  print(v.dot(v))
+      """.stripMargin,
+      "14\n[20, 30, 40, 50]\n54\n",
+    ),
+    Case(
+      "view-style slicing",
+      "inclusive range form a.view(lo..=hi) includes hi",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a.view(1..=3))
+      """.stripMargin,
+      "[20, 30, 40]\n",
+    ),
+    Case(
+      "view-style slicing",
+      "view-of-view sees the original elements through a narrower window",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val v = a.view(1..5)
+        |  val w = v.view(1..3)
+        |  print(w)
+      """.stripMargin,
+      "[30, 40]\n",
+    ),
+    Case(
+      "view-style slicing",
+      "negative bounds wrap from the end",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  print(a.view(-3..-1))
+      """.stripMargin,
+      "[30, 40]\n",
+    ),
+    Case(
+      "view-style slicing",
+      "an out-of-bounds view traps",
+      """
+        |def main() =
+        |  val a = [1, 2, 3]
+        |  assert_traps(() -> a.view(0..10), "view")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "view-style slicing",
+      "writes to the source are visible through a previously-created view",
+      """
+        |def main() =
+        |  var a = [10, 20, 30, 40, 50]
+        |  val v = a.view(1..4)
+        |  a[2] = 99
+        |  print(v[1])
+      """.stripMargin,
+      "99\n",
+    ),
   )

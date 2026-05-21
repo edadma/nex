@@ -964,7 +964,7 @@ protected trait NexElabInference extends NexElabState:
     * trap with an unhelpful runtime message. Each entry needs a matching
     * branch in [[inferPreludeRank1Call]] that supplies the result type.
     */
-  protected val preludeRank1OnlyNames: Set[String] = Set("dot", "enumerate", "zip")
+  protected val preludeRank1OnlyNames: Set[String] = Set("dot", "enumerate", "zip", "view")
 
   protected def isPreludeRank1Only(s: Symbol): Boolean =
     s.kind == SymKind.Prelude && preludeRank1OnlyNames.contains(s.name)
@@ -1006,6 +1006,14 @@ protected trait NexElabInference extends NexElabState:
         val aT = elemOf(aa(0).tpe).map(_._1).getOrElse(TyUnknown)
         val bT = elemOf(aa(1).tpe).map(_._1).getOrElse(TyUnknown)
         TCall(callee, aa, p, TyArray(TyTuple(List(aT, bT)), 1))
+
+      case "view" if aa.size == 2 =>
+        // First arg: a rank-1 array. Second arg: a range expression
+        // (typed `TyArray(TyInteger, 1)`); the codegen unpacks its
+        // bounds rather than reading the materialised range. Result
+        // type = source array type (same element, same rank).
+        requireRank1(aa(0), "first argument")
+        TCall(callee, aa, p, aa(0).tpe)
 
       case _ =>
         TCall(callee, aa, p, TyUnknown)
@@ -1513,6 +1521,14 @@ protected trait NexElabInference extends NexElabState:
         // but doesn't change the result element type or rank.
         args.head.tpe match
           case TyArray(e, 2) => TyArray(e, 1)
+          case _             => TyUnknown
+      case "view" if args.size == 2 =>
+        // view(a, lo..hi) — same element type and rank as the source.
+        // The second arg is a range expression; range bounds typecheck
+        // separately. Rank-1 only for now; rank-2 row-range views
+        // arrive with the rank-2 view chunk.
+        args.head.tpe match
+          case TyArray(e, 1) => TyArray(e, 1)
           case _             => TyUnknown
       case _ => preludeReturnType(name)
 

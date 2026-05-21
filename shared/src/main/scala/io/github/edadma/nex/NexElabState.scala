@@ -202,6 +202,8 @@ protected trait NexElabState:
       "transpose", "matmul", "diag",
       "reshape", "flatten",
       "sum_axis",
+      // view-style slicing
+      "view",
       // §10.5 construction
       "zeros", "ones", "fill", "linspace", "identity",
       // §10.6 I/O

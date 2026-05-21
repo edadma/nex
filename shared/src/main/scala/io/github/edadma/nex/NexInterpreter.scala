@@ -33,6 +33,15 @@ case class VBool(value: Boolean)                              extends Value
 case class VString(value: String)                             extends Value
 case object VUnit                                             extends Value
 case class VArray1(buf: mutable.ArrayBuffer[Value])           extends Value
+
+/** A non-copying borrow into an owned rank-1 array. `buf` aliases the
+  * source array's buffer directly; `off` and `len` define the window.
+  * Writing through a view updates the source. Lifetime is managed by
+  * the JVM GC (Scala holds the source buffer alive as long as any view
+  * references it).
+  */
+case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int) extends Value
+
 case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extends Value
 case class VTuple(elems: List[Value])                         extends Value
 case class VStruct(name: String, fields: mutable.LinkedHashMap[String, Value]) extends Value
@@ -241,7 +250,30 @@ class NexInterpreter:
         case other => VBuiltin(other, preludeFn(other))
       globalEnv.define(s.id, v)
 
-  private def preludeFn(name: String): List[Value] => Value = args => name match
+  /** Materialize a `VArray1View` into a fresh owned `VArray1` by copying
+    * its current window. Used at prelude entry for read-only ops that
+    * don't need write-through (sum, map, filter, …) — these see a
+    * snapshot of the view's contents at call time, which agrees with
+    * the AOT semantics (the AOT path reads the view's buffer the same
+    * way). Pass-through for already-owned arrays and non-array values.
+    */
+  private def coerceViewForRead(v: Value): Value = v match
+    case VArray1View(buf, off, len) =>
+      val out = mutable.ArrayBuffer.empty[Value]
+      var i = 0
+      while i < len do { out += buf(off + i); i += 1 }
+      VArray1(out)
+    case other => other
+
+  private def preludeFn(name: String): List[Value] => Value = args0 =>
+    // Most prelude ops only read their array args; coerce views to
+    // owned snapshots upfront so the existing `case VArray1(b)`
+    // patterns match transparently. The `view` builtin itself is
+    // dispatched specially in the TCall handler (it needs the raw
+    // range AST to preserve inclusivity and lo/hi), so it never
+    // reaches this normalisation step.
+    val args = args0.map(coerceViewForRead)
+    name match
     case "print"  => doPrint(args); VUnit
     case "cbrt"   => unary1(args, "cbrt")(v => VReal(math.cbrt(asReal(v))))
     case "abs"    => unary1(args, "abs")(absV)
@@ -743,6 +775,19 @@ class NexInterpreter:
       callee match
         case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
           constructStruct(s, args.map(evalExpr(_, env)), p)
+        case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "view" && args.size == 2 =>
+          // `view(a, lo..hi)` — bypass the normal materialising call path.
+          // The range arg is a `TBinOp` whose evaluation would build a
+          // throwaway `[lo, lo+1, …]` array; we want the bounds and the
+          // inclusivity flag directly.
+          val src = evalExpr(args(0), env)
+          args(1) match
+            case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
+              val loV = asReal(evalExpr(lo, env)).toLong
+              val hiV = asReal(evalExpr(hi, env)).toLong
+              buildView(src, loV, hiV, inclusive = op == "..=", p)
+            case other =>
+              trap(s"view: second arg must be a range, got ${other.tpe}", p)
         case _ =>
           val cv = evalExpr(callee, env)
           cv match
@@ -1574,8 +1619,30 @@ class NexInterpreter:
   // Indexing
   // --------------------------------------------------------------------------
 
+  /** Construct a non-copying view over a rank-1 array. `src` is the
+    * source (either an owned `VArray1` or another `VArray1View` — for
+    * view-of-view we chain through to the root buffer). `lo`/`hi`
+    * follow the slicing convention: negative indices wrap, `inclusive`
+    * lifts `hi` by one. Out-of-bounds bounds trap.
+    */
+  private def buildView(src: Value, loRaw: Long, hiRaw: Long, inclusive: Boolean, p: Option[scala.util.parsing.input.Position]): Value =
+    val (buf, baseOff, srcLen) = src match
+      case VArray1(b)               => (b, 0, b.size)
+      case VArray1View(b, off, len) => (b, off, len)
+      case other                    => trap(s"view: not a rank-1 array: ${formatValue(other)}", p)
+    val lo = wrapNeg(loRaw, srcLen).toInt
+    val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcLen) + 1 else wrapNeg(hiRaw, srcLen)).toInt
+    if lo < 0 || hiExclusive > srcLen || hiExclusive < lo then
+      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on length-$srcLen array", p)
+    val viewLen = hiExclusive - lo
+    VArray1View(buf, baseOff + lo, viewLen)
+
   private def indexGet(arr: Value, idx: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     (arr, idx) match
+      case (VArray1View(buf, off, len), List(VInt(i))) =>
+        val k = wrapNeg(i, len)
+        if k < 0 || k >= len then trap(s"index out of bounds: $i (len=$len)", p)
+        buf(off + k.toInt)
       case (VArray1(b), List(VInt(i))) =>
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
@@ -1601,6 +1668,10 @@ class NexInterpreter:
 
   private def indexSet(arr: Value, idx: List[Value], rhs: Value, p: Option[scala.util.parsing.input.Position]): Unit =
     (arr, idx) match
+      case (VArray1View(buf, off, len), List(VInt(i))) =>
+        val k = wrapNeg(i, len)
+        if k < 0 || k >= len then trap(s"index out of bounds: $i (len=$len)", p)
+        buf(off + k.toInt) = rhs
       case (VArray1(b), List(VInt(i))) =>
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
@@ -1863,6 +1934,8 @@ class NexInterpreter:
     case VString(s)     => s
     case VUnit          => "()"
     case VArray1(b)     => b.map(formatValue).mkString("[", ", ", "]")
+    case VArray1View(buf, off, len) =>
+      (off until off + len).map(i => formatValue(buf(i))).mkString("[", ", ", "]")
     case VArray2(b, r, c) =>
       val rows = for i <- 0 until r yield
         (for j <- 0 until c yield formatValue(b(i * c + j))).mkString("[", ", ", "]")

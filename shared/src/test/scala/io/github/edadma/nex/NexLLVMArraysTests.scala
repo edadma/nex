@@ -11,7 +11,7 @@ class NexLLVMArraysTests extends AnyWordSpec with NexCodegenTestBase:
   "arrays (rank-1)" should {
     "emit the descriptor types and runtime helpers in the preamble" in {
       val ir = compile("def main() = ()")
-      ir should include("%nex_arr1 = type { i64, i64, ptr }")
+      ir should include("%nex_arr1 = type { i64, i64, ptr, ptr }")
       ir should include("%nex_arr2 = type { i64, i64, i64, ptr }")
       ir should include("define ptr @__nex_arr1_alloc")
       ir should include("define void @__nex_arr1_inc")
