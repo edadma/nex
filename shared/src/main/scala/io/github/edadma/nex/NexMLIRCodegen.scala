@@ -421,6 +421,24 @@ class NexMLIRCodegen:
         case t: MTensor => emitProductReduce(av.reg, t)
         case other      => notYet(s"product over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, lam: TLambda), _, tpe)
+        if s.kind == SymKind.Prelude && s.name == "map" && lam.params.size == 1 =>
+      val av = emitExpr(arr)
+      val outElem = tpe match
+        case TyArray(e, _) => e
+        case other         => notYet(s"map returns non-array $other")
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitMapInlineLambda1D(av, t, lam, outElem)
+        case other                   => notYet(s"map over $other")
+
+    case TCall(TVarRef(s, _, _), List(arr, init, lam: TLambda), _, _)
+        if s.kind == SymKind.Prelude && s.name == "reduce" && lam.params.size == 2 =>
+      val av = emitExpr(arr)
+      val iv = emitExpr(init)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitReduceInlineLambda1D(av, t, iv, lam)
+        case other                   => notYet(s"reduce over $other")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
       val av = emitExpr(arr)
@@ -562,6 +580,40 @@ class NexMLIRCodegen:
 
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
+
+    case TFusedLoop(loopVar, length, body, None, _, tpe) =>
+      val n = staticLength(length).getOrElse(notYet(s"fused loop with non-static length"))
+      val elemT = tpe match
+        case TyArray(e, _) => e
+        case other         => notYet(s"fused loop returns non-array type $other")
+      emitFusedLoop1D(loopVar, n, elemT, body)
+
+    case TFlatIndex(arr, idx, _, _) =>
+      val av = emitExpr(arr)
+      val iv = emitExpr(idx)
+      (av.ty, iv.ty) match
+        case (t @ MTensor(et, List(_)), MScalar(TyInteger)) =>
+          val idxR = fresh("fidx")
+          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val r = fresh("felt")
+          out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
+          MlirVal(r, MScalar(et))
+        case (t @ MTensor(et, List(_, cols)), MScalar(TyInteger)) =>
+          // Rank-2 source with a flat index: convert flat → (i, j) via
+          // `i = flat / cols`, `j = flat % cols`, then tensor.extract.
+          val flatI = fresh("fidx")
+          out.append(s"  $flatI = arith.index_cast ${iv.reg} : i64 to index\n")
+          val colsI = fresh("fcols")
+          out.append(s"  $colsI = arith.constant $cols : index\n")
+          val iI    = fresh("fi")
+          out.append(s"  $iI = arith.divui $flatI, $colsI : index\n")
+          val jI    = fresh("fj")
+          out.append(s"  $jI = arith.remui $flatI, $colsI : index\n")
+          val r = fresh("felt")
+          out.append(s"  $r = tensor.extract ${av.reg}[$iI, $jI] : ${t.text}\n")
+          MlirVal(r, MScalar(et))
+        case (aty, ity) =>
+          notYet(s"flat-index on $aty with $ity")
 
     case TSlice(arr, TIntLit(lo, _, _), TIntLit(hi, _, _), inclusive, _, _) =>
       val av = emitExpr(arr)
@@ -924,6 +976,132 @@ class NexMLIRCodegen:
     * rules let region bodies reference parent-scope SSA values, so
     * any vals captured by the rhs continue to work.
     */
+  /** `map(arr, lambda)` with an inline single-param lambda. The body
+    * inlines into a `linalg.map` region: the input operand becomes
+    * the lambda's parameter (registered in env), the body is emitted
+    * via `emitExpr`, and the result is yielded. Output tensor type
+    * derives from the elaborator's result element type — supports
+    * `[int] map → [real]` since the body can promote internally.
+    */
+  private def emitMapInlineLambda1D(av: MlirVal, srcTy: MTensor, lam: TLambda, outElem: Type): MlirVal =
+    val inElem = srcTy.elem
+    val outTy  = MTensor(outElem, srcTy.shape)
+    val inS    = scalarText(inElem)
+    val outS   = scalarText(outElem)
+    val initR  = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR   = fresh("hofmap")
+    out.append(
+      s"  $outR = linalg.map ins(${av.reg} : ${srcTy.text}) outs($initR : ${outTy.text})\n",
+    )
+    val paramName = fresh("p")
+    out.append(s"    ($paramName: $inS, %_o: $outS) {\n")
+    val paramSym  = lam.params.head
+    val prev      = env.get(paramSym.id)
+    env(paramSym.id) = MlirVal(paramName, MScalar(inElem))
+    val bv = emitExpr(lam.body)
+    out.append(s"      linalg.yield ${bv.reg} : $outS\n")
+    out.append("    }\n")
+    prev match
+      case Some(v) => env(paramSym.id) = v
+      case None    => env.remove(paramSym.id)
+    MlirVal(outR, outTy)
+
+  /** `reduce(arr, init, lambda)` with an inline two-param lambda.
+    * Nex spec §10.4: the lambda is `(acc, x) -> body`. Lowers to
+    * `linalg.reduce` over the rank-1 input, with `init` seeded into
+    * a 0-d output via `tensor.from_elements`. The lambda's `acc`
+    * binds to the reduce body's accumulator and `x` to the input
+    * element; the body emits and yields.
+    */
+  private def emitReduceInlineLambda1D(av: MlirVal, srcTy: MTensor, iv: MlirVal, lam: TLambda): MlirVal =
+    val accSym  = lam.params(0)
+    val elemSym = lam.params(1)
+    val accTy   = iv.ty match
+      case s: MScalar => s
+      case other      => notYet(s"reduce with non-scalar init $other")
+    val outTy   = MTensor(accTy.elem, Nil)
+    val initR   = fresh("init")
+    out.append(s"  $initR = tensor.from_elements ${iv.reg} : ${outTy.text}\n")
+    val outTR   = fresh("hofred_t")
+    val inS     = scalarText(srcTy.elem)
+    val accS    = scalarText(accTy.elem)
+    out.append(
+      s"  $outTR = linalg.reduce ins(${av.reg} : ${srcTy.text}) outs($initR : ${outTy.text}) dimensions = [0]\n",
+    )
+    val inName  = fresh("p")
+    val accName = fresh("a")
+    out.append(s"    ($inName: $inS, $accName: $accS) {\n")
+    val prevAcc  = env.get(accSym.id)
+    val prevElem = env.get(elemSym.id)
+    env(accSym.id)  = MlirVal(accName, accTy)
+    env(elemSym.id) = MlirVal(inName, MScalar(srcTy.elem))
+    val bv = emitExpr(lam.body)
+    out.append(s"      linalg.yield ${bv.reg} : $accS\n")
+    out.append("    }\n")
+    prevAcc match { case Some(v) => env(accSym.id) = v; case None => env.remove(accSym.id) }
+    prevElem match { case Some(v) => env(elemSym.id) = v; case None => env.remove(elemSym.id) }
+    val outR = fresh("hofred")
+    out.append(s"  $outR = tensor.extract $outTR[] : ${outTy.text}\n")
+    MlirVal(outR, accTy)
+
+  /** Resolve an Nex length expression to a compile-time integer when
+    * possible. Recognises:
+    *   - `TIntLit(n)` directly.
+    *   - `length(arr)` where `arr` evaluates (via the env or a fresh
+    *     emit, free of side effects) to a tensor with known static
+    *     shape — the outer dim is the length.
+    *   - `a * b` where both sides are static integers (used by the
+    *     fusion pass for `rows * cols` on rank-2 sources).
+    * Returns `None` otherwise so callers can fall back to `notYet`.
+    */
+  private def staticLength(e: TExpr): Option[Int] = e match
+    case TIntLit(n, _, _) => Some(n.toInt)
+    case TCall(TVarRef(s, _, _), List(arr), _, _) if s.kind == SymKind.Prelude && s.name == "length" =>
+      staticTensorOf(arr).map(_.shape.head)
+    case TBinOp("*", l, r, _, _) =>
+      for li <- staticLength(l); ri <- staticLength(r) yield li * ri
+    case _ => None
+
+  /** Find the static `MTensor` type of an expression that's already
+    * sitting in `env` (a `TVarRef` to a let-bound or var-bound array).
+    * Used by [[staticLength]] to read the source shape without emitting
+    * any side-effecting ops.
+    */
+  private def staticTensorOf(e: TExpr): Option[MTensor] = e match
+    case TVarRef(s, _, _) =>
+      env.get(s.id).map(_.ty).collect { case t: MTensor => t }
+    case _ => None
+
+  /** Rank-1 fused loop. The fusion pass already inlined the lambda body
+    * with the param substituted to a `TFlatIndex(src, loopVar)` shape;
+    * here we emit a `linalg.map` over a fresh `tensor<NxT_out>`, bind
+    * the loop var symbol to the iteration index (cast to i64), and
+    * `emitExpr(body)` inside the region. The body's `TFlatIndex` will
+    * tensor.extract from the source tensor as needed.
+    */
+  private def emitFusedLoop1D(loopVar: Symbol, n: Int, elemT: Type, body: TExpr): MlirVal =
+    val outTy = MTensor(elemT, List(n))
+    val s     = scalarText(elemT)
+    val initR = fresh("init")
+    out.append(s"  $initR = tensor.empty() : ${outTy.text}\n")
+    val outR  = fresh("fl")
+    out.append(s"  $outR = linalg.map outs($initR : ${outTy.text})\n")
+    out.append(s"    (%_o: $s) {\n")
+    val idxR  = fresh("idx")
+    out.append(s"      $idxR = linalg.index 0 : index\n")
+    val ivR   = fresh("ivi")
+    out.append(s"      $ivR = arith.index_castui $idxR : index to i64\n")
+    val prev  = env.get(loopVar.id)
+    env(loopVar.id) = MlirVal(ivR, MScalar(TyInteger))
+    val bv    = emitExpr(body)
+    out.append(s"      linalg.yield ${bv.reg} : $s\n")
+    out.append("    }\n")
+    prev match
+      case Some(v) => env(loopVar.id) = v
+      case None    => env.remove(loopVar.id)
+    MlirVal(outR, outTy)
+
   /** Scalar types the backend can carry through an `scf.if -> (T)`
     * result slot. Tensor-returning `if` would need shape inference
     * (both branches must materialise the same static tensor type)

@@ -968,6 +968,7 @@ object NexProgramCorpus:
         |  print(sum(xs.map(x -> x * 10)))
       """.stripMargin,
       "60\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1444,6 +1445,62 @@ object NexProgramCorpus:
         |  print(xs.map(x -> x * x).sum())
       """.stripMargin,
       "30\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "map with inline lambda printed directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(map(xs, x -> x * 10))
+      """.stripMargin,
+      "[10, 20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "method-call sugar `xs.map(...)` printed directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(xs.map(x -> x + 100))
+      """.stripMargin,
+      "[101, 102, 103]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "map producing real output from int input",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(xs.map(x -> x * 1.5))
+      """.stripMargin,
+      "[1.5, 3.0, 4.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce with inline lambda computes a fold",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(reduce(xs, 0, (acc, x) -> acc + x * x))
+      """.stripMargin,
+      "30\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce with inline lambda computes product as fold",
+      """
+        |def main() =
+        |  val xs = [2, 3, 4]
+        |  print(reduce(xs, 1, (acc, x) -> acc * x))
+      """.stripMargin,
+      "24\n",
+      mlir = true,
     ),
     Case(
       "arrays",
