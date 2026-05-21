@@ -1504,6 +1504,61 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "map over a rank-2 array preserves rank",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(map(m, x -> x * 10))
+      """.stripMargin,
+      "[[10, 20], [30, 40]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "method-call sugar `m.map(...)` on rank-2 preserves rank",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  print(m.map(x -> x + 100))
+      """.stripMargin,
+      "[[101, 102, 103], [104, 105, 106]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 map producing real output from int input",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(m.map(x -> x * 1.5))
+      """.stripMargin,
+      "[[1.5, 3.0], [4.5, 6.0]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "reduce over a rank-2 array folds left-to-right over all elements",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(reduce(m, 0, (acc, x) -> acc + x))
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 reduce computes sum-of-squares via inline lambda",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4]]
+        |  print(reduce(m, 0, (acc, x) -> acc + x * x))
+      """.stripMargin,
+      "30\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
       "flatten produces column-major order (spec §10.4)",
       """
         |def main() =

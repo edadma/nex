@@ -428,16 +428,16 @@ class NexMLIRCodegen:
         case TyArray(e, _) => e
         case other         => notYet(s"map returns non-array $other")
       av.ty match
-        case t @ MTensor(_, List(_)) => emitMapInlineLambda1D(av, t, lam, outElem)
-        case other                   => notYet(s"map over $other")
+        case t: MTensor if t.shape.nonEmpty => emitMapInlineLambda(av, t, lam, outElem)
+        case other                          => notYet(s"map over $other")
 
     case TCall(TVarRef(s, _, _), List(arr, init, lam: TLambda), _, _)
         if s.kind == SymKind.Prelude && s.name == "reduce" && lam.params.size == 2 =>
       val av = emitExpr(arr)
       val iv = emitExpr(init)
       av.ty match
-        case t @ MTensor(_, List(_)) => emitReduceInlineLambda1D(av, t, iv, lam)
-        case other                   => notYet(s"reduce over $other")
+        case t: MTensor if t.shape.nonEmpty => emitReduceInlineLambda(av, t, iv, lam)
+        case other                          => notYet(s"reduce over $other")
 
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
@@ -982,8 +982,10 @@ class NexMLIRCodegen:
     * via `emitExpr`, and the result is yielded. Output tensor type
     * derives from the elaborator's result element type — supports
     * `[int] map → [real]` since the body can promote internally.
+    * Works for any rank: `linalg.map` walks the shape regardless,
+    * and `srcTy.text`/`outTy.text` encode the full shape.
     */
-  private def emitMapInlineLambda1D(av: MlirVal, srcTy: MTensor, lam: TLambda, outElem: Type): MlirVal =
+  private def emitMapInlineLambda(av: MlirVal, srcTy: MTensor, lam: TLambda, outElem: Type): MlirVal =
     val inElem = srcTy.elem
     val outTy  = MTensor(outElem, srcTy.shape)
     val inS    = scalarText(inElem)
@@ -1009,12 +1011,14 @@ class NexMLIRCodegen:
 
   /** `reduce(arr, init, lambda)` with an inline two-param lambda.
     * Nex spec §10.4: the lambda is `(acc, x) -> body`. Lowers to
-    * `linalg.reduce` over the rank-1 input, with `init` seeded into
-    * a 0-d output via `tensor.from_elements`. The lambda's `acc`
+    * `linalg.reduce` over every axis of the input, with `init` seeded
+    * into a 0-d output via `tensor.from_elements`. The lambda's `acc`
     * binds to the reduce body's accumulator and `x` to the input
-    * element; the body emits and yields.
+    * element; the body emits and yields. All-dims reduce means the
+    * lambda fires once per element regardless of rank — same flat
+    * left-to-right traversal the interpreter and LLVM backend use.
     */
-  private def emitReduceInlineLambda1D(av: MlirVal, srcTy: MTensor, iv: MlirVal, lam: TLambda): MlirVal =
+  private def emitReduceInlineLambda(av: MlirVal, srcTy: MTensor, iv: MlirVal, lam: TLambda): MlirVal =
     val accSym  = lam.params(0)
     val elemSym = lam.params(1)
     val accTy   = iv.ty match
@@ -1026,8 +1030,9 @@ class NexMLIRCodegen:
     val outTR   = fresh("hofred_t")
     val inS     = scalarText(srcTy.elem)
     val accS    = scalarText(accTy.elem)
+    val dims    = srcTy.shape.indices.mkString(", ")
     out.append(
-      s"  $outTR = linalg.reduce ins(${av.reg} : ${srcTy.text}) outs($initR : ${outTy.text}) dimensions = [0]\n",
+      s"  $outTR = linalg.reduce ins(${av.reg} : ${srcTy.text}) outs($initR : ${outTy.text}) dimensions = [$dims]\n",
     )
     val inName  = fresh("p")
     val accName = fresh("a")
