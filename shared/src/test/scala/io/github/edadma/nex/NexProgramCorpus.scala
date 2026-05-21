@@ -1217,6 +1217,7 @@ object NexProgramCorpus:
         |  print(xs[-5])
       """.stripMargin,
       "50\n40\n10\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1230,6 +1231,7 @@ object NexProgramCorpus:
         |  print(m[-1])
       """.stripMargin,
       "9\n7\n3\n[7, 8, 9]\n",
+      mlir = true,
     ),
     Case(
       "arrays",

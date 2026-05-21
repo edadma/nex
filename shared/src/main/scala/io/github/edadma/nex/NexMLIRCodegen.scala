@@ -250,6 +250,24 @@ class NexMLIRCodegen:
       out.append(s"  $i64R = arith.index_castui $dimR : index to i64\n")
       i64R
 
+  /** Recover an `index`-typed dimension length for a tensor axis. Used
+    * by index-wrap + bounds-trap sites that need an index extent
+    * without bouncing through `i64`. Static dims emit a constant;
+    * dynamic dims use `tensor.dim`.
+    */
+  private def tensorDimAsIndex(tReg: String, ty: MTensor, axis: Int): String =
+    val d = ty.shape(axis)
+    if d >= 0 then
+      val r = fresh("dimx")
+      out.append(s"  $r = arith.constant $d : index\n")
+      r
+    else
+      val axisR = fresh("daxis")
+      out.append(s"  $axisR = arith.constant $axis : index\n")
+      val r = fresh("dim")
+      out.append(s"  $r = tensor.dim $tReg, $axisR : ${ty.text}\n")
+      r
+
   /** Emit `tensor.empty(...)` for either a static or dynamic shape.
     * `dynSizes` carries the SSA names of `index`-typed values for each
     * `-1` in `ty.shape`, in shape order.
@@ -620,8 +638,13 @@ class NexMLIRCodegen:
       val iv = emitExpr(idx)
       (av.ty, iv.ty) match
         case (t @ MTensor(et, List(_)), MScalar(TyInteger)) =>
-          val idxR = fresh("idx")
-          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val len = tensorDimAsIndex(av.reg, t, 0)
+          val rawR = fresh("idxraw")
+          out.append(s"  $rawR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val idxR = wrapNegBound(rawR, len)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          emitAxisIndexTrap(idxR, len, c0Idx)
           val r = fresh("elt")
           out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
@@ -630,8 +653,13 @@ class NexMLIRCodegen:
           // rank-1 tensor. The row axis collapses; the column axis is
           // copied wholesale. `tensor.extract_slice`'s rank-reducing form
           // handles the rank drop when a static size-1 axis is present.
-          val idxR = fresh("ridx")
-          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val rows = tensorDimAsIndex(av.reg, t, 0)
+          val rawR = fresh("ridxraw")
+          out.append(s"  $rawR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val idxR = wrapNegBound(rawR, rows)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          emitAxisIndexTrap(idxR, rows, c0Idx)
           val outTy = MTensor(et, List(cols))
           val r     = fresh("row")
           out.append(
@@ -647,10 +675,18 @@ class NexMLIRCodegen:
       val cv = emitExpr(colIdx)
       (av.ty, rv.ty, cv.ty) match
         case (t @ MTensor(et, List(_, _)), MScalar(TyInteger), MScalar(TyInteger)) =>
-          val rR = fresh("ridx")
-          out.append(s"  $rR = arith.index_cast ${rv.reg} : i64 to index\n")
-          val cR = fresh("cidx")
-          out.append(s"  $cR = arith.index_cast ${cv.reg} : i64 to index\n")
+          val rows = tensorDimAsIndex(av.reg, t, 0)
+          val cols = tensorDimAsIndex(av.reg, t, 1)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          val rRaw = fresh("rraw")
+          out.append(s"  $rRaw = arith.index_cast ${rv.reg} : i64 to index\n")
+          val rR = wrapNegBound(rRaw, rows)
+          emitAxisIndexTrap(rR, rows, c0Idx)
+          val cRaw = fresh("craw")
+          out.append(s"  $cRaw = arith.index_cast ${cv.reg} : i64 to index\n")
+          val cR = wrapNegBound(cRaw, cols)
+          emitAxisIndexTrap(cR, cols, c0Idx)
           val r = fresh("elt")
           out.append(s"  $r = tensor.extract ${av.reg}[$rR, $cR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
