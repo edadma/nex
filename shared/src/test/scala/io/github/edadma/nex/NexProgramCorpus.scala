@@ -2241,6 +2241,61 @@ object NexProgramCorpus:
       """.stripMargin,
       "n=42 s=hello\n",
     ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple from a def block body",
+      """
+        |def split(x: integer) =
+        |  val y = x * 2
+        |  y, -y
+        |def main() =
+        |  val a, b = split(3)
+        |  print(s"$a $b")
+      """.stripMargin,
+      "6 -6\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple via the `return` keyword",
+      """
+        |def first_positive(xs: [real]) =
+        |  for x in xs do
+        |    if x > 0.0 then return x, true
+        |  end for
+        |  0.0, false
+        |def main() =
+        |  val a, b = first_positive([-1.0, 2.0, 3.0])
+        |  print(s"$a $b")
+      """.stripMargin,
+      "2.0 true\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "assign a paren-less tuple in a block (assignment RHS)",
+      """
+        |def main() =
+        |  var p = 0, 0
+        |  p = 7, 8
+        |  val a, b = p
+        |  print(s"$a $b")
+      """.stripMargin,
+      "7 8\n",
+    ),
+    Case(
+      "paren-less tuple construction",
+      "return a paren-less tuple as the last item of an indented if-branch block",
+      """
+        |def classify(x: integer) =
+        |  if x > 0 then
+        |    x, "pos"
+        |  else
+        |    -x, "non-pos"
+        |def main() =
+        |  val n, label = classify(-5)
+        |  print(s"$n $label")
+      """.stripMargin,
+      "5 non-pos\n",
+    ),
 
     // ========================================================================
     // string interpolation
