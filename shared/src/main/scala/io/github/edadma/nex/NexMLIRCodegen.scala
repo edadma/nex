@@ -423,6 +423,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       vals.foreach { v =>
         v.ty match
           case MScalar(t) if t == elemT => ()
+          case _: MFunc if elemT.isInstanceOf[TyFunc] => ()
           case other                    => notYet(s"array element type mismatch: $other vs $elemT")
       }
       val ty = MTensor(elemT, List(elems.size))
@@ -1022,11 +1023,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case _                 => None
 
   protected def scalarText(t: Type): String = t match
-    case TyInteger => "i64"
-    case TyReal    => "f64"
-    case TyBool    => "i1"
-    case TyString  => "i64"  // opaque pointer to a C-side nex_str descriptor
-    case other     => notYet(s"scalar text for $other")
+    case TyInteger    => "i64"
+    case TyReal       => "f64"
+    case TyBool       => "i1"
+    case TyString     => "i64"  // opaque pointer to a C-side nex_str descriptor
+    case _: TyFunc    => "i64"  // opaque pointer to a C-side nex_closure descriptor
+    case other        => notYet(s"scalar text for $other")
 
 
   protected def zeroLit(t: Type): String = t match

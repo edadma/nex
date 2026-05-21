@@ -392,7 +392,13 @@ trait NexMLIRScalarControl:
     val eltR    = fresh("elt")
     out.append(s"    $eltR = tensor.extract ${av.reg}[$ivName] : ${ty.text}\n")
     val prev    = env.get(loopVar.id)
-    env(loopVar.id) = MlirVal(eltR, MScalar(ty.elem))
+    // Tensor element types that aren't `MScalar`-shaped (closure values
+    // stored as `i64`, etc.) need the loop binding to carry the actual
+    // MLIR-level type so downstream uses (indirect calls, etc.) can
+    // dispatch correctly. Fall back to `MScalar(elem)` for the standard
+    // numeric / bool cases.
+    val eltMTy = mlirTypeOf(ty.elem).getOrElse(MScalar(ty.elem))
+    env(loopVar.id) = MlirVal(eltR, eltMTy)
     emitForBody(body)
     prev match
       case Some(v) => env(loopVar.id) = v

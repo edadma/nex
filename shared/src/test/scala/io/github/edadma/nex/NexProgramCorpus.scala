@@ -714,6 +714,7 @@ object NexProgramCorpus:
         |    print(f(10))
       """.stripMargin,
       "11\n20\n9\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -4356,6 +4357,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "8\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4368,6 +4370,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "90\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4380,6 +4383,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4392,6 +4396,7 @@ object NexProgramCorpus:
         |  print(x)
       """.stripMargin,
       "2.0\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4403,6 +4408,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "3\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4416,6 +4422,7 @@ object NexProgramCorpus:
         |  print(total)
       """.stripMargin,
       "10\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4429,6 +4436,7 @@ object NexProgramCorpus:
         |  print(a[2])
       """.stripMargin,
       "10\n25\n30\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -4440,6 +4448,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "11\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
