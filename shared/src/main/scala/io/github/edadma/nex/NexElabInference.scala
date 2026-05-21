@@ -1008,11 +1008,16 @@ protected trait NexElabInference extends NexElabState:
         TCall(callee, aa, p, TyArray(TyTuple(List(aT, bT)), 1))
 
       case "view" if aa.size == 2 =>
-        // First arg: a rank-1 array. Second arg: a range expression
-        // (typed `TyArray(TyInteger, 1)`); the codegen unpacks its
-        // bounds rather than reading the materialised range. Result
-        // type = source array type (same element, same rank).
-        requireRank1(aa(0), "first argument")
+        // First arg: a rank-1 or rank-2 array. Second arg: a range
+        // expression (typed `TyArray(TyInteger, 1)`); the codegen
+        // unpacks its bounds rather than reading the materialised range.
+        // Rank-1: borrows an element range. Rank-2: borrows a row
+        // range (contiguous in row-major layout). Result type matches
+        // the source.
+        aa(0).tpe match
+          case TyArray(_, r) if r > 2 =>
+            err(s"view first argument requires a rank-1 or rank-2 array, got rank $r", p)
+          case _ =>
         TCall(callee, aa, p, aa(0).tpe)
 
       case _ =>
@@ -1525,10 +1530,12 @@ protected trait NexElabInference extends NexElabState:
       case "view" if args.size == 2 =>
         // view(a, lo..hi) — same element type and rank as the source.
         // The second arg is a range expression; range bounds typecheck
-        // separately. Rank-1 only for now; rank-2 row-range views
-        // arrive with the rank-2 view chunk.
+        // separately. Rank-1 takes an element range; rank-2 takes a
+        // row range (the result is still a rank-2 matrix with fewer
+        // rows). Sub-rectangle (rank-2, two ranges) is deferred.
         args.head.tpe match
           case TyArray(e, 1) => TyArray(e, 1)
+          case TyArray(e, 2) => TyArray(e, 2)
           case _             => TyUnknown
       case _ => preludeReturnType(name)
 

@@ -165,7 +165,19 @@ print(sum(v))               // 99 + 30 + 40 = 169
 
 `a.view(r)` returns a non-copying borrow into `a` covering the index range `r` (exclusive `lo..hi` or inclusive `lo..=hi`; negative bounds wrap from the end). Reads through the view see the source's current contents; writes (`v[i] = x`) update the source. Every `[T]` prelude function (`sum`, `length`, `map`, `dot`, …) accepts a view transparently. View-of-view collapses to a window into the original source — no chains. An out-of-bounds range traps.
 
-Spec §4.14 — `a[lo..hi]` allocates a fresh array and copies elements in. `a.view(lo..hi)` is the alternative for places where copying is wasteful: in-place algorithms (FFT, row pivoting), passing windows to reduction kernels, or working on a sub-range without changing the source. `.view(...)` is rank-1 only at present; rank-2 views are a deferred extension.
+A rank-2 matrix exposes the same `view` form for a contiguous row range:
+
+```nex
+val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+val v = m.view(1..3)        // rows 1..3 — a 2×3 view
+v[0, 1] = 99                // writes through: m[1, 1] is now 99
+print(rows(v))              // 2
+print(transpose(v))         // works on a view
+```
+
+Row-major layout makes any row range contiguous in memory, so the rank-2 view shares the same descriptor mechanism as rank-1 — `rows`, `cols`, `shape`, `transpose`, `sum`, `sum_axis`, element indexing, and row indexing all accept a row-range view without copying.
+
+Spec §4.14 — `a[lo..hi]` allocates a fresh array and copies elements in. `a.view(lo..hi)` is the alternative for places where copying is wasteful: in-place algorithms (FFT, row pivoting), passing windows to reduction kernels, or working on a sub-range without changing the source. Rank-2 sub-rectangle views (`m.view(rowLo..rowHi, colLo..colHi)`) require a stride field in the descriptor and are deferred.
 
 ## 10.6 I/O
 

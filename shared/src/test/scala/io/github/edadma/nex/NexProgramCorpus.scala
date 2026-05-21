@@ -4286,4 +4286,119 @@ object NexProgramCorpus:
       """.stripMargin,
       "99\n",
     ),
+
+    // ============================================================
+    // rank-2 row-range views — `m.view(rowLo..rowHi)` borrows a
+    // contiguous row range. Row-major layout makes any row range
+    // contiguous in memory, so no stride is needed. Sub-rectangles
+    // (two ranges) are a separate deferred feature.
+    // ============================================================
+    Case(
+      "rank-2 view-style slicing",
+      "row-range view reads source rows through the window",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+        |  val v = m.view(1..3)
+        |  print(v[0, 0])
+        |  print(v[0, 2])
+        |  print(v[1, 1])
+      """.stripMargin,
+      "4\n6\n8\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "rows/cols/shape reflect the view's window",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+        |  val v = m.view(1..3)
+        |  print(rows(v))
+        |  print(cols(v))
+        |  print(shape(v))
+      """.stripMargin,
+      "2\n3\n(2, 3)\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "writes through a row-range view update the source matrix",
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val v = m.view(1..3)
+        |  v[0, 1] = 99
+        |  v[1, 2] = 77
+        |  print(m)
+      """.stripMargin,
+      "[[1, 2, 3], [4, 99, 6], [7, 8, 77]]\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "sum / transpose / sum_axis work transparently on a row-range view",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+        |  val v = m.view(1..3)
+        |  print(sum(v))
+        |  print(transpose(v))
+        |  print(sum_axis(v, 0))
+        |  print(sum_axis(v, 1))
+      """.stripMargin,
+      "39\n[[4, 7], [5, 8], [6, 9]]\n[11, 13, 15]\n[15, 24]\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "inclusive range form m.view(lo..=hi) includes the last row",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        |  print(m.view(1..=2))
+      """.stripMargin,
+      "[[3, 4], [5, 6]]\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "view-of-view collapses to the underlying buffer",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        |  val v = m.view(0..4)
+        |  val w = v.view(1..3)
+        |  print(w)
+      """.stripMargin,
+      "[[3, 4], [5, 6]]\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "negative bounds wrap from the bottom row",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        |  print(m.view(-3..-1))
+      """.stripMargin,
+      "[[3, 4], [5, 6]]\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "an out-of-bounds row-range view traps",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6]]
+        |  assert_traps(() -> m.view(0..10), "view")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+    Case(
+      "rank-2 view-style slicing",
+      "writes to the source matrix are visible through a previously-created view",
+      """
+        |def main() =
+        |  var m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val v = m.view(1..3)
+        |  m[1, 1] = 99
+        |  print(v[0, 1])
+      """.stripMargin,
+      "99\n",
+    ),
   )

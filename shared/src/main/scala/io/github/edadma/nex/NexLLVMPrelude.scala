@@ -1440,14 +1440,15 @@ protected trait NexLLVMPrelude extends NexLLVMState:
   /** Emit `view(a, lo..hi)` — a non-copying borrow into `a`'s buffer.
     * The range argument is a `TBinOp("..", lo, hi)` (exclusive) or
     * `("..=", lo, hi)` (inclusive); we unpack both bounds, wrap any
-    * negative indices against the source length, normalise inclusive
-    * to exclusive (`hi+1`), and call `__nex_arr1_view`. The runtime
-    * helper does its own bounds check and incs the owner refcount.
+    * negative indices against the relevant length (element count for
+    * rank-1, row count for rank-2), normalise inclusive to exclusive
+    * (`hi+1`), and call into the matching runtime helper. The helpers
+    * do their own bounds check and incref the owner.
     *
-    * Result is a fresh rank-1 descriptor whose `data` field aliases
-    * the source's buffer at offset `lo*elem_size` and whose `owner`
-    * field points at the source (or, for view-of-view, the root
-    * owner — the runtime collapses chains).
+    * Result is a fresh descriptor whose `data` field aliases the
+    * source's buffer at the right offset and whose `owner` field
+    * points at the source (or, for view-of-view, the root owner —
+    * the runtime collapses chains).
     */
   private def emitViewCall(arr: TExpr, r: TExpr, resultT: Type): String =
     val (loE, hiE, inclusive) = r match
@@ -1457,10 +1458,12 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         notImpl(s"view requires a range argument, got ${r.tpe}")
     val esz = elemSize(arrayElem(arr.tpe))
     val av  = emitExpr(arr)
-    val srcLen = newReg(); emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
-    // Wrap negative bounds against srcLen, mirroring `__nex_arr1_slot`
-    // and `wrapNegBound` in NexLLVMArrays. Replicated locally because
-    // the sibling trait's protected helper isn't reachable from here.
+    val rank = arrayRank(arr.tpe)
+    val srcLen = newReg()
+    rank match
+      case 1 => emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
+      case 2 => emitLine(s"  $srcLen = call i64 @__nex_arr2_rows(ptr $av)\n")
+      case n => notYet(s"view on rank $n (only rank-1 and rank-2 supported)")
     def wrapNegHere(raw: String): String =
       val isNeg = newReg(); emitLine(s"  $isNeg = icmp slt i64 $raw, 0\n")
       val wrapped = newReg(); emitLine(s"  $wrapped = add i64 $raw, $srcLen\n")
@@ -1473,7 +1476,10 @@ protected trait NexLLVMPrelude extends NexLLVMState:
         val r = newReg(); emitLine(s"  $r = add i64 $hiRaw, 1\n"); r
       else hiRaw
     val res = newReg()
-    emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+    rank match
+      case 1 => emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+      case 2 => emitLine(s"  $res = call ptr @__nex_arr2_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+      case _ => // unreachable — caught above
     emitArrDec(av, arr.tpe)
     res
 

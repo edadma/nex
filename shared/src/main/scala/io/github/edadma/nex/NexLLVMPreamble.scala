@@ -108,10 +108,12 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; (the data pointer is a borrow into the owner's buffer; freeing
         |; releases the owner's reference instead of the data). Views share
         |; the same LLVM type as owned arrays, so every existing read /
-        |; write / iteration path works transparently. Rank-2 arrays do
-        |; not currently support views.
+        |; write / iteration path works transparently. The rank-2
+        |; descriptor uses the same scheme: `owner` is null for an owned
+        |; rank-2 array, non-null for a row-range view (the data pointer
+        |; is a borrow into the owner's row-major buffer).
         |%nex_arr1 = type { i64, i64, ptr, ptr }
-        |%nex_arr2 = type { i64, i64, i64, ptr }
+        |%nex_arr2 = type { i64, i64, i64, ptr, ptr }
         |%nex_str  = type { i64, i64, ptr }
         |
         |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
@@ -952,7 +954,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |define ptr @__nex_arr2_alloc(i64 %rows, i64 %cols, i64 %elem_size) {
         |entry:
-        |  %desc = call ptr @malloc(i64 32)
+        |  %desc = call ptr @malloc(i64 40)
         |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
@@ -964,6 +966,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %buf   = call ptr @malloc(i64 %bytes)
         |  %dp    = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
         |  store ptr %buf, ptr %dp
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  store ptr null, ptr %op
         |  ret ptr %desc
         |}
         |
@@ -993,6 +997,15 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %iz  = icmp eq i64 %new, 0
         |  br i1 %iz, label %free_it, label %done
         |free_it:
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+        |  %own  = load ptr, ptr %op
+        |  %is_view = icmp ne ptr %own, null
+        |  br i1 %is_view, label %free_view, label %free_owned
+        |free_view:
+        |  call void @__nex_arr2_dec(ptr %own)
+        |  call void @free(ptr %a)
+        |  br label %done
+        |free_owned:
         |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
         |  %buf = load ptr, ptr %dp
         |  call void @free(ptr %buf)
@@ -1071,6 +1084,60 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %byte_off = mul i64 %k, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
+        |}
+        |
+        |; Row-range view into a rank-2 array. Rows `rowLo..rowHi` are exposed
+        |; (exclusive upper) as a fresh %nex_arr2 with the same column count as
+        |; the source; the data pointer is offset by rowLo * cols * elem_size.
+        |; Because row-major layout makes any row range contiguous, no stride
+        |; field is needed — the view looks identical to an owned rank-2 from
+        |; every read/iteration path. `owner` is the source (or, if the source
+        |; is itself a view, the underlying owner — view-of-view collapses).
+        |define ptr @__nex_arr2_view(ptr %src, i64 %rowLo, i64 %rowHi, i64 %elem_size) {
+        |entry:
+        |  %srp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 1
+        |  %srows = load i64, ptr %srp
+        |  %scp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 2
+        |  %scols = load i64, ptr %scp
+        |  %loBad  = icmp slt i64 %rowLo, 0
+        |  %hiBad  = icmp sgt i64 %rowHi, %srows
+        |  %ordBad = icmp slt i64 %rowHi, %rowLo
+        |  %b1   = or i1 %loBad, %hiBad
+        |  %bad  = or i1 %b1, %ordBad
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.view_oob_msg)
+        |  unreachable
+        |ok:
+        |  %sdp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 3
+        |  %sbuf = load ptr, ptr %sdp
+        |  %row_stride = mul i64 %scols, %elem_size
+        |  %byte_off   = mul i64 %rowLo, %row_stride
+        |  %vbuf = getelementptr inbounds i8, ptr %sbuf, i64 %byte_off
+        |  %vrows = sub i64 %rowHi, %rowLo
+        |  call void @__nex_arr2_inc(ptr %src)
+        |  %desc = call ptr @malloc(i64 40)
+        |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
+        |  store i64 %vrows, ptr %rp
+        |  %cp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 2
+        |  store i64 %scols, ptr %cp
+        |  %dp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
+        |  store ptr %vbuf, ptr %dp
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  %sop  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 4
+        |  %srcOwner = load ptr, ptr %sop
+        |  %srcIsView = icmp ne ptr %srcOwner, null
+        |  %root = select i1 %srcIsView, ptr %srcOwner, ptr %src
+        |  br i1 %srcIsView, label %retarget, label %store_owner
+        |retarget:
+        |  call void @__nex_arr2_inc(ptr %srcOwner)
+        |  call void @__nex_arr2_dec(ptr %src)
+        |  br label %store_owner
+        |store_owner:
+        |  store ptr %root, ptr %op
+        |  ret ptr %desc
         |}
         |
         |; ---------- Closure env refcount (negative-offset header) ----------
@@ -1423,7 +1490,16 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %new = sub i64 %rc, 1
          |  store i64 %new, ptr %rcp
          |  %iz  = icmp eq i64 %new, 0
-         |  br i1 %iz, label %walk, label %done
+         |  br i1 %iz, label %check_owner, label %done
+         |check_owner:
+         |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+         |  %own  = load ptr, ptr %op
+         |  %is_view = icmp ne ptr %own, null
+         |  br i1 %is_view, label %free_view, label %walk
+         |free_view:
+         |  call void @$name(ptr %own)
+         |  call void @free(ptr %a)
+         |  br label %done
          |walk:
          |  %rp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 1
          |  %rs  = load i64, ptr %rp

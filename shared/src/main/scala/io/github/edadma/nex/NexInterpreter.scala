@@ -43,6 +43,15 @@ case class VArray1(buf: mutable.ArrayBuffer[Value])           extends Value
 case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int) extends Value
 
 case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extends Value
+
+/** A non-copying row-range borrow into an owned rank-2 array. `buf`
+  * aliases the source array's row-major buffer directly; `rowOff` is
+  * the starting row, `rows` is the row count, `cols` matches the
+  * source. The flat region `buf[rowOff*cols .. (rowOff+rows)*cols)`
+  * is the view's window — row-major layout makes any row range
+  * contiguous, so no stride field is needed.
+  */
+case class VArray2View(buf: mutable.ArrayBuffer[Value], rowOff: Int, rows: Int, cols: Int) extends Value
 case class VTuple(elems: List[Value])                         extends Value
 case class VStruct(name: String, fields: mutable.LinkedHashMap[String, Value]) extends Value
 
@@ -250,12 +259,13 @@ class NexInterpreter:
         case other => VBuiltin(other, preludeFn(other))
       globalEnv.define(s.id, v)
 
-  /** Materialize a `VArray1View` into a fresh owned `VArray1` by copying
-    * its current window. Used at prelude entry for read-only ops that
-    * don't need write-through (sum, map, filter, …) — these see a
-    * snapshot of the view's contents at call time, which agrees with
-    * the AOT semantics (the AOT path reads the view's buffer the same
-    * way). Pass-through for already-owned arrays and non-array values.
+  /** Materialize a `VArray1View` or `VArray2View` into a fresh owned
+    * array by copying its current window. Used at prelude entry for
+    * read-only ops that don't need write-through (sum, map, filter,
+    * transpose, …) — these see a snapshot of the view's contents at
+    * call time, which agrees with the AOT semantics (the AOT path
+    * reads the view's buffer the same way). Pass-through for already-
+    * owned arrays and non-array values.
     */
   private def coerceViewForRead(v: Value): Value = v match
     case VArray1View(buf, off, len) =>
@@ -263,6 +273,13 @@ class NexInterpreter:
       var i = 0
       while i < len do { out += buf(off + i); i += 1 }
       VArray1(out)
+    case VArray2View(buf, rowOff, rows, cols) =>
+      val out   = mutable.ArrayBuffer.empty[Value]
+      val start = rowOff * cols
+      val total = rows * cols
+      var i = 0
+      while i < total do { out += buf(start + i); i += 1 }
+      VArray2(out, rows, cols)
     case other => other
 
   private def preludeFn(name: String): List[Value] => Value = args0 =>
@@ -1619,23 +1636,57 @@ class NexInterpreter:
   // Indexing
   // --------------------------------------------------------------------------
 
-  /** Construct a non-copying view over a rank-1 array. `src` is the
-    * source (either an owned `VArray1` or another `VArray1View` — for
-    * view-of-view we chain through to the root buffer). `lo`/`hi`
-    * follow the slicing convention: negative indices wrap, `inclusive`
-    * lifts `hi` by one. Out-of-bounds bounds trap.
+  /** Construct a non-copying view over an array. For a rank-1 source
+    * (either owned `VArray1` or another `VArray1View`), `lo`/`hi` pick
+    * an element range; the result is a `VArray1View` aliasing the
+    * source's buffer. For a rank-2 source (`VArray2` or `VArray2View`),
+    * `lo`/`hi` pick a row range; the result is a `VArray2View` with
+    * the same column count. View-of-view chains collapse to the root
+    * buffer. `inclusive` lifts `hi` by one. Out-of-bounds bounds trap.
     */
   private def buildView(src: Value, loRaw: Long, hiRaw: Long, inclusive: Boolean, p: Option[scala.util.parsing.input.Position]): Value =
-    val (buf, baseOff, srcLen) = src match
-      case VArray1(b)               => (b, 0, b.size)
-      case VArray1View(b, off, len) => (b, off, len)
-      case other                    => trap(s"view: not a rank-1 array: ${formatValue(other)}", p)
+    src match
+      case VArray1(b) =>
+        buildView1(b, 0, b.size, loRaw, hiRaw, inclusive, p)
+      case VArray1View(b, off, len) =>
+        buildView1(b, off, len, loRaw, hiRaw, inclusive, p)
+      case VArray2(b, r, c) =>
+        buildView2(b, 0, r, c, loRaw, hiRaw, inclusive, p)
+      case VArray2View(b, rowOff, r, c) =>
+        buildView2(b, rowOff, r, c, loRaw, hiRaw, inclusive, p)
+      case other =>
+        trap(s"view: not an array: ${formatValue(other)}", p)
+
+  private def buildView1(
+    buf: mutable.ArrayBuffer[Value],
+    baseOff: Int,
+    srcLen: Int,
+    loRaw: Long,
+    hiRaw: Long,
+    inclusive: Boolean,
+    p: Option[scala.util.parsing.input.Position],
+  ): Value =
     val lo = wrapNeg(loRaw, srcLen).toInt
     val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcLen) + 1 else wrapNeg(hiRaw, srcLen)).toInt
     if lo < 0 || hiExclusive > srcLen || hiExclusive < lo then
       trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on length-$srcLen array", p)
-    val viewLen = hiExclusive - lo
-    VArray1View(buf, baseOff + lo, viewLen)
+    VArray1View(buf, baseOff + lo, hiExclusive - lo)
+
+  private def buildView2(
+    buf: mutable.ArrayBuffer[Value],
+    rowBase: Int,
+    srcRows: Int,
+    cols: Int,
+    loRaw: Long,
+    hiRaw: Long,
+    inclusive: Boolean,
+    p: Option[scala.util.parsing.input.Position],
+  ): Value =
+    val lo = wrapNeg(loRaw, srcRows).toInt
+    val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcRows) + 1 else wrapNeg(hiRaw, srcRows)).toInt
+    if lo < 0 || hiExclusive > srcRows || hiExclusive < lo then
+      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on $srcRows×$cols matrix", p)
+    VArray2View(buf, rowBase + lo, hiExclusive - lo, cols)
 
   private def indexGet(arr: Value, idx: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     (arr, idx) match
@@ -1647,6 +1698,19 @@ class NexInterpreter:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt)
+      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+        val ki = wrapNeg(i, r)
+        val kj = wrapNeg(j, c)
+        if ki < 0 || ki >= r || kj < 0 || kj >= c then
+          trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
+        buf((rowOff + ki.toInt) * c + kj.toInt)
+      case (VArray2View(buf, rowOff, r, c), List(VInt(i))) =>
+        val ki = wrapNeg(i, r)
+        if ki < 0 || ki >= r then trap(s"index out of bounds: $i (rows=$r)", p)
+        val row = mutable.ArrayBuffer.empty[Value]
+        var k   = 0
+        while k < c do { row += buf((rowOff + ki.toInt) * c + k); k += 1 }
+        VArray1(row)
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -1676,6 +1740,12 @@ class NexInterpreter:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt) = rhs
+      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+        val ki = wrapNeg(i, r)
+        val kj = wrapNeg(j, c)
+        if ki < 0 || ki >= r || kj < 0 || kj >= c then
+          trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
+        buf((rowOff + ki.toInt) * c + kj.toInt) = rhs
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -1939,6 +2009,10 @@ class NexInterpreter:
     case VArray2(b, r, c) =>
       val rows = for i <- 0 until r yield
         (for j <- 0 until c yield formatValue(b(i * c + j))).mkString("[", ", ", "]")
+      rows.mkString("[", ", ", "]")
+    case VArray2View(buf, rowOff, r, c) =>
+      val rows = for i <- 0 until r yield
+        (for j <- 0 until c yield formatValue(buf((rowOff + i) * c + j))).mkString("[", ", ", "]")
       rows.mkString("[", ", ", "]")
     case VTuple(es)     => es.map(formatValue).mkString("(", ", ", ")")
     case VStruct(n, fs) => fs.map((k, v) => s"$k=${formatValue(v)}").mkString(s"$n { ", ", ", " }")
