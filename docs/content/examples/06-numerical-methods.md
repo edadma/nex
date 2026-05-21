@@ -6,6 +6,20 @@ weight: 60
 
 ## Newton's method for square roots
 
+Newton's method for $f(x) = 0$ refines a guess by
+
+$$
+x_{n+1} \;=\; x_n - \frac{f(x_n)}{f'(x_n)}.
+$$
+
+Applied to $f(x) = x_n^2 - x$ (whose root in $x_n$ is $\sqrt{x}$), the recurrence collapses to the classical Heron / Babylonian average
+
+$$
+x_{n+1} \;=\; \tfrac{1}{2}\!\left(x_n + \tfrac{x}{x_n}\right),
+$$
+
+which converges quadratically — each step roughly doubles the number of correct digits.
+
 ```nex
 def newton_sqrt(x: real, tol: real) =
   var guess = x / 2.0
@@ -23,6 +37,25 @@ def main() =
 ```
 
 ## RK4 — one step of a vector ODE solver
+
+For the vector ODE $\dot y = f(t, y)$, the classical Runge-Kutta-4 step from $(t_n, y_n)$ to $(t_{n+1}, y_{n+1}) = (t_n + h, \, y_{n+1})$ samples the slope at four points,
+
+$$
+\begin{aligned}
+k_1 &= f(t_n,           \; y_n)              \\
+k_2 &= f(t_n + h/2,     \; y_n + (h/2)\, k_1) \\
+k_3 &= f(t_n + h/2,     \; y_n + (h/2)\, k_2) \\
+k_4 &= f(t_n + h,       \; y_n + h\, k_3),
+\end{aligned}
+$$
+
+and combines them with Simpson-like weights,
+
+$$
+y_{n+1} \;=\; y_n + \tfrac{h}{6}\,(k_1 + 2k_2 + 2k_3 + k_4).
+$$
+
+The method is fourth-order accurate: the local truncation error is $O(h^5)$ and the global error over a fixed interval is $O(h^4)$. The example below applies it to the simple harmonic oscillator $\ddot p = -p$, written as the first-order system $\dot p = v$, $\dot v = -p$.
 
 ```nex
 // One Runge-Kutta 4 step for dy/dt = f(t, y), where y is a vector.
