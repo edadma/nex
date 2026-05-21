@@ -86,6 +86,15 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     * (which loads) and `TAssign` (which stores).
     */
   protected val varSlots        = mutable.Map.empty[Int, (String, MScalar)]
+  /** `var` tensor bindings live as SSA-rebinding entries: each
+    * mutation produces a new tensor value (via `tensor.insert`,
+    * `tensor.insert_slice`, etc.) and re-binds the entry to the new
+    * SSA register. Reads return the current register. Keyed by symbol
+    * id. This works because Nex's array values are by-value at the
+    * source level and we are not yet handling `mut by-ref` arg passing
+    * to MLIR-emitted user defs.
+    */
+  protected val varTensors      = mutable.Map.empty[Int, (String, MTensor)]
   /** Per-program registry of `@intrinsic("libm.X")` function symbols.
     * Populated at the start of [[compile]] by scanning every
     * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
@@ -412,6 +421,20 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
 
     case TVarRef(sym, _, _) if varSlots.contains(sym.id) =>
       emitVarLoad(sym.id)
+
+    case TVarRef(sym, _, _) if varTensors.contains(sym.id) =>
+      val (reg, ty) = varTensors(sym.id)
+      MlirVal(reg, ty)
+
+    case TClone(inner, _, _) =>
+      // Auto-clone (§8.3) elaborates `var b = a` (with later use of a)
+      // into `var b = clone(a)`. In MLIR's SSA semantics this is a
+      // no-op: every `tensor.insert` / `tensor.insert_slice` produces
+      // a fresh tensor value, so two var bindings pointing at the
+      // same SSA register diverge naturally on the first mutation —
+      // the un-mutated binding still references the original. No
+      // explicit copy needed.
+      emitExpr(inner)
 
     case TVarRef(sym, _, _) if topLevelLiteralInits.contains(sym.id) =>
       // Re-emit the literal initialiser. Safe because we only
@@ -837,7 +860,8 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val v = emitExpr(value)
       v.ty match
         case s: MScalar => allocVarSlot(sym, v.reg, s)
-        case other      => notYet(s"var binding for ${sym.name} of type $other (only scalars supported)")
+        case t: MTensor => varTensors(sym.id) = (v.reg, t)
+        case other      => notYet(s"var binding for ${sym.name} of type $other")
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
     case TBlockExpr(TCall(TVarRef(p, _, _), List(arg), _, _)) if p.name == "print" =>
@@ -855,6 +879,23 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       emitWhile(cond, body)
     case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varSlots.contains(sym.id) =>
       emitVarStore(sym.id, emitExpr(value))
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varTensors.contains(sym.id) =>
+      val v = emitExpr(value)
+      v.ty match
+        case t: MTensor => varTensors(sym.id) = (v.reg, t)
+        case other      => notYet(s"var-tensor reassign with type $other")
+    case TBlockExpr(TAssign(TIndex(TVarRef(sym, _, _), List(idx), _, _), value, _, _))
+        if varTensors.contains(sym.id) =>
+      emitVarTensorIndexAssign(sym.id, List(idx), value)
+    case TBlockExpr(TAssign(TIndex(TVarRef(sym, _, _), List(r, c), _, _), value, _, _))
+        if varTensors.contains(sym.id) =>
+      emitVarTensorIndexAssign(sym.id, List(r, c), value)
+    case TBlockExpr(TAssign(TSlice(TVarRef(sym, _, _), lo, hi, incl, stride, _, _), rhs, _, _))
+        if varTensors.contains(sym.id) =>
+      emitVarTensorSliceAssign(sym.id, lo, hi, incl, stride, rhs)
+    case TBlockExpr(TAssign(TSlice2(TVarRef(sym, _, _), rowAx, colAx, _, _), rhs, _, _))
+        if varTensors.contains(sym.id) =>
+      emitVarTensorRank2SliceAssign(sym.id, rowAx, colAx, rhs)
     case TBlockExpr(TCall(TVarRef(s, _, _), args, _, _)) if userDefs.contains(s.id) =>
       val (name, paramTys, retTyOpt) = userDefs(s.id)
       val _ = emitUserDefCall(name, paramTys, retTyOpt, args, s.name)

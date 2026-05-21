@@ -1343,6 +1343,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[111, 20, 999]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1393,6 +1394,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "[100, 200, 33, 44, 55]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1457,6 +1459,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "[11, 22, 300, 44, 55]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1523,6 +1526,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "[1, 0, 1, 0, 1, 0, 1, 0, 1, 0]\n[10, 200, 30, 40, 500, 60, 70, 800, 90, 100]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1538,6 +1542,7 @@ object NexProgramCorpus:
         |  print(d)
       """.stripMargin,
       "[99, 42, 99, 42, 99]\n[77, 20, 77, 40, 77]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2098,6 +2103,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "[10, 20, 30]\n[99, 20]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2266,6 +2272,7 @@ object NexProgramCorpus:
         |  print(copy)
       """.stripMargin,
       "[[1, 2], [3, 4]]\n[[99, 2], [3, 4]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2377,6 +2384,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[1, 99, 3]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2388,6 +2396,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[1, 20, 30, 40, 5]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2399,6 +2408,7 @@ object NexProgramCorpus:
         |  print(xs)
       """.stripMargin,
       "[10, 20, 3, 4]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2410,6 +2420,7 @@ object NexProgramCorpus:
         |  print(m)
       """.stripMargin,
       "[[10, 20], [3, 4]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -2421,6 +2432,7 @@ object NexProgramCorpus:
         |  print(m)
       """.stripMargin,
       "[[1, 2, 30], [4, 5, 60]]\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3516,6 +3528,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "10\n999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3528,6 +3541,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3582,6 +3596,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "1\n0\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3595,6 +3610,7 @@ object NexProgramCorpus:
         |  print(n[0, 0])
       """.stripMargin,
       "1\n99\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3636,6 +3652,7 @@ object NexProgramCorpus:
         |  print(c[0])
       """.stripMargin,
       "1\n1\n999\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3649,6 +3666,7 @@ object NexProgramCorpus:
         |  print(b[2])
       """.stripMargin,
       "5\n10\n15\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3664,6 +3682,7 @@ object NexProgramCorpus:
         |  print(n[0, 0])
       """.stripMargin,
       "6\n999\n1\n1\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3679,6 +3698,7 @@ object NexProgramCorpus:
         |  print(xs[0])
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",

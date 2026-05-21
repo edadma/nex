@@ -133,6 +133,219 @@ trait NexMLIRScalarControl:
     val (slot, sty) = varSlots(symId)
     out.append(s"  memref.store ${v.reg}, $slot[] : memref<${sty.text}>\n")
 
+  /** Element-store into a `var`-bound tensor at one or two i64 indices.
+    * `tensor.insert` produces a fresh tensor with the element replaced;
+    * the new SSA register replaces the binding entry in `varTensors`.
+    * Negative indices wrap to `idx + extent` via [[wrapNegBound]] and
+    * trap if out of range via [[emitAxisIndexTrap]] — identical to the
+    * load path in [[NexMLIRCodegen.emitExpr]] for `TIndex`.
+    */
+  protected def emitVarTensorIndexAssign(symId: Int, indices: List[TExpr], value: TExpr): Unit =
+    val (reg, ty) = varTensors(symId)
+    val rhs = emitExpr(value)
+    val rhsReg = (rhs.ty, ty.elem) match
+      case (MScalar(TyInteger), TyReal) => promoteIntToReal(rhs).reg
+      case _                            => rhs.reg
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val idxRegs = indices.zipWithIndex.map { case (e, axis) =>
+      val total = tensorDimAsIndex(reg, ty, axis)
+      val v = emitExpr(e)
+      val raw = fresh("ixraw")
+      out.append(s"  $raw = arith.index_cast ${v.reg} : i64 to index\n")
+      val wrapped = wrapNegBound(raw, total)
+      emitAxisIndexTrap(wrapped, total, c0Idx)
+      wrapped
+    }
+    val ixs = idxRegs.mkString(", ")
+    val nextR = fresh("tins")
+    out.append(s"  $nextR = tensor.insert $rhsReg into $reg[$ixs] : ${ty.text}\n")
+    varTensors(symId) = (nextR, ty)
+
+  /** Slice-assign `xs[lo..hi by k] = rhs` on a `var`-bound rank-1
+    * tensor. Stride-1 cases lower to `tensor.insert_slice` (with
+    * `tensor.cast` bridging static `rhs` to dynamic). Strided cases
+    * (k > 1) lower to an `scf.for` walking the rhs and storing
+    * elements one at a time via `tensor.insert`, with each iteration
+    * carrying the updated tensor as an iter_arg. Negative bounds wrap
+    * and bounds traps fire just like the read-side slice paths
+    * ([[NexMLIRArrays.emitRank1SliceDynamic]]). The rhs is required
+    * to have the same length as the slice (matching LLVM's
+    * length-mismatch trap is deferred until rule-4 corpus cases need
+    * it — for now an MLIR verifier error is the user-visible failure).
+    */
+  protected def emitVarTensorSliceAssign(
+      symId:     Int,
+      loE:       Option[TExpr],
+      hiE:       Option[TExpr],
+      inclusive: Boolean,
+      strideE:   Option[TExpr],
+      rhs:       TExpr,
+  ): Unit =
+    val (reg, ty) = varTensors(symId)
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val total = tensorDimAsIndex(reg, ty, 0)
+    val loIdx = loE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val raw = fresh("loraw")
+        out.append(s"  $raw = arith.index_cast ${v.reg} : i64 to index\n")
+        wrapNegBound(raw, total)
+      case None => c0Idx
+    val hiIdx = hiE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val raw = fresh("hiraw")
+        out.append(s"  $raw = arith.index_cast ${v.reg} : i64 to index\n")
+        val wrapped = wrapNegBound(raw, total)
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $wrapped, $c1Idx : index\n")
+          r
+        else wrapped
+      case None =>
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $total, $c1Idx : index\n")
+          r
+        else total
+    val strideIdx = strideE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val r = fresh("stx")
+        out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+        r
+      case None => c1Idx
+    emitSliceBoundsTrap(loIdx, hiIdx, total, strideIdx, c0Idx, strideE.isDefined)
+    val rawSpan = fresh("span")
+    out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
+    val spanC = fresh("spanc")
+    out.append(s"  $spanC = arith.maxsi $rawSpan, $c0Idx : index\n")
+    val strideM1 = fresh("stm1")
+    out.append(s"  $strideM1 = arith.subi $strideIdx, $c1Idx : index\n")
+    val numer = fresh("num")
+    out.append(s"  $numer = arith.addi $spanC, $strideM1 : index\n")
+    val sz = fresh("asz")
+    out.append(s"  $sz = arith.divui $numer, $strideIdx : index\n")
+    val rhsV = emitExpr(rhs)
+    val rhsTy = rhsV.ty match
+      case t: MTensor => t
+      case other      => notYet(s"slice-assign rhs is not a tensor: $other")
+    val nextR = fresh("ssa")
+    if strideE.isEmpty then
+      val dynTy = MTensor(ty.elem, List(-1))
+      val rhsDyn = if rhsTy == dynTy then rhsV.reg
+                   else
+                     val r = fresh("rcast")
+                     out.append(s"  $r = tensor.cast ${rhsV.reg} : ${rhsTy.text} to ${dynTy.text}\n")
+                     r
+      out.append(
+        s"  $nextR = tensor.insert_slice $rhsDyn into $reg[$loIdx] [$sz] [$c1Idx] : ${dynTy.text} into ${ty.text}\n",
+      )
+    else
+      val ivName = fresh("iv")
+      val accInit = reg
+      val rhsDynTy = MTensor(ty.elem, List(-1))
+      val rhsDyn = if rhsTy == rhsDynTy then rhsV.reg
+                   else
+                     val r = fresh("rcast")
+                     out.append(s"  $r = tensor.cast ${rhsV.reg} : ${rhsTy.text} to ${rhsDynTy.text}\n")
+                     r
+      out.append(
+        s"  $nextR = scf.for $ivName = $c0Idx to $sz step $c1Idx iter_args(%acc_${nextR.substring(1)} = $accInit) -> (${ty.text}) {\n",
+      )
+      val acc = s"%acc_${nextR.substring(1)}"
+      val mul = fresh("mul")
+      out.append(s"    $mul = arith.muli $ivName, $strideIdx : index\n")
+      val dest = fresh("dst")
+      out.append(s"    $dest = arith.addi $loIdx, $mul : index\n")
+      val elt = fresh("elt")
+      out.append(s"    $elt = tensor.extract $rhsDyn[$ivName] : ${rhsDynTy.text}\n")
+      val nxt = fresh("upd")
+      out.append(s"    $nxt = tensor.insert $elt into $acc[$dest] : ${ty.text}\n")
+      out.append(s"    scf.yield $nxt : ${ty.text}\n")
+      out.append("  }\n")
+    varTensors(symId) = (nextR, ty)
+
+  /** Rank-2 slice-assign `m[rowAx, colAx] = rhs` on a `var`-bound
+    * rank-2 tensor. Supports the row-replace (`m[i, :] = [a, b]`) and
+    * column-replace (`m[:, j] = [a, b]`) shapes — the two patterns
+    * that appear in the current corpus. Both lower to an `scf.for`
+    * walking the rhs vector and inserting via `tensor.insert` with
+    * the un-collapsed axis as the loop variable. Generalises later
+    * (rank-2 row range, rank-2 sub-block) when corpus calls for it.
+    */
+  protected def emitVarTensorRank2SliceAssign(
+      symId:  Int,
+      rowAx:  TAxisSpec,
+      colAx:  TAxisSpec,
+      rhs:    TExpr,
+  ): Unit =
+    val (reg, ty) = varTensors(symId)
+    val rhsV = emitExpr(rhs)
+    val rhsTy = rhsV.ty match
+      case t: MTensor => t
+      case other      => notYet(s"rank-2 slice-assign rhs is not a tensor: $other")
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val rows = tensorDimAsIndex(reg, ty, 0)
+    val cols = tensorDimAsIndex(reg, ty, 1)
+
+    def resolveIndex(spec: TAxisSpec, total: String): String = spec match
+      case TAxisIndex(e) =>
+        val v = emitExpr(e)
+        val raw = fresh("axraw")
+        out.append(s"  $raw = arith.index_cast ${v.reg} : i64 to index\n")
+        val wrapped = wrapNegBound(raw, total)
+        emitAxisIndexTrap(wrapped, total, c0Idx)
+        wrapped
+      case other =>
+        notYet(s"rank-2 slice-assign axis: $other")
+
+    val rhsDynTy = MTensor(ty.elem, List(-1))
+    val rhsDyn = if rhsTy == rhsDynTy then rhsV.reg
+                 else
+                   val r = fresh("rcast")
+                   out.append(s"  $r = tensor.cast ${rhsV.reg} : ${rhsTy.text} to ${rhsDynTy.text}\n")
+                   r
+
+    val nextR = fresh("ssa")
+    (rowAx, colAx) match
+      case (TAxisIndex(_), TAxisAll) =>
+        val rowR = resolveIndex(rowAx, rows)
+        val ivName = fresh("iv")
+        out.append(
+          s"  $nextR = scf.for $ivName = $c0Idx to $cols step $c1Idx iter_args(%acc_${nextR.substring(1)} = $reg) -> (${ty.text}) {\n",
+        )
+        val acc = s"%acc_${nextR.substring(1)}"
+        val elt = fresh("elt")
+        out.append(s"    $elt = tensor.extract $rhsDyn[$ivName] : ${rhsDynTy.text}\n")
+        val nxt = fresh("upd")
+        out.append(s"    $nxt = tensor.insert $elt into $acc[$rowR, $ivName] : ${ty.text}\n")
+        out.append(s"    scf.yield $nxt : ${ty.text}\n")
+        out.append("  }\n")
+      case (TAxisAll, TAxisIndex(_)) =>
+        val colR = resolveIndex(colAx, cols)
+        val ivName = fresh("iv")
+        out.append(
+          s"  $nextR = scf.for $ivName = $c0Idx to $rows step $c1Idx iter_args(%acc_${nextR.substring(1)} = $reg) -> (${ty.text}) {\n",
+        )
+        val acc = s"%acc_${nextR.substring(1)}"
+        val elt = fresh("elt")
+        out.append(s"    $elt = tensor.extract $rhsDyn[$ivName] : ${rhsDynTy.text}\n")
+        val nxt = fresh("upd")
+        out.append(s"    $nxt = tensor.insert $elt into $acc[$ivName, $colR] : ${ty.text}\n")
+        out.append(s"    scf.yield $nxt : ${ty.text}\n")
+        out.append("  }\n")
+      case other =>
+        notYet(s"rank-2 slice-assign with $other")
+    varTensors(symId) = (nextR, ty)
+
   /** Statement-form `while cond do body` via `scf.while` with no
     * iter_args. The cond region computes the predicate and yields
     * it through `scf.condition`; the body region runs (reading and
@@ -608,8 +821,12 @@ trait NexMLIRScalarControl:
     out.append(s"func.func $name(${sigParts.mkString(", ")})$retStr {\n")
     val savedReg = nextReg
     val savedEnv = env.toMap
+    val savedVarSlots = varSlots.toMap
+    val savedVarTensors = varTensors.toMap
     nextReg = 0
     env.clear()
+    varSlots.clear()
+    varTensors.clear()
     f.params.zip(paramTys).zipWithIndex.foreach { case ((p, ty), i) =>
       env(p.id) = MlirVal(s"%arg$i", ty)
     }
@@ -625,6 +842,10 @@ trait NexMLIRScalarControl:
     nextReg = savedReg
     env.clear()
     savedEnv.foreach { case (k, v) => env(k) = v }
+    varSlots.clear()
+    savedVarSlots.foreach { case (k, v) => varSlots(k) = v }
+    varTensors.clear()
+    savedVarTensors.foreach { case (k, v) => varTensors(k) = v }
 
   /** Rewrite a value-returning def body so any leading
     * `if cond then return X` guard becomes an if-expression that
