@@ -4618,4 +4618,201 @@ object NexProgramCorpus:
       """.stripMargin,
       "9.0\n",
     ),
+
+    // ========================================================================
+    // user-defined generics — Stage 1 (functions only)
+    // ========================================================================
+
+    Case(
+      "user generics",
+      "identity[T] returns its integer argument unchanged",
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id(42))
+      """.stripMargin,
+      "42\n",
+    ),
+    Case(
+      "user generics",
+      "identity[T] returns its real argument unchanged",
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id(3.5))
+      """.stripMargin,
+      "3.5\n",
+    ),
+    Case(
+      "user generics",
+      "identity[T] returns its string argument unchanged",
+      """
+        |def id[T](x: T): T = x
+        |def main() = print(id("hi"))
+      """.stripMargin,
+      "hi\n",
+    ),
+    Case(
+      "user generics",
+      "identity[T] called with multiple concrete types in one program",
+      """
+        |def id[T](x: T): T = x
+        |def main() =
+        |  print(id(42))
+        |  print(id(3.5))
+        |  print(id("hi"))
+      """.stripMargin,
+      "42\n3.5\nhi\n",
+    ),
+    Case(
+      "user generics",
+      "numeric-constrained kindvar admits integer and real, used in arithmetic body",
+      """
+        |def twice[T: Numeric](x: T): T = x + x
+        |def main() =
+        |  print(twice(21))
+        |  print(twice(1.5))
+      """.stripMargin,
+      "42\n3.0\n",
+    ),
+    Case(
+      "user generics",
+      "ord-constrained kindvar accepts ordered comparison in body",
+      """
+        |def min2[T: Ord](a: T, b: T): T = if a < b then a else b
+        |def main() =
+        |  print(min2(3, 7))
+        |  print(min2(2.5, 1.5))
+      """.stripMargin,
+      "3\n1.5\n",
+    ),
+    Case(
+      "user generics",
+      "eq-constrained kindvar accepts equality in body",
+      """
+        |def same[T: Eq](a: T, b: T): bool = a == b
+        |def main() =
+        |  print(same(1, 1))
+        |  print(same(1, 2))
+        |  print(same("hi", "hi"))
+        |  print(same("hi", "bye"))
+        |  print(same(true, true))
+      """.stripMargin,
+      "true\nfalse\ntrue\nfalse\ntrue\n",
+    ),
+    Case(
+      "user generics",
+      "eq-constrained kindvar over complex args",
+      """
+        |def same[T: Eq](a: T, b: T): bool = a == b
+        |def main() =
+        |  print(same(1.0 + 2.0i, 1.0 + 2.0i))
+        |  print(same(1.0 + 2.0i, 3.0 + 4.0i))
+      """.stripMargin,
+      "true\nfalse\n",
+    ),
+    Case(
+      "user generics",
+      "concrete overload wins over generic when both apply",
+      """
+        |def f(x: integer): integer = 100
+        |def f[T](x: T): integer = 200
+        |def main() =
+        |  print(f(1))
+        |  print(f("hi"))
+      """.stripMargin,
+      "100\n200\n",
+    ),
+    Case(
+      "user generics",
+      "concrete overload (with promotion) wins over generic when both apply",
+      """
+        |def f(x: real): integer = 1
+        |def f[T](x: T): integer = 2
+        |def main() =
+        |  print(f(3.14))
+        |  print(f(42))
+        |  print(f("x"))
+      """.stripMargin,
+      "1\n1\n2\n",
+    ),
+    Case(
+      "user generics",
+      "two type params: first[T, U] picks first arg",
+      """
+        |def first[T, U](a: T, b: U): T = a
+        |def main() =
+        |  print(first(1, "hi"))
+        |  print(first("yes", 99))
+        |  print(first(3.14, true))
+      """.stripMargin,
+      "1\nyes\n3.14\n",
+    ),
+    Case(
+      "user generics",
+      "two type params: second[T, U] picks second arg",
+      """
+        |def second[T, U](a: T, b: U): U = b
+        |def main() =
+        |  print(second(1, "hi"))
+        |  print(second("yes", 99))
+      """.stripMargin,
+      "hi\n99\n",
+    ),
+    Case(
+      "user generics",
+      "same kind var across two params binds consistently",
+      """
+        |def pickMax[T: Ord](a: T, b: T): T = if a < b then b else a
+        |def main() =
+        |  print(pickMax(3, 7))
+        |  print(pickMax(2.5, 1.5))
+      """.stripMargin,
+      "7\n2.5\n",
+    ),
+    Case(
+      "user generics",
+      "generic function takes a lambda and applies it",
+      """
+        |def apply1[T, U](x: T, f: T -> U): U = f(x)
+        |def main() =
+        |  print(apply1(5, x -> x * 2))
+        |  print(apply1(3.0, x -> x + 0.5))
+      """.stripMargin,
+      "10\n3.5\n",
+    ),
+    Case(
+      "user generics",
+      "generic-calls-generic with type-param threading",
+      """
+        |def id[T](x: T): T = x
+        |def applyTwice[T](x: T, f: T -> T): T = f(f(x))
+        |def main() =
+        |  print(applyTwice(5, y -> id(y) + 1))
+        |  print(applyTwice("a", s -> id(s)))
+      """.stripMargin,
+      "7\na\n",
+    ),
+    Case(
+      "user generics",
+      "numeric kindvar promotes when two args differ (integer + real)",
+      """
+        |def add[T: Numeric](a: T, b: T): T = a + b
+        |def main() =
+        |  print(add(1, 2))
+        |  print(add(1.5, 2.5))
+      """.stripMargin,
+      "3\n4.0\n",
+    ),
+    Case(
+      "user generics",
+      "ord-constrained generic plus concrete bool overload",
+      """
+        |def show(x: bool): string = if x then "yes" else "no"
+        |def show[T: Ord](x: T): string = "ord"
+        |def main() =
+        |  print(show(true))
+        |  print(show(7))
+        |  print(show(2.5))
+      """.stripMargin,
+      "yes\nord\nord\n",
+    ),
   )

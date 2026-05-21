@@ -242,7 +242,7 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
     }
     "reject ordered comparison on complex" in {
       val errs = elabExpect("val x = i < i")
-      errs.exists(_.contains("ordered numeric")) shouldBe true
+      errs.exists(_.contains("ordered")) shouldBe true
     }
     "allow equality on complex" in {
       rhsOf(elab("val x = i == i")).tpe shouldBe TyBool
@@ -750,7 +750,7 @@ class NexElaboratorStage2Tests extends AnyWordSpec with Matchers:
         |def f() =
         |  val b = "hi" < "ho"
       """.stripMargin)
-      errs.exists(e => e.contains("ordered numeric") || e.contains("cannot compare")) shouldBe true
+      errs.exists(e => e.contains("ordered") || e.contains("cannot compare")) shouldBe true
     }
 
     "TVarRef carries the latest Symbol, not a Stage-1 snapshot (regression)" in {

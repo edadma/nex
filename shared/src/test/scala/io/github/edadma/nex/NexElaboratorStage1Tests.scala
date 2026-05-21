@@ -592,6 +592,36 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       errs.exists(_.contains("unknown kind constraint `NotAKind`")) shouldBe true
     }
 
+    "`Ord` is a recognised constraint" in {
+      val tp = elab("def f[T: Ord](x: T, y: T): bool = x < y", runMonomorph = false)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Ord)
+    }
+
+    "`Eq` is a recognised constraint" in {
+      val tp = elab("def f[T: Eq](x: T, y: T): bool = x == y", runMonomorph = false)
+      val fn = tp.decls.head.asInstanceOf[TFunDecl]
+      fn.params.head.tpe shouldBe TyKindVar("T", KindConstraint.Eq)
+    }
+
+    "`Ord` rejects complex argument at call site" in {
+      val errs = elabExpect("""
+        |def min2[T: Ord](a: T, b: T): T = if a < b then a else b
+        |def use() = print(min2(1.0 + 2.0i, 3.0 + 4.0i))
+      """.stripMargin)
+      errs.exists(e => e.contains("`T`") && e.contains("Ord")) shouldBe true
+    }
+
+    "`Eq` admits a string argument at call site" in {
+      val tp = elab("""
+        |def same[T: Eq](a: T, b: T): bool = a == b
+        |def use(): bool = same("hi", "hi")
+      """.stripMargin, runMonomorph = false)
+      val use   = tp.decls(1).asInstanceOf[TFunDecl]
+      val call  = use.body.asInstanceOf[TCall]
+      call.tpe shouldBe TyBool
+    }
+
     "`real64` resolves to the same type as `real`" in {
       val tp = elab("""
         |def f(x: real): real = x
@@ -898,5 +928,82 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       // Both overloads still present (LLVM mangling kicks in at codegen
       // — at the typed-AST level both decls keep their bare name).
       funDecls.count(_.sym.name == "f") shouldBe 2
+    }
+  }
+
+  // ==========================================================================
+  // Overload-vs-generic resolution: concrete wins over generic.
+  // ==========================================================================
+
+  "overload-vs-generic resolution" should {
+
+    "concrete overload picked over generic when args match exactly" in {
+      val tp = elab("""
+        |def f(x: integer): integer = 100
+        |def f[T](x: T): integer = 200
+        |def use(): integer = f(1)
+      """.stripMargin, runMonomorph = false)
+      val use    = tp.decls.find { case fd: TFunDecl => fd.sym.name == "use"; case _ => false }.get.asInstanceOf[TFunDecl]
+      val call   = use.body.asInstanceOf[TCall]
+      val callee = call.callee.asInstanceOf[TVarRef]
+      callee.sym.tpe shouldBe TyFunc(List((TyInteger, ParamMode.Read)), TyInteger)
+    }
+
+    "generic overload picked when no concrete accepts the arg type" in {
+      val tp = elab("""
+        |def f(x: integer): integer = 100
+        |def f[T](x: T): integer = 200
+        |def use(): integer = f("hi")
+      """.stripMargin, runMonomorph = false)
+      val use    = tp.decls.find { case fd: TFunDecl => fd.sym.name == "use"; case _ => false }.get.asInstanceOf[TFunDecl]
+      val call   = use.body.asInstanceOf[TCall]
+      val callee = call.callee.asInstanceOf[TVarRef]
+      callee.sym.tpe shouldBe TyFunc(List((TyKindVar("T", KindConstraint.Any), ParamMode.Read)), TyInteger)
+    }
+
+    "concrete overload (via promotion) still wins over generic" in {
+      val tp = elab("""
+        |def f(x: real): integer = 1
+        |def f[T](x: T): integer = 2
+        |def use(): integer = f(42)
+      """.stripMargin, runMonomorph = false)
+      val use    = tp.decls.find { case fd: TFunDecl => fd.sym.name == "use"; case _ => false }.get.asInstanceOf[TFunDecl]
+      val call   = use.body.asInstanceOf[TCall]
+      val callee = call.callee.asInstanceOf[TVarRef]
+      callee.sym.tpe shouldBe TyFunc(List((TyReal, ParamMode.Read)), TyInteger)
+    }
+
+    "two generic overloads both applicable is an ambiguity error" in {
+      val errs = elabExpect("""
+        |def f[T: Numeric](x: T): integer = 1
+        |def f[T: Ord](x: T): integer = 2
+        |def use() = print(f(42))
+      """.stripMargin)
+      errs.exists(_.contains("ambiguous")) shouldBe true
+    }
+
+    "lambda arg into generic carries through to a concrete specialization" in {
+      val tp = elab("""
+        |def apply1[T, U](x: T, f: T -> U): U = f(x)
+        |def main() = print(apply1(5, x -> x * 2))
+      """.stripMargin)
+      val specs = tp.decls.collect { case f: TFunDecl if f.sym.name.startsWith("apply1$") => f.sym.name }
+      specs shouldBe List("apply1$integer$integer")
+    }
+
+    "generic-calls-generic threads type params through both layers" in {
+      val tp = elab("""
+        |def id[T](x: T): T = x
+        |def applyTwice[T](x: T, f: T -> T): T = f(f(x))
+        |def main() =
+        |  print(applyTwice(5, y -> id(y) + 1))
+        |  print(applyTwice("a", s -> id(s)))
+      """.stripMargin)
+      val specs = tp.decls.collect { case f: TFunDecl => f.sym.name }.toSet
+      specs should contain ("applyTwice$integer")
+      specs should contain ("applyTwice$string")
+      specs should contain ("id$integer")
+      specs should contain ("id$string")
+      specs should not contain "id$T"
     }
   }

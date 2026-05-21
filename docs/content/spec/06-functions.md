@@ -147,7 +147,64 @@ def first_negative(v: [real]) =
 
 A function's final expression provides its return value implicitly without `return`.
 
-## 6.10 `@intrinsic` declarations
+## 6.10 Generic functions
+
+A `def` may introduce one or more **type parameters** in square brackets after its name. Each type parameter stands for a type fixed at the call site; the body of the function is type-checked against the parameter, and the compiler generates a specialized clone for every distinct type the function is called with.
+
+```nex
+def id[T](x: T): T = x
+
+def pickMax[T: Ord](a: T, b: T): T =
+  if a < b then b else a
+
+def first[T, U](a: T, b: U): T = a
+```
+
+The bracketed list may be a mix of bounded and unbounded entries: `[T]` is shorthand for `[T: Any]`, and `[T: Float, U: Numeric, V]` is a three-parameter list with two bounds.
+
+**Kind constraints.** A bare `[T]` allows any type. A bound `[T: Kind]` restricts `T` to a fixed list of admissible types, picked from the closed set below. Stage 1 of the generics feature does not allow user-defined constraints — the set is hard-wired.
+
+| Constraint | Admitted types |
+|---|---|
+| `Any`      | every type (the default for `[T]`) |
+| `Numeric`  | `integer`, `real`, `complex` |
+| `Real`     | `integer`, `real` |
+| `Float`    | `real` (kept distinct from `Real` so split-precision additions extend it cleanly) |
+| `Complex`  | `complex` |
+| `Ord`      | `integer`, `real` (the types that support `<` / `<=` / `>` / `>=`) |
+| `Eq`       | `integer`, `real`, `bool`, `string`, `complex` (the types with structural `==` / `!=`) |
+
+A call site whose argument type isn't admitted by the constraint is rejected at elaboration time.
+
+**Call-site inference.** The caller never writes the type arguments — the compiler infers them by unifying each formal parameter against its actual:
+
+```nex
+val a = pickMax(3, 7)         // T := integer; result type integer
+val b = pickMax(2.5, 1.5)     // T := real; result type real
+val c = first(1, "hi")        // T := integer, U := string; result integer
+```
+
+When the same type parameter appears in multiple formal positions, all the corresponding actuals must unify to a single type. For `Numeric`-constrained variables the unifier widens through the numeric tower (so `f[T: Numeric](x: T, y: T)` called as `f(1, 2.0)` widens to `real`); for non-numeric constraints, mismatched actuals are a hard error.
+
+**Overload resolution.** A name may simultaneously bind a generic `def` and one or more concrete overloads. **Concrete overloads win when they apply** — a generic candidate is consulted only when no concrete overload accepts the call site's argument types:
+
+```nex
+def f(x: integer): integer = 100
+def f[T](x: T): integer     = 200
+
+f(1)        // 100 — concrete integer overload
+f("hi")     // 200 — falls through to the generic
+```
+
+Within the concrete bucket the existing numeric-promotion ranking still picks the closest match (Functions §6.5 already covers this). Two generic candidates both applicable to the same call is an unambiguity error — the user must add a concrete overload or further constrain one of the generics.
+
+**Specialization.** Generic templates have no executable form on their own. The compiler walks every reachable call site, deduces the type arguments, and emits a specialized clone with the parameter substituted. The clones (named `pickMax$real`, `id$string`, etc.) are what backends actually compile and what the linker sees. A generic that is never called produces no code — there is no abstract "generic dispatcher" floating around at runtime.
+
+Specialization recurses: a generic body that itself calls a generic produces a chain of specializations, with the outer call's type arguments threaded through to the inner call.
+
+**Limitations (Stage 1).** Generics in this milestone are *functions only*. Generic structs, generic enums, and user-defined trait/type-class constraints are deferred. Lambda bodies that thread a kind variable through to a nested generic call are supported; arrays and aggregates parameterized by a kind variable inherit the limitations of the current array-element-type rules.
+
+## 6.11 `@intrinsic` declarations
 
 A bodyless `def` annotated with `@intrinsic("opId")` declares a function whose implementation is supplied by the compiler — typically a libm bridge or a runtime helper — rather than by Nex source. The `opId` string names the lowering: `@intrinsic("libm.sqrt")` lowers to a direct call to the host's libm `sqrt` primitive.
 
@@ -158,7 +215,7 @@ def sqrt(x: real): real
 
 This is how the standard prelude bridges the real-libm transcendentals (see the Prelude chapter); user code generally has no reason to write `@intrinsic` directly. The attribute is the only sanctioned escape hatch — any other bodyless `def` is a parse error.
 
-## 6.11 Test functions
+## 6.12 Test functions
 
 A function declared with the `@test` attribute is a unit test: it takes no arguments, returns `unit`, and is discovered automatically by the test runner.
 

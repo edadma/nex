@@ -1075,17 +1075,40 @@ protected trait NexElabInference extends NexElabState:
       case _ => ()
     op match
       case "==" | "!=" =>
-        // permissive: any equal pair, plus numeric pairs that promote
+        // permissive: any equal pair, plus numeric pairs that promote,
+        // plus an `Eq`-constrained kind var matched against itself or
+        // any concrete type it admits.
         if lt == TyUnknown || rt == TyUnknown || lt == rt then ()
         else if isNumeric(lt) && isNumeric(rt) then ()
+        else if eqCompatible(lt, rt) then ()
         else err(s"cannot compare $lt and $rt", p)
         TBinOp(op, l, r, p, TyBool)
       case _ =>
-        // ordered comparison — only on ordered numerics (no complex)
+        // ordered comparison — ordered numerics, plus an `Ord`-constrained
+        // kind var matched against itself or one of its admitted types.
         if lt == TyUnknown || rt == TyUnknown then ()
         else if (lt == TyInteger || lt == TyReal) && (rt == TyInteger || rt == TyReal) then ()
-        else err(s"`$op` requires ordered numeric operands, got $lt and $rt", p)
+        else if ordCompatible(lt, rt) then ()
+        else err(s"`$op` requires ordered operands, got $lt and $rt", p)
         TBinOp(op, l, r, p, TyBool)
+
+  /** True iff a pair of operands is admissible under the structural
+    * `Eq` constraint when at least one side is a kind variable.
+    */
+  private def eqCompatible(lt: Type, rt: Type): Boolean = (lt, rt) match
+    case (k1: TyKindVar, k2: TyKindVar) => k1 == k2
+    case (TyKindVar(_, c), t)           => c == KindConstraint.Eq && c.admits(t)
+    case (t, TyKindVar(_, c))           => c == KindConstraint.Eq && c.admits(t)
+    case _                              => false
+
+  /** True iff a pair of operands is admissible under the `Ord`
+    * constraint when at least one side is a kind variable.
+    */
+  private def ordCompatible(lt: Type, rt: Type): Boolean = (lt, rt) match
+    case (k1: TyKindVar, k2: TyKindVar) => k1 == k2
+    case (TyKindVar(_, c), t)           => c == KindConstraint.Ord && c.admits(t)
+    case (t, TyKindVar(_, c))           => c == KindConstraint.Ord && c.admits(t)
+    case _                              => false
 
   protected def matMulType(lt: Type, rt: Type, p: Option[Position]): Type =
     (lt, rt) match
@@ -1331,19 +1354,29 @@ protected trait NexElabInference extends NexElabState:
       case (TyKindVar(name, c), t) =>
         subs.get(name) match
           case None =>
-            if c.admits(t) then
-              subs(name) = t
-              UnifyOk
-            else UnifyConstraintViolation(name, c, t)
+            // Skip binding `name -> TyKindVar(name)` — re-binding a variable
+            // to itself is a no-op and would mask the still-unbound state.
+            t match
+              case TyKindVar(tname, _) if tname == name => UnifyOk
+              case _ if c.admits(t) =>
+                subs(name) = t
+                UnifyOk
+              case _ => UnifyConstraintViolation(name, c, t)
           case Some(prev) =>
             if prev == t then UnifyOk
-            else if isNumeric(prev) && isNumeric(t) then
-              promote(prev, t) match
-                case Some(joined) if c.admits(joined) =>
-                  subs(name) = joined
-                  UnifyOk
-                case _ => UnifyInconsistent(name, prev, t)
-            else UnifyInconsistent(name, prev, t)
+            else t match
+              case TyKindVar(tname, _) if tname == name =>
+                // The actual side carries the same variable as the formal —
+                // when this enclosing generic specializes, both sides get
+                // the same concrete type. The existing `prev` binding stands.
+                UnifyOk
+              case _ if isNumeric(prev) && isNumeric(t) =>
+                promote(prev, t) match
+                  case Some(joined) if c.admits(joined) =>
+                    subs(name) = joined
+                    UnifyOk
+                  case _ => UnifyInconsistent(name, prev, t)
+              case _ => UnifyInconsistent(name, prev, t)
       case (TyArray(e1, r1), TyArray(e2, r2)) if r1 == r2 =>
         unifyKindVars(e1, e2, subs)
       case (TyTuple(es1), TyTuple(es2)) if es1.size == es2.size =>
@@ -1374,6 +1407,8 @@ protected trait NexElabInference extends NexElabState:
     case KindConstraint.Real    => "Real"
     case KindConstraint.Float   => "Float"
     case KindConstraint.Complex => "Complex"
+    case KindConstraint.Ord     => "Ord"
+    case KindConstraint.Eq      => "Eq"
 
   /** Pick the best-matching overload from a candidate set, scoring each
     * by the total numeric-promotion distance from the actual arg types to
@@ -1390,25 +1425,55 @@ protected trait NexElabInference extends NexElabState:
       args:  List[TExpr],
       pos:   Option[Position],
   ): Option[Symbol] =
-    val scored = cands.flatMap { c =>
+    val (generic, concrete) = cands.partition { c =>
+      currentType(c) match
+        case TyFunc(params, ret) => params.exists((pt, _) => hasKindVar(pt)) || hasKindVar(ret)
+        case _ => false
+    }
+    val concreteScored = concrete.flatMap { c =>
       currentType(c) match
         case TyFunc(params, _) if params.size == args.size =>
           scoreCall(params.map(_._1), args.map(_.tpe)).map(cost => (c, cost))
         case _ => None
     }
-    if scored.isEmpty then
-      val name = cands.headOption.map(_.name).getOrElse("<unknown>")
-      val argT = args.map(_.tpe).mkString(", ")
-      err(s"no overload of `$name` matches argument types ($argT)", pos)
-      None
-    else
-      val minCost = scored.map(_._2).min
-      val best    = scored.filter(_._2 == minCost).map(_._1)
+    if concreteScored.nonEmpty then
+      val minCost = concreteScored.map(_._2).min
+      val best    = concreteScored.filter(_._2 == minCost).map(_._1)
       if best.size > 1 then
         val name = cands.head.name
         err(s"ambiguous call to `$name`: multiple overloads accept these arguments", pos)
         None
       else Some(best.head)
+    else
+      val genericApplicable = generic.flatMap { c =>
+        currentType(c) match
+          case TyFunc(params, _) if params.size == args.size =>
+            if genericApplies(params.map(_._1), args.map(_.tpe)) then Some(c) else None
+          case _ => None
+      }
+      if genericApplicable.isEmpty then
+        val name = cands.headOption.map(_.name).getOrElse("<unknown>")
+        val argT = args.map(_.tpe).mkString(", ")
+        err(s"no overload of `$name` matches argument types ($argT)", pos)
+        None
+      else if genericApplicable.size > 1 then
+        val name = cands.head.name
+        err(s"ambiguous call to `$name`: multiple generic overloads accept these arguments", pos)
+        None
+      else Some(genericApplicable.head)
+
+  /** True iff a generic candidate's formals can be unified with the actual
+    * argument types: each kind-variable formal's constraint must admit the
+    * matching actual, repeated occurrences of the same variable must agree,
+    * and any concrete formals must equal the corresponding actuals.
+    */
+  private def genericApplies(formals: List[Type], actuals: List[Type]): Boolean =
+    val subs = mutable.Map.empty[String, Type]
+    formals.zip(actuals).forall { (f, a) =>
+      unifyKindVars(f, a, subs) match
+        case UnifyOk => true
+        case _       => false
+    }
 
   /** Score an argument list against a formal param list. Returns the
     * total promotion cost, or `None` if any pair isn't assignable.
@@ -1564,10 +1629,10 @@ protected trait NexElabInference extends NexElabState:
     "cols"           -> TyInteger,
     // §10.2 scalar math — the real-only siblings (cbrt, floor, ceil,
     // round, trunc, asin, acos, atan, atan2, sinh, cosh, tanh, asinh,
-    // acosh, atanh) and the Inexact-kind overloaded ones (sqrt, exp,
-    // log, log2, log10, sin, cos, tan) all live in `prelude/scalar.nex`
-    // and arrive as TyFunc-typed Function symbols. They route through
-    // the generic-call path, not this fallback table.
+    // acosh, atanh) and the overload-by-signature ones (sqrt, exp, log,
+    // log2, log10, sin, cos, tan — each has a real and a complex def
+    // in `prelude/scalar.nex`) arrive as TyFunc-typed Function symbols.
+    // They route through ordinary overload resolution, not this table.
     // §10.3 complex
     "arg"  -> TyReal,
   ).withDefaultValue(TyUnknown)
@@ -1602,9 +1667,10 @@ protected trait NexElabInference extends NexElabState:
           case Some(TyComplex) => TyComplex
           case Some(t)         => t
           case None            => TyUnknown
-      // Spec §10.2 sqrt / exp / log / log2 / log10 / sin / cos / tan
-      // live in `prelude/scalar.nex` as `[T: Inexact]` decls — they
-      // route through inferGenericCall and never reach this fallback.
+      // sqrt / exp / log / log2 / log10 / sin / cos / tan ship as
+      // overload pairs (real and complex) in `prelude/scalar.nex` and
+      // resolve through the normal overload path; nothing to dispatch
+      // here.
       case "cbrt" if args.size == 1 => TyReal
       // §10.5 construction. `fill(n, v)` shape depends on n's type:
       //   - `n: integer`            → `[T]`  where T = v.tpe

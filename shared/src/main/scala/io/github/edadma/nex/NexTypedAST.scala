@@ -69,6 +69,18 @@ enum KindConstraint:
   case Real
   case Float
   case Complex
+  /** Types with a total order — `<`, `<=`, `>`, `>=` are defined.
+    * Integer and real order numerically. Complex has no natural order;
+    * string ordering will join when the runtime exposes lexicographic
+    * comparison across all backends.
+    */
+  case Ord
+  /** Types with structural equality — `==`, `!=` are defined.
+    * Everything ordinary (integer, real, bool, string, complex). Arrays
+    * and aggregates fall outside Stage 1 generics, so they're not part
+    * of the predicate here.
+    */
+  case Eq
 
   /** The concrete types this constraint admits, in the current v0 type
     * world. `real`/`real64` are the same physical type until split-precision
@@ -85,6 +97,13 @@ enum KindConstraint:
     case (Real,    TyReal)    => true
     case (Float,   TyReal)    => true
     case (Complex, TyComplex) => true
+    case (Ord,     TyInteger) => true
+    case (Ord,     TyReal)    => true
+    case (Eq,      TyInteger) => true
+    case (Eq,      TyReal)    => true
+    case (Eq,      TyBool)    => true
+    case (Eq,      TyString)  => true
+    case (Eq,      TyComplex) => true
     case _                    => false
 
 // ============================================================================

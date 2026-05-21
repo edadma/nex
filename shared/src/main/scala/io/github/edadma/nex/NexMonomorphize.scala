@@ -64,6 +64,20 @@ class NexMonomorphize(symbols: SymbolTable):
     generic.params.zip(args).foreach { case (formal, actual) =>
       matchType(formal.tpe, actual.tpe, subs)
     }
+    // Chase indirect bindings to their fixed point. A pair like
+    // `T -> integer, U -> TyKindVar(T)` (produced when a lambda arg's
+    // body was typed against `T -> T`, matched against formal `T -> U`)
+    // collapses to `T -> integer, U -> integer` after one pass; loops
+    // are impossible because each pass strictly reduces the number of
+    // kind-variable references in the value side.
+    var changed = true
+    while changed do
+      changed = false
+      for (k, v) <- subs.toList do
+        val substituted = substituteKindVars(v, subs.toMap)
+        if substituted != v then
+          subs(k) = substituted
+          changed = true
     val typeArgs = collectTypeParamNames(generic).map(name => subs(name))
     (subs.toMap, typeArgs)
 
@@ -360,10 +374,18 @@ class NexMonomorphize(symbols: SymbolTable):
         newCallee match
           case TVarRef(s, vp, _) if templates.contains(s.id) =>
             val generic = templates(s.id)
-            val (_, typeArgs) = deriveSubstitution(generic, newArgs)
+            val (localSubs, typeArgs) = deriveSubstitution(generic, newArgs)
             val specSym = getOrMintSpec(s.id, typeArgs)
             val rewrittenCallee = TVarRef(specSym, vp, specSym.tpe)
-            TCall(rewrittenCallee, newArgs, p, goT(t))
+            // Second pass: re-walk args with the merged substitution so
+            // any kind-variable mentioned by an arg's elaborated type
+            // (e.g. a lambda whose param types were pushed down from the
+            // generic's formal `T -> U`) gets substituted to the concrete
+            // type the call site fixes them to. Without this, a lambda
+            // arg keeps `TyKindVar(T, _)` and trips llvmType at codegen.
+            val mergedSubs = substMap ++ localSubs
+            val rewalkedArgs = newArgs.map(a => specializeExpr(a, mergedSubs, symMap))
+            TCall(rewrittenCallee, rewalkedArgs, p, substituteKindVars(goT(t), localSubs))
           case _ =>
             TCall(newCallee, newArgs, p, goT(t))
 
@@ -486,15 +508,30 @@ class NexMonomorphize(symbols: SymbolTable):
       case TFlatIndex(a, i, p, t) => TFlatIndex(go(a), go(i), p, t)
       case TClone(a, p, t)        => TClone(go(a), p, t)
       case TCall(callee, args, p, t) =>
-        val newArgs   = args.map(go)
         val newCallee = go(callee)
         newCallee match
           case TVarRef(s, vp, _) if templates.contains(s.id) =>
+            // Generic call site. Derive the substitution from the
+            // ORIGINAL args (the inferred types still carry the
+            // call-site's kind variables). Specialize each arg with
+            // that substitution so kindvars in the args' inferred
+            // types (e.g. a lambda whose param/body types were pushed
+            // down from the generic's formal `T -> U`) get resolved to
+            // concrete types before any nested generic call inside the
+            // arg registers its own specialization. Calling `go` on
+            // the args first would walk them via this same rewriter —
+            // any nested generic call inside the arg would then derive
+            // its own substitution against the pre-substitution types
+            // and mint a useless `f$T` specialization.
             val generic       = templates(s.id)
-            val (_, typeArgs) = deriveSubstitution(generic, newArgs)
+            val (localSubs, typeArgs) = deriveSubstitution(generic, args)
             val specSym       = getOrMintSpec(s.id, typeArgs)
-            TCall(TVarRef(specSym, vp, specSym.tpe), newArgs, p, t)
-          case _ => TCall(newCallee, newArgs, p, t)
+            val rewalkedArgs  =
+              if localSubs.nonEmpty then
+                args.map(a => specializeExpr(a, localSubs, mutable.Map.empty))
+              else args.map(go)
+            TCall(TVarRef(specSym, vp, specSym.tpe), rewalkedArgs, p, substituteKindVars(t, localSubs))
+          case _ => TCall(newCallee, args.map(go), p, t)
       case TIndex(a, idx, p, t)       => TIndex(go(a), idx.map(go), p, t)
       case TField(r, n, p, t)         => TField(go(r), n, p, t)
       case TTupleProj(r, i, p, t)     => TTupleProj(go(r), i, p, t)
