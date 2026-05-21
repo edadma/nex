@@ -13,19 +13,29 @@ import io.github.edadma.path.Path
 def readFile(path: String): String =
   cross_platform.readFile(path)
 
+/** Read a Nex source file and apply the literate preprocessor when
+  * the path ends in `.lnex`. Plain `.nex` files are returned verbatim.
+  * Used everywhere a source file is loaded for compilation; the lexer
+  * never sees `.lnex` syntax directly.
+  */
+def readNexSource(path: String): String =
+  val raw = cross_platform.readFile(path)
+  if path.endsWith(".lnex") then NexLiterate.preprocess(raw) else raw
+
 def writeFile(path: String, content: String): Unit =
   cross_platform.writeFile(path, content)
 
-/** List `.nex` files directly inside `dir` (NOT recursive —
-  * subdirectories are submodules). Returns absolute paths, sorted
-  * for deterministic order.
+/** List `.nex` and `.lnex` files directly inside `dir` (NOT recursive
+  * — subdirectories are submodules). Returns absolute paths, sorted
+  * for deterministic order. The two extensions are siblings; a module
+  * may contain a mix.
   */
 def listNexFiles(dir: String): List[String] =
   if !cross_platform.isDirectory(dir) then Nil
   else
     cross_platform
       .listFiles(dir)
-      .filter(_.endsWith(".nex"))
+      .filter(p => p.endsWith(".nex") || p.endsWith(".lnex"))
       .filter(cross_platform.isFile)
       .toList
       .sorted

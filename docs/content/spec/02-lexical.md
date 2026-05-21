@@ -6,7 +6,7 @@ weight: 20
 
 ## 2.1 Source encoding
 
-Source files are UTF-8 encoded. Files use the `.nex` extension.
+Source files are UTF-8 encoded. Files use the `.nex` extension. Literate sources (Markdown wrappers; see [§2.9](#29-literate-nex)) use `.lnex` and are transparently preprocessed before lexing — every rule below applies to the dedented code inside a `.lnex` file just as it does to a `.nex` file.
 
 ## 2.2 Identifiers
 
@@ -169,3 +169,29 @@ val long_expression =
     + another_function(c, d)
     * yet_another(e)
 ```
+
+## 2.9 Literate Nex
+
+A file with the `.lnex` extension is a literate source: Markdown prose interleaved with indented code blocks. The compiler preprocesses the file before lexing, so the rest of the language sees ordinary Nex source.
+
+The preprocessing rules are:
+
+- **Prose lines** start at column 0 and are stripped — replaced by blank lines so that error positions still refer to the original `.lnex` line numbers. Markdown headings, paragraphs, lists, links, inline math (`$..$`), and display math (`$$..$$`) all fall under this rule.
+- **Code lines** start with a tab or at least four spaces. Exactly one indentation level is stripped (the leading tab, or four leading spaces) and the dedented body is fed to the lexer. Any further indentation survives — Nex's own indent-sensitive blocks work normally inside a literate file.
+- **Fenced blocks** (` ``` `) are non-Nex content (ASCII diagrams, sample output, hex dumps) and are stripped entirely. The fence delimiters and everything between them become blank lines.
+- Lines with 1-3 leading spaces are treated as prose (Markdown list-item continuations).
+
+Example:
+
+```markdown
+# Greeting
+
+This file demonstrates literate Nex. The compiler ignores the prose
+and reads only the indented blocks below.
+
+    def main() =
+        val name = "world"
+        print(name)
+```
+
+A module may freely mix `.nex` and `.lnex` files; the directory's contents are taken as the union, and the rules of [§9](/spec/09-modules/) apply unchanged.

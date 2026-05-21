@@ -135,12 +135,12 @@ object Cli:
   // -- Command implementations --------------------------------------------
 
   private def doTokens(file: String): Unit =
-    val source = readFile(file)
+    val source = readNexSource(file)
     val lexer  = new NexLexer
     lexer.scan(source).foreach(t => println(s"${t.getClass.getSimpleName.padTo(16, ' ')} ${t.chars}"))
 
   private def doParse(file: String): Int =
-    val source = readFile(file)
+    val source = readNexSource(file)
     new NexParser().parseProgram(source) match
       case Right(ast) =>
         pprint.pprintln(ast)
@@ -188,8 +188,9 @@ object Cli:
       catch case e: NexCodegenError =>
         Console.err.println(s"nex: ${e.getMessage}")
         return 1
-    val llPath  = if file.endsWith(".nex") then file.stripSuffix(".nex") + ".ll" else file + ".ll"
-    val binPath = if file.endsWith(".nex") then file.stripSuffix(".nex") else file + ".out"
+    val base    = stripNexSuffix(file)
+    val llPath  = base.map(_ + ".ll").getOrElse(file + ".ll")
+    val binPath = base.getOrElse(file + ".out")
     writeFile(llPath, ir)
     println(s"nex: wrote $llPath")
     runProcess(s"clang -O1 -o $binPath $llPath", Seq("clang", "-O1", "-o", binPath, llPath)) match
@@ -205,7 +206,7 @@ object Cli:
     val tool     = (name: String) => s"$llvmHome/bin/$name"
 
     val mlirSrc      = new NexMLIRCodegen().compile(tp)
-    val base         = if file.endsWith(".nex") then file.stripSuffix(".nex") else file
+    val base         = stripNexSuffix(file).getOrElse(file)
     val mlirPath     = base + ".mlir"
     val loweredPath  = base + ".lowered.mlir"
     val llPath       = base + ".ll"
@@ -262,6 +263,16 @@ object Cli:
       case e: Throwable =>
         Console.err.println(s"nex: failed to invoke ${cmd.head}: ${e.getMessage}")
         -1
+
+  /** Strip a recognised Nex source suffix (`.nex` or `.lnex`) from a
+    * path. Returns `None` if the path has neither suffix, letting the
+    * caller fall back to an output name that won't collide with the
+    * input.
+    */
+  private def stripNexSuffix(file: String): Option[String] =
+    if file.endsWith(".lnex") then Some(file.stripSuffix(".lnex"))
+    else if file.endsWith(".nex") then Some(file.stripSuffix(".nex"))
+    else None
 
   /** JVM-only resource loader (JS / Native have no classpath
     * resources). Returns the empty string if the resource is missing.
