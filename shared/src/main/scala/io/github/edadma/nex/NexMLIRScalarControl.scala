@@ -615,10 +615,9 @@ trait NexMLIRScalarControl:
     }
     retTyOpt match
       case Some(retTy) =>
-        val v = emitExpr(f.body)
-        if v.ty != retTy then
-          notYet(s"user def `${f.sym.name}` body type ${v.ty} does not match declared return ${retTy}")
-        out.append(s"  func.return ${v.reg} : ${retTy.text}\n")
+        val v = emitExpr(desugarEarlyReturns(f.body))
+        val r = coerceToType(v, retTy)
+        out.append(s"  func.return $r : ${retTy.text}\n")
       case None =>
         emitForBody(f.body)
         out.append("  func.return\n")
@@ -626,3 +625,24 @@ trait NexMLIRScalarControl:
     nextReg = savedReg
     env.clear()
     savedEnv.foreach { case (k, v) => env(k) = v }
+
+  /** Rewrite a value-returning def body so any leading
+    * `if cond then return X` guard becomes an if-expression that
+    * wraps the rest of the block. Single-exit MLIR `func.return`
+    * doesn't naturally express multiple terminators; this pre-pass
+    * folds the common "guard at top + tail expression" pattern into
+    * a single if-expression at the body's value position. Deeper
+    * patterns (early-return inside a loop, multiple non-leading
+    * guards) still surface as `notYet`.
+    *
+    * Recursion bottoms out at the innermost tail expression — each
+    * leading guard wraps the recursive desugaring of what follows.
+    */
+  protected def desugarEarlyReturns(body: TExpr): TExpr = body match
+    case TBlock(items, result, pos, tpe) =>
+      items match
+        case TBlockExpr(TIf(cond, TReturn(Some(v), _, _), None, _, _)) :: rest =>
+          val tail = desugarEarlyReturns(TBlock(rest, result, pos, tpe))
+          TIf(cond, v, Some(tail), pos, tpe)
+        case _ => body
+    case _ => body
