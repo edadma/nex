@@ -690,12 +690,12 @@ protected trait NexElabInference extends NexElabState:
     case _: TElementWise | _: TBroadcast | _: TMap | _: TReduce | _: TMatMul | _: TFusedLoop | _: TFlatIndex | _: TSlice | _: TSlice2 | _: TAxisAllMark | _: TClone => e
 
     // TOpenSliceMark wraps user expressions in `Option[TExpr]` — recurse
-    // into them so the inner `lo`/`hi` get type-inferred (e.g.
+    // into them so the inner `lo`/`hi`/`stride` get type-inferred (e.g.
     // `a[..-1]` needs the `TUnaryOp("-", TIntLit(1))` to flow through
     // typing to pick up `TyInteger`). The mark itself stays untyped;
     // `inferIndex` consumes it without inspecting its tpe.
-    case TOpenSliceMark(lo, hi, inclusive, pos, tpe) =>
-      TOpenSliceMark(lo.map(infExpr), hi.map(infExpr), inclusive, pos, tpe)
+    case TOpenSliceMark(lo, hi, inclusive, stride, pos, tpe) =>
+      TOpenSliceMark(lo.map(infExpr), hi.map(infExpr), inclusive, stride.map(infExpr), pos, tpe)
 
   /** Pin field-binding symbols inside a match pattern to the field types
     * declared by the scrutinee's enum. Wildcard patterns and variant-
@@ -1541,8 +1541,8 @@ protected trait NexElabInference extends NexElabState:
           err(s"slice lower bound must be integer, got ${lo.tpe}", lo.pos)
         if hi.tpe != TyUnknown && hi.tpe != TyInteger then
           err(s"slice upper bound must be integer, got ${hi.tpe}", hi.pos)
-        TAxisRange(Some(lo), Some(hi), inclusive = op == "..=")
-      case TOpenSliceMark(lo, hi, inclusive, _, _) =>
+        TAxisRange(Some(lo), Some(hi), inclusive = op == "..=", None)
+      case TOpenSliceMark(lo, hi, inclusive, stride, _, _) =>
         lo.foreach { e =>
           if e.tpe != TyUnknown && e.tpe != TyInteger then
             err(s"slice lower bound must be integer, got ${e.tpe}", e.pos)
@@ -1551,7 +1551,11 @@ protected trait NexElabInference extends NexElabState:
           if e.tpe != TyUnknown && e.tpe != TyInteger then
             err(s"slice upper bound must be integer, got ${e.tpe}", e.pos)
         }
-        TAxisRange(lo, hi, inclusive)
+        stride.foreach { e =>
+          if e.tpe != TyUnknown && e.tpe != TyInteger then
+            err(s"slice stride must be integer, got ${e.tpe}", e.pos)
+        }
+        TAxisRange(lo, hi, inclusive, stride)
       case other =>
         if other.tpe != TyUnknown && other.tpe != TyInteger then
           err(s"array index must be integer, got ${other.tpe}", other.pos)
@@ -1574,18 +1578,20 @@ protected trait NexElabInference extends NexElabState:
           err(s"slice upper bound must be integer, got ${hi.tpe}", hi.pos)
         arr.tpe match
           case TyArray(e, 1) =>
-            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", p, TyArray(e, 1))
+            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyArray(e, 1))
           case TyArray(_, r) =>
             err(s"rank-1 slice requires a rank-1 array, got rank $r", p)
-            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", p, TyUnknown)
+            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyUnknown)
           case TyUnknown =>
-            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", p, TyUnknown)
+            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyUnknown)
           case other =>
             err(s"cannot slice value of type $other", p)
-            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", p, TyUnknown)
+            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyUnknown)
 
-      // -- Rank-1 single open-ended slice (`a[..hi]`, `a[lo..]`, `a[..]`) -
-      case List(TOpenSliceMark(lo, hi, inclusive, _, _)) =>
+      // -- Rank-1 single open-ended or strided slice ---------------
+      // Covers `a[..hi]`, `a[lo..]`, `a[..]`, `a[lo..hi by k]`,
+      // `a[..hi by k]`, `a[lo.. by k]`, and bare `a[.. by k]`.
+      case List(TOpenSliceMark(lo, hi, inclusive, stride, _, _)) =>
         lo.foreach { e =>
           if e.tpe != TyUnknown && e.tpe != TyInteger then
             err(s"slice lower bound must be integer, got ${e.tpe}", e.pos)
@@ -1594,17 +1600,21 @@ protected trait NexElabInference extends NexElabState:
           if e.tpe != TyUnknown && e.tpe != TyInteger then
             err(s"slice upper bound must be integer, got ${e.tpe}", e.pos)
         }
+        stride.foreach { e =>
+          if e.tpe != TyUnknown && e.tpe != TyInteger then
+            err(s"slice stride must be integer, got ${e.tpe}", e.pos)
+        }
         arr.tpe match
           case TyArray(e, 1) =>
-            TSlice(arr, lo, hi, inclusive, p, TyArray(e, 1))
+            TSlice(arr, lo, hi, inclusive, stride, p, TyArray(e, 1))
           case TyArray(_, r) =>
             err(s"rank-1 slice requires a rank-1 array, got rank $r", p)
-            TSlice(arr, lo, hi, inclusive, p, TyUnknown)
+            TSlice(arr, lo, hi, inclusive, stride, p, TyUnknown)
           case TyUnknown =>
-            TSlice(arr, lo, hi, inclusive, p, TyUnknown)
+            TSlice(arr, lo, hi, inclusive, stride, p, TyUnknown)
           case other =>
             err(s"cannot slice value of type $other", p)
-            TSlice(arr, lo, hi, inclusive, p, TyUnknown)
+            TSlice(arr, lo, hi, inclusive, stride, p, TyUnknown)
 
       // -- Orphan `:` in single-position index → error -------------
       case List(_: TAxisAllMark) =>

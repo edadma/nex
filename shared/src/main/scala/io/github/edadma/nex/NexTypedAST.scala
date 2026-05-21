@@ -263,6 +263,7 @@ case class TSlice(
     lo:        Option[TExpr],
     hi:        Option[TExpr],
     inclusive: Boolean,
+    stride:    Option[TExpr] = None,
     pos:       Option[Position] = None,
     tpe:       Type = TyUnknown,
 ) extends TExpr
@@ -275,17 +276,21 @@ case class TSlice(
   */
 case class TAxisAllMark(pos: Option[Position] = None, tpe: Type = TyUnknown) extends TExpr
 
-/** Stage-1-only sentinel marking an open-ended slice (`..hi`, `lo..`,
-  * `..`) inside an index list. `inferIndex` rewrites the surrounding
-  * `TIndex` into a `TSlice` (rank-1) or `TSlice2` with `TAxisRange`
-  * (rank-2). Never appears in a Stage-3 program. The omitted side
-  * carries `None`; the downstream evaluator fills `lo = 0` and `hi =
-  * length(arr)` from the array's runtime extent.
+/** Stage-1-only sentinel marking either an open-ended slice (`..hi`,
+  * `lo..`, `..`) or a strided slice (`lo..hi by k`, `..hi by k`,
+  * `lo.. by k`, etc.) inside an index list. `inferIndex` rewrites the
+  * surrounding `TIndex` into a `TSlice` (rank-1) or `TSlice2` with
+  * `TAxisRange` (rank-2). Never appears in a Stage-3 program. The
+  * omitted side carries `None`; the downstream evaluator fills `lo =
+  * 0` and `hi = length(arr)` from the array's runtime extent. An
+  * optional `stride` carries the `by k` clause (spec §4.14 strided
+  * slice).
   */
 case class TOpenSliceMark(
     lo:        Option[TExpr],
     hi:        Option[TExpr],
     inclusive: Boolean,
+    stride:    Option[TExpr] = None,
     pos:       Option[Position] = None,
     tpe:       Type = TyUnknown,
 ) extends TExpr
@@ -298,7 +303,7 @@ case class TOpenSliceMark(
 sealed trait TAxisSpec
 case object TAxisAll                                                            extends TAxisSpec
 case class  TAxisIndex(idx: TExpr)                                              extends TAxisSpec
-case class  TAxisRange(lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean) extends TAxisSpec
+case class  TAxisRange(lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr] = None) extends TAxisSpec
 
 /** Rank-2 slice — `m[axis0, axis1]` per spec §4.14. The result rank
   * depends on how many axes are preserved (0 = scalar, 1 = rank-1,

@@ -342,6 +342,18 @@ a[..=-1]      // inclusive — full array
 
 The open forms are only legal inside an index list; using `..` or `..=` outside a slice context (e.g. as a value on the right of `=`) is a parse error.
 
+**Strided slices** sample every k-th element from the selected window via a trailing `by k`:
+
+```nex
+a[0..10 by 2]    // every other element from indices 0..9 (exclusive)
+a[1..10 by 3]    // 1, 4, 7
+a[0..=9 by 2]    // inclusive — same as the first form on a length-10 array
+a[..10 by 2]     // combines with open bounds
+a[-5.. by 2]     // combines with negative bounds
+```
+
+The stride must be a positive integer; a stride of `0` or any negative value traps. Negative strides (reverse iteration) are *deferred*. Strided rank-2 axis ranges (`m[lo..hi by k, :]`) are *deferred*. Strided **slice assignment** (`a[lo..hi by k] = rhs`) is also *deferred* — see `spec/11-deferred.md`.
+
 **Rank-2 indexing** uses two integer indices separated by a comma:
 
 ```nex

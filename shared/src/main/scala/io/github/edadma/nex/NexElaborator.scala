@@ -793,17 +793,23 @@ class NexElaborator
               err("named arguments are only allowed when calling a function by its declared name", e)
             TCall(elabExpr(callee), args.map(unwrapNamedArg).map(elabExpr), pos)
       case IndexExpr(arr, idx) =>
-        // `:` (AxisAllExpr) and `..hi` / `lo..` / `..` (OpenSliceExpr)
-        // only appear inside an index list — Stage 2's `inferIndex`
-        // rewrites the surrounding TIndex into a TSlice / TSlice2 with
-        // the appropriate axis spec. Anywhere else the parser refuses
-        // these tokens; if one slipped through, infExpr's orphan
-        // handler issues a clear error.
+        // `:` (AxisAllExpr) and the slice-marker forms (`..hi` /
+        // `lo..` / `..` via OpenSliceExpr, `lo..hi by k` via
+        // StridedSliceExpr) only appear inside an index list — Stage
+        // 2's `inferIndex` rewrites the surrounding TIndex into a
+        // TSlice / TSlice2 with the appropriate axis spec. Anywhere
+        // else the parser refuses these tokens; if one slipped
+        // through, infExpr's orphan handler issues a clear error.
         TIndex(elabExpr(arr), idx.map {
           case AxisAllExpr() =>
             TAxisAllMark(pos)
-          case OpenSliceExpr(lo, hi, inc) =>
-            TOpenSliceMark(lo.map(elabExpr), hi.map(elabExpr), inc, pos)
+          case OpenSliceExpr(lo, hi, inc, st) =>
+            TOpenSliceMark(lo.map(elabExpr), hi.map(elabExpr), inc, st.map(elabExpr), pos)
+          case StridedSliceExpr(lo, hi, inc, st) =>
+            // Closed-form strided slice — route through the same
+            // mark with both bounds populated. The mark's "open"
+            // name is historical; it carries any non-vanilla slice.
+            TOpenSliceMark(Some(elabExpr(lo)), Some(elabExpr(hi)), inc, Some(elabExpr(st)), pos)
           case e =>
             elabExpr(e)
         }, pos)
@@ -813,11 +819,18 @@ class NexElaborator
         err("`:` is only legal inside an index list (rank-2 slice)", e)
         TUnitLit(pos)
 
-      case OpenSliceExpr(_, _, _) =>
+      case OpenSliceExpr(_, _, _, _) =>
         // Defensive: open-ended slice forms (`..hi`, `lo..`, `..`) are
         // only legal inside an index list (spec §4.14). Anywhere else
         // they're a parse / elaboration error.
         err("open-ended slice (`..hi`, `lo..`, `..`) is only legal inside an index list", e)
+        TUnitLit(pos)
+
+      case StridedSliceExpr(_, _, _, _) =>
+        // Defensive: strided slice (`lo..hi by k`) is only legal inside
+        // an index list. The parser refuses `by` outside that context,
+        // but cover the case for completeness.
+        err("strided slice (`lo..hi by k`) is only legal inside an index list", e)
         TUnitLit(pos)
       case FieldExpr(r, name) =>
         TField(elabExpr(r), name, pos)

@@ -1219,6 +1219,55 @@ object NexProgramCorpus:
     ),
     Case(
       "arrays",
+      "strided slice with closed bounds (`a[lo..hi by k]`)",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        |  print(a[0..10 by 2])
+        |  print(a[1..10 by 3])
+        |  print(a[0..=9 by 2])
+      """.stripMargin,
+      "[10, 30, 50, 70, 90]\n[20, 50, 80]\n[10, 30, 50, 70, 90]\n",
+    ),
+    Case(
+      "arrays",
+      "strided slice combined with open bounds and negative indices",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        |  print(a[..10 by 2])
+        |  print(a[2.. by 2])
+        |  print(a[.. by 5])
+        |  print(a[-5.. by 2])
+        |  print(a[..-1 by 3])
+      """.stripMargin,
+      "[10, 30, 50, 70, 90]\n[30, 50, 70, 90]\n[10, 60]\n[60, 80, 100]\n[10, 40, 70]\n",
+    ),
+    Case(
+      "arrays",
+      "strided slice edge cases (empty window, stride > span)",
+      """
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(a[0..0 by 1])
+        |  print(a[0..1 by 5])
+      """.stripMargin,
+      "[]\n[10]\n",
+    ),
+    Case(
+      "arrays",
+      "non-positive stride traps",
+      """
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  assert_traps(() -> print(a[0..3 by 0]),  "slice")
+        |  assert_traps(() -> print(a[0..3 by -1]), "slice")
+        |  print("ok")
+      """.stripMargin,
+      "ok\n",
+    ),
+    Case(
+      "arrays",
       "sum",
       """
         |def main() = print(sum([1, 2, 3, 4]))

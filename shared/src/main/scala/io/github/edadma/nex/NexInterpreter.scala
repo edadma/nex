@@ -777,7 +777,9 @@ class NexInterpreter:
                 if k < 0 || k >= extent then trap(s"$label index $i out of bounds for extent $extent", p)
                 (k, k + 1, true)
               case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
-          case TAxisRange(lo, hi, inclusive) =>
+          case TAxisRange(lo, hi, inclusive, stride) =>
+            if stride.isDefined then
+              trap("strided rank-2 axis range — chunk-2 follow-up", p)
             def axisBound(o: Option[TExpr], default: Int): Long = o match
               case None    => default.toLong
               case Some(e) =>
@@ -833,15 +835,13 @@ class NexInterpreter:
         case VArray2(b, r, c) => VArray2(b.clone(), r, c)
         case other            => other
 
-    case TSlice(arr, lo, hi, inclusive, p, _) =>
+    case TSlice(arr, lo, hi, inclusive, stride, p, _) =>
       // Spec §4.14: rank-1 slice. Half-open `lo..hi` or closed
-      // `lo..=hi`. Negative bounds count from the end (`a[-1] ==
-      // a[length(a)-1]`); the wrap happens BEFORE the bounds check
-      // so an over-negative bound (`a[-10..2]` on a 3-element array)
-      // still traps. Open-ended bounds (`a[..hi]`, `a[lo..]`, `a[..]`)
-      // arrive with `lo` or `hi` as `None`; they fill from the array's
-      // runtime extent (0 for lo, length for hi). The result is a
-      // fresh VArray1.
+      // `lo..=hi`. Negative bounds count from the end; over-negative
+      // input still traps. Open bounds fill from runtime extent
+      // (0 / length). An optional `by k` stride samples every k-th
+      // element from the selected window — stride must be a positive
+      // integer; ≤ 0 traps. The result is a fresh VArray1.
       val av = evalExpr(arr, env)
       def asIntBound(o: Option[TExpr], default: Int): Int = o match
         case None    => default
@@ -849,6 +849,12 @@ class NexInterpreter:
           evalExpr(e, env) match
             case VInt(x) => x.toInt
             case other   => trap(s"slice bounds must be integers, got ${formatValue(other)}", p)
+      val strideI = stride match
+        case None    => 1
+        case Some(e) => evalExpr(e, env) match
+          case VInt(x) => x.toInt
+          case other   => trap(s"slice stride must be an integer, got ${formatValue(other)}", p)
+      if strideI <= 0 then trap(s"slice stride must be positive, got $strideI", p)
       av match
         case VArray1(b) =>
           val loRaw = asIntBound(lo, 0)
@@ -858,7 +864,15 @@ class NexInterpreter:
           val upper = if inclusive then hiI + 1 else hiI
           if loI < 0 || upper > b.size || loI > upper then
             trap(s"slice [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for array of size ${b.size}", p)
-          VArray1(b.slice(loI, upper).to(mutable.ArrayBuffer))
+          if strideI == 1 then
+            VArray1(b.slice(loI, upper).to(mutable.ArrayBuffer))
+          else
+            val out = mutable.ArrayBuffer.empty[Value]
+            var k   = loI
+            while k < upper do
+              out += b(k)
+              k += strideI
+            VArray1(out)
         case other =>
           trap(s"rank-1 slice requires a rank-1 array, got ${formatValue(other)}", p)
 
@@ -1187,7 +1201,10 @@ class NexInterpreter:
         val iv = idx.map(evalExpr(_, env))
         indexSet(av, iv, rhs, p)
 
-      case TSlice(arr, lo, hi, inclusive, _, _) =>
+      case TSlice(arr, lo, hi, inclusive, stride, _, _) =>
+        // Strided slice-assign is chunk 2; reject with a clear diag.
+        if stride.isDefined then
+          trap("strided slice-assign (`a[lo..hi by k] = rhs`) — chunk 2", p)
         val av = evalExpr(arr, env)
         def asIntBound(o: Option[TExpr], default: Int): Int = o match
           case None    => default
@@ -1234,7 +1251,9 @@ class NexInterpreter:
                   if k < 0 || k >= extent then trap(s"$label index $i out of bounds for extent $extent", p)
                   (k, k + 1, true)
                 case other => trap(s"$label index must be integer, got ${formatValue(other)}", p)
-            case TAxisRange(lo, hi, inclusive) =>
+            case TAxisRange(lo, hi, inclusive, stride) =>
+              if stride.isDefined then
+                trap("strided rank-2 axis range in slice-assign — chunk 2", p)
               def axisBound(o: Option[TExpr], default: Int): Long = o match
                 case None    => default.toLong
                 case Some(e) =>

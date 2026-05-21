@@ -628,29 +628,49 @@ class NexParser extends StandardTokenParsers with PackratParsers:
     */
   lazy val indexElem: PackratParser[ExprAST] =
     ":" ^^^ AxisAllExpr() |
-    ("..=" ~> addExpr) ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = true) } |
-    (".." ~> addExpr)  ^^ { hi => OpenSliceExpr(None, Some(hi), inclusive = false) } |
+    leadingOpenSlice |
+    (".." ~> ("by" ~> addExpr)) ^^ { st => OpenSliceExpr(None, None, inclusive = false, Some(st)) } |
     ".." ^^^ OpenSliceExpr(None, None, inclusive = false) |
     closedOrTrailingOpenRange |
     exprNoTuple
 
-  /** A scalar index (`a[i]`), a closed range (`a[lo..hi]` / `a[lo..=hi]`),
-    * or a trailing-open slice (`a[lo..]`). Factored into a single parse
+  /** Leading-open slice forms: `..hi`, `..=hi`, optionally followed
+    * by a stride (`..hi by k`, `..=hi by k`). The stride is only legal
+    * after a range; using `by` outside an index list is a parse error.
+    */
+  lazy val leadingOpenSlice: PackratParser[ExprAST] =
+    ("..=" ~> addExpr) ~ opt("by" ~> addExpr) ^^ {
+      case hi ~ st => OpenSliceExpr(None, Some(hi), inclusive = true, st)
+    } |
+    (".." ~> addExpr) ~ opt("by" ~> addExpr) ^^ {
+      case hi ~ st => OpenSliceExpr(None, Some(hi), inclusive = false, st)
+    }
+
+  /** A scalar index (`a[i]`), a closed range (`a[lo..hi]` / `a[lo..=hi]`,
+    * optionally followed by `by k` for a stride), or a trailing-open
+    * slice (`a[lo..]`, `a[lo.. by k]`). Factored into a single parse
     * tree so the trailing-open form is detected via `opt(addExpr)` after
     * the `..` operator — this avoids a greedy `addExpr <~ ".."` from
     * eating `lo..hi` half-way and leaving `hi` for the outer context.
     */
   lazy val closedOrTrailingOpenRange: PackratParser[ExprAST] =
-    addExpr ~ opt(("..=" | "..") ~ opt(addExpr)) ^^ {
-      case e ~ None                  => e
-      case e ~ Some(op ~ Some(rhs))  => BinOpExpr(op, e, rhs)
-      case e ~ Some(op ~ None)       =>
-        // `lo..` (exclusive) or `lo..=` (inclusive) — the elaborator
-        // treats both as a trailing-open slice and fills `hi` from the
-        // array's runtime length. The inclusive variant collapses to
-        // the exclusive form because `lo..=length-1` and `lo..length`
-        // cover the same elements.
-        OpenSliceExpr(Some(e), None, inclusive = op == "..=")
+    addExpr ~ opt(("..=" | "..") ~ opt(addExpr) ~ opt("by" ~> addExpr)) ^^ {
+      case e ~ None                            => e
+      case e ~ Some(op ~ Some(rhs) ~ None)     =>
+        // `lo..hi` or `lo..=hi` — no stride. Keep as a regular BinOp so
+        // existing closed-form slice detection in `inferIndex` fires.
+        BinOpExpr(op, e, rhs)
+      case e ~ Some(op ~ Some(rhs) ~ Some(st)) =>
+        // `lo..hi by k` (or inclusive) — strided closed slice.
+        StridedSliceExpr(e, rhs, inclusive = op == "..=", stride = st)
+      case e ~ Some(op ~ None ~ st)            =>
+        // `lo..` (exclusive) or `lo..=` (inclusive), optionally
+        // followed by `by k` — the elaborator treats this as a
+        // trailing-open slice and fills `hi` from the array's runtime
+        // length. The inclusive variant collapses to the exclusive
+        // form because `lo..=length-1` and `lo..length` cover the
+        // same elements.
+        OpenSliceExpr(Some(e), None, inclusive = op == "..=", stride = st)
     }
 
   /** `.name` is a field access; `.name(args)` becomes a method-call sugar

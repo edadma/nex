@@ -457,7 +457,7 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * array's length) to match the interpreter; without the check, an
     * OOB slice would silently read past the buffer.
     */
-  protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, resultT: Type): String =
+  protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], resultT: Type): String =
     val elem = arrayElem(arr.tpe)
     val stE  = storageType(elem)
     val langE = llvmType(elem)
@@ -475,6 +475,12 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val hiV = hi match
       case Some(e) => wrapNegBound(emitExpr(e), srcLen)
       case None    => srcLen
+    // Stride defaults to 1; positive only in v0 (negative stride =
+    // reverse iteration, deferred). A stride of 0 traps; a non-positive
+    // user-supplied stride traps too.
+    val strideV = stride match
+      case Some(e) => emitExpr(e)
+      case None    => "1"
 
     // Bounds check: lo < 0, hi < lo, or hi exceeds size (for
     // exclusive: hi > size; for inclusive: hi >= size). The trap
@@ -491,10 +497,14 @@ protected trait NexLLVMArrays extends NexLLVMState:
       emitLine(s"  $hiBad = icmp sge i64 $hiV, $srcLen\n")
     else
       emitLine(s"  $hiBad = icmp sgt i64 $hiV, $srcLen\n")
+    val strideBad = newReg()
+    emitLine(s"  $strideBad = icmp sle i64 $strideV, 0\n")
     val any01 = newReg()
     emitLine(s"  $any01 = or i1 $negLo, $hiLtLo\n")
+    val any02 = newReg()
+    emitLine(s"  $any02 = or i1 $any01, $hiBad\n")
     val any = newReg()
-    emitLine(s"  $any = or i1 $any01, $hiBad\n")
+    emitLine(s"  $any = or i1 $any02, $strideBad\n")
     val okL   = freshLabel("sl1.ok")
     val failL = freshLabel("sl1.fail")
     emitTerminator(s"  br i1 $any, label %$failL, label %$okL\n")
@@ -503,14 +513,33 @@ protected trait NexLLVMArrays extends NexLLVMState:
     emitTerminator(s"  unreachable\n")
     startBlock(okL)
 
-    // Slice length: hi - lo (exclusive) or hi - lo + 1 (inclusive).
+    // Slice length:
+    //   raw      = hi - lo (exclusive) or hi - lo + 1 (inclusive)
+    //   length   = ceil(raw / stride) = (raw + stride - 1) / stride
     val rawLen = newReg()
     emitLine(s"  $rawLen = sub i64 $hiV, $loV\n")
-    val length = if inclusive then
+    val span = if inclusive then
       val r = newReg()
       emitLine(s"  $r = add i64 $rawLen, 1\n")
       r
     else rawLen
+    val length = stride match
+      case None    => span                   // unit stride: length == span
+      case Some(_) =>
+        // ceil-divide: (span + stride - 1) div stride. Clamp negative
+        // spans (lo == hi yielding 0 or empty inclusive) to 0 before
+        // adjusting so a zero-element slice doesn't underflow.
+        val nz   = newReg()
+        emitLine(s"  $nz = icmp sle i64 $span, 0\n")
+        val zero = newReg()
+        emitLine(s"  $zero = select i1 $nz, i64 0, i64 $span\n")
+        val adj  = newReg()
+        emitLine(s"  $adj = add i64 $zero, $strideV\n")
+        val adj1 = newReg()
+        emitLine(s"  $adj1 = sub i64 $adj, 1\n")
+        val q = newReg()
+        emitLine(s"  $q = sdiv i64 $adj1, $strideV\n")
+        q
 
     val desc = newReg()
     emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $length, i64 $esz)\n")
@@ -518,8 +547,11 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val outBuf = bufPtr(desc, resultT)
 
     emitCountingLoop(length, "slice1") { i =>
+      val srcOff = if stride.isDefined then
+        val m = newReg(); emitLine(s"  $m = mul i64 $i, $strideV\n"); m
+      else i
       val srcIdx = newReg()
-      emitLine(s"  $srcIdx = add i64 $loV, $i\n")
+      emitLine(s"  $srcIdx = add i64 $loV, $srcOff\n")
       val sSlot = newReg()
       emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $srcIdx\n")
       val v = loadElem(stE, sSlot, langE)
@@ -572,7 +604,9 @@ protected trait NexLLVMArrays extends NexLLVMState:
         val hi = newReg()
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false, Some(iv))
-      case TAxisRange(lo, hi, inclusive) =>
+      case TAxisRange(lo, hi, inclusive, stride) =>
+        if stride.isDefined then
+          notImpl("strided rank-2 axis range — chunk-2 follow-up")
         val loV = lo match
           case Some(e) => wrapNegBound(emitExpr(e), total)
           case None    => "0"
@@ -806,7 +840,9 @@ protected trait NexLLVMArrays extends NexLLVMState:
         val hi = newReg()
         emitLine(s"  $hi = add i64 $iv, 1\n")
         (iv, hi, false)
-      case TAxisRange(lo, hi, inclusive) =>
+      case TAxisRange(lo, hi, inclusive, stride) =>
+        if stride.isDefined then
+          notImpl("strided rank-2 axis range in slice-assign — chunk-2 follow-up")
         val loV = lo match
           case Some(e) => wrapNegBound(emitExpr(e), total)
           case None    => "0"
