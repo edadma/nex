@@ -2175,10 +2175,139 @@ object NexProgramCorpus:
       "prelude",
       "zeros + ones",
       """def main() =
-        |  print(zeros(3))
+        |  val xs = zeros(3)
+        |  print(xs)
         |  print(ones(3))
       """.stripMargin,
       "[0, 0, 0]\n[1, 1, 1]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "range with runtime bounds",
+      """def main() =
+        |  val lo = 2
+        |  val hi = 7
+        |  print(range(lo, hi))
+      """.stripMargin,
+      "[2, 3, 4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "range with runtime bounds — empty when hi <= lo",
+      """def main() =
+        |  val lo = 5
+        |  val hi = 5
+        |  print(range(lo, hi))
+      """.stripMargin,
+      "[]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "zeros with runtime length",
+      """def main() =
+        |  val n = 4
+        |  print(zeros(n))
+      """.stripMargin,
+      "[0, 0, 0, 0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "ones with runtime length",
+      """def main() =
+        |  val n = 5
+        |  print(ones(n))
+      """.stripMargin,
+      "[1, 1, 1, 1, 1]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "linspace with runtime length",
+      """def main() =
+        |  val n = 5
+        |  print(linspace(0.0, 1.0, n))
+      """.stripMargin,
+      "[0.0, 0.25, 0.5, 0.75, 1.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "linspace with runtime bounds and length",
+      """def main() =
+        |  val lo = 0.0
+        |  val hi = 4.0
+        |  val n = 5
+        |  print(linspace(lo, hi, n))
+      """.stripMargin,
+      "[0.0, 1.0, 2.0, 3.0, 4.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "length of dynamic-bound range",
+      """def main() =
+        |  val lo = 1
+        |  val hi = 8
+        |  print(length(range(lo, hi)))
+      """.stripMargin,
+      "7\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "sum of dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(sum(range(0, n)))
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "scalar broadcast over dynamic-bound range",
+      """def main() =
+        |  val n = 4
+        |  print(2 * range(0, n))
+      """.stripMargin,
+      "[0, 2, 4, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "map over dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(map(range(0, n), x -> x * x))
+      """.stripMargin,
+      "[0, 1, 4, 9, 16]\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "for over dynamic-bound range — running sum",
+      """def main() =
+        |  val n = 4
+        |  var s = 0
+        |  val xs = range(1, n + 1)
+        |  for x in xs do s = s + x
+        |  print(s)
+      """.stripMargin,
+      "10\n",
+      mlir = true,
+    ),
+    Case(
+      "prelude",
+      "comparison broadcast over dynamic-bound range",
+      """def main() =
+        |  val n = 5
+        |  print(range(0, n) < 3)
+      """.stripMargin,
+      "[true, true, true, false, false]\n",
       mlir = true,
     ),
     Case(
