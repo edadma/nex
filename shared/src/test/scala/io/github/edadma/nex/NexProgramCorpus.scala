@@ -108,6 +108,7 @@ object NexProgramCorpus:
         |def main() = print("hello")
       """.stripMargin,
       "hello\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -264,6 +265,7 @@ object NexProgramCorpus:
         |  print("hi" == "bye")
       """.stripMargin,
       "true\nfalse\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -274,6 +276,7 @@ object NexProgramCorpus:
         |  print("a" != "a")
       """.stripMargin,
       "true\nfalse\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -284,6 +287,7 @@ object NexProgramCorpus:
         |  print(a == "foobar")
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "comparison + logical",
@@ -444,6 +448,7 @@ object NexProgramCorpus:
         |  if x > 5 then print("big") else print("small")
       """.stripMargin,
       "big\n",
+      mlir = true,
     ),
     Case(
       "control flow",
@@ -2810,6 +2815,7 @@ object NexProgramCorpus:
         |  print(f"sum = ${1 + 2}")
       """.stripMargin,
       "x = 42\nsum = 3\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2822,6 +2828,7 @@ object NexProgramCorpus:
         |  print(f"|$x%05d|")
       """.stripMargin,
       "|   42|\n|42   |\n|00042|\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2834,6 +2841,7 @@ object NexProgramCorpus:
         |  print(f"$pi%10.3f")
       """.stripMargin,
       "3.142\n3.1415926500\n     3.142\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2848,6 +2856,7 @@ object NexProgramCorpus:
         |  print(f"$n%016b")
       """.stripMargin,
       "ff\nFF\n377\n11111111\n0000000011111111\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -2868,6 +2877,7 @@ object NexProgramCorpus:
         |  print(f"100% sure $$dollar")
       """.stripMargin,
       "100% sure $dollar\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -2952,6 +2962,7 @@ object NexProgramCorpus:
         |def main() = print(greeting)
       """.stripMargin,
       "hello, world\n",
+      mlir = true,
     ),
     Case(
       "blocks + scoping",
@@ -3148,6 +3159,7 @@ object NexProgramCorpus:
         |  print(s"x = $x")
       """.stripMargin,
       "x = 42\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3159,6 +3171,7 @@ object NexProgramCorpus:
         |  print(s"$a + $b")
       """.stripMargin,
       "3 + 4\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3170,6 +3183,7 @@ object NexProgramCorpus:
         |  print(s"sum = ${a + b}")
       """.stripMargin,
       "sum = 7\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3181,6 +3195,7 @@ object NexProgramCorpus:
         |  print(s"${a} * ${b} = ${a * b}")
       """.stripMargin,
       "3 * 4 = 12\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
@@ -3202,6 +3217,54 @@ object NexProgramCorpus:
         |  print(s"max = ${if a < b then b else a}")
       """.stripMargin,
       "max = 4\n",
+      mlir = true,
+    ),
+    Case(
+      "string interpolation",
+      "embed a real variable in s-interpolation",
+      """
+        |def main() =
+        |  val x = 1.5
+        |  print(s"x = $x")
+      """.stripMargin,
+      "x = 1.5\n",
+      mlir = true,
+    ),
+    Case(
+      "string interpolation",
+      "embed a whole-valued real (formats as `<int>.0`)",
+      """
+        |def main() =
+        |  val x = 7.0
+        |  print(s"x = $x")
+      """.stripMargin,
+      "x = 7.0\n",
+      mlir = true,
+    ),
+    Case(
+      "string interpolation",
+      "embed a real in scientific range (Java-style E exponent)",
+      """
+        |def main() =
+        |  val tiny = 1.0e-20
+        |  val big  = 1.0e20
+        |  print(s"tiny = $tiny, big = $big")
+      """.stripMargin,
+      "tiny = 1.0E-20, big = 1.0E20\n",
+      mlir = true,
+    ),
+    Case(
+      "string interpolation",
+      "embed nan / inf / -inf as s-interpolation values",
+      """
+        |def main() =
+        |  val a = nan
+        |  val b = inf
+        |  val c = -inf
+        |  print(s"$a $b $c")
+      """.stripMargin,
+      "nan inf -inf\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",
