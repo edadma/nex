@@ -939,6 +939,73 @@ object NexProgramCorpus:
         |  print(sum(ev))
       """.stripMargin,
       "6\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter prints the selected elements directly",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4, 5, 6]
+        |  print(filter(xs, x -> x > 3))
+      """.stripMargin,
+      "[4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter where no element matches returns an empty array",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(filter(xs, x -> x > 100))
+      """.stripMargin,
+      "[]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter where every element matches returns a full-length copy",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(filter(xs, x -> x > 0))
+      """.stripMargin,
+      "[1, 2, 3]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter on a dynamic-bound range",
+      """
+        |def main() =
+        |  val n = 10
+        |  print(filter(range(0, n), x -> x % 3 == 0))
+      """.stripMargin,
+      "[0, 3, 6, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "filter on real values picks NaN-safe predicate",
+      """
+        |def main() =
+        |  val xs = [1.0, 2.5, 3.5, 4.5]
+        |  print(filter(xs, x -> x > 2.0))
+      """.stripMargin,
+      "[2.5, 3.5, 4.5]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "length of filter result",
+      """
+        |def main() =
+        |  val xs = [10, 20, 30, 40, 50]
+        |  print(length(filter(xs, x -> x >= 30)))
+      """.stripMargin,
+      "3\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -949,6 +1016,7 @@ object NexProgramCorpus:
         |  print(flatMap(xs, x -> [x, x * 10]))
       """.stripMargin,
       "[1, 10, 2, 20, 3, 30]\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -958,6 +1026,7 @@ object NexProgramCorpus:
         |  print([1, 2, 3].flatMap(x -> [x, -x]))
       """.stripMargin,
       "[1, -1, 2, -2, 3, -3]\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -967,6 +1036,62 @@ object NexProgramCorpus:
         |  print([1, 2, 3].flatMap(x -> [x * x]))
       """.stripMargin,
       "[1, 4, 9]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap on a dynamic-bound range with two-element inner arrays",
+      """
+        |def main() =
+        |  val n = 4
+        |  print(flatMap(range(1, n), x -> [x, x + 10]))
+      """.stripMargin,
+      "[1, 11, 2, 12, 3, 13]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap where inner length itself depends on the element (variable inner length)",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(flatMap(xs, x -> range(0, x)))
+      """.stripMargin,
+      "[0, 0, 1, 0, 1, 2]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "length of flatMap result",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3]
+        |  print(length(flatMap(xs, x -> [x, x + 1, x + 2])))
+      """.stripMargin,
+      "9\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "flatMap on real elements promotes through inner arrays",
+      """
+        |def main() =
+        |  val xs = [1.0, 2.0, 3.0]
+        |  print(flatMap(xs, x -> [x, x * 2.0]))
+      """.stripMargin,
+      "[1.0, 2.0, 2.0, 4.0, 3.0, 6.0]\n",
+      mlir = true,
+    ),
+    Case(
+      "functions",
+      "sum of flatMap result",
+      """
+        |def main() =
+        |  val xs = [1, 2, 3, 4]
+        |  print(sum(flatMap(xs, x -> [x, x])))
+      """.stripMargin,
+      "20\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1092,6 +1217,7 @@ object NexProgramCorpus:
         |  print(xs[-5])
       """.stripMargin,
       "50\n40\n10\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1105,6 +1231,7 @@ object NexProgramCorpus:
         |  print(m[-1])
       """.stripMargin,
       "9\n7\n3\n[7, 8, 9]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1142,6 +1269,7 @@ object NexProgramCorpus:
         |  print(a[0..=-1])
       """.stripMargin,
       "[30, 40, 50]\n[10, 20, 30, 40]\n[30, 40]\n[10, 20, 30, 40, 50]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1154,6 +1282,7 @@ object NexProgramCorpus:
         |  print(m[-2..length(m), -2..length(m)])
       """.stripMargin,
       "[7, 8, 9]\n[3, 6, 9]\n[[5, 6], [8, 9]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1190,6 +1319,7 @@ object NexProgramCorpus:
         |  print(a[..=2])
       """.stripMargin,
       "[30, 40, 50]\n[10, 20, 30]\n[10, 20, 30, 40, 50]\n[10, 20, 30]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1202,6 +1332,7 @@ object NexProgramCorpus:
         |  print(a[..=-1])
       """.stripMargin,
       "[30, 40, 50]\n[10, 20, 30, 40]\n[10, 20, 30, 40, 50]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1214,6 +1345,7 @@ object NexProgramCorpus:
         |  print(m[..2, ..2])
       """.stripMargin,
       "[[4, 5, 6], [7, 8, 9]]\n[[5, 6], [8, 9]]\n[[1, 2], [4, 5]]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1238,6 +1370,7 @@ object NexProgramCorpus:
         |  print(a[0..=9 by 2])
       """.stripMargin,
       "[10, 30, 50, 70, 90]\n[20, 50, 80]\n[10, 30, 50, 70, 90]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1252,6 +1385,7 @@ object NexProgramCorpus:
         |  print(a[..-1 by 3])
       """.stripMargin,
       "[10, 30, 50, 70, 90]\n[30, 50, 70, 90]\n[10, 60]\n[60, 80, 100]\n[10, 40, 70]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1263,6 +1397,7 @@ object NexProgramCorpus:
         |  print(a[0..1 by 5])
       """.stripMargin,
       "[]\n[10]\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1876,6 +2011,105 @@ object NexProgramCorpus:
         |  print(a[lo..hi])
       """.stripMargin,
       "[20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime inclusive bound",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(a[lo..=hi])
+      """.stripMargin,
+      "[20, 30, 40]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 leading-open slice with runtime hi",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val hi = 3
+        |  print(a[..hi])
+      """.stripMargin,
+      "[10, 20, 30]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 trailing-open slice with runtime lo",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val lo = 2
+        |  print(a[lo..])
+      """.stripMargin,
+      "[30, 40, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 fully-open slice copies the array",
+      """
+        |def main() =
+        |  val a = [10, 20, 30]
+        |  print(a[..])
+      """.stripMargin,
+      "[10, 20, 30]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime stride",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60]
+        |  val k = 2
+        |  print(a[0..6 by k])
+      """.stripMargin,
+      "[10, 30, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice with runtime lo + hi + stride",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60, 70]
+        |  val lo = 1
+        |  val hi = 7
+        |  val k = 3
+        |  print(a[lo..hi by k])
+      """.stripMargin,
+      "[20, 50]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-1 slice on a dynamic-bound range",
+      """
+        |def main() =
+        |  val n = 8
+        |  print(range(0, n)[2..6])
+      """.stripMargin,
+      "[2, 3, 4, 5]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "length of dynamic slice",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  val lo = 1
+        |  val hi = 4
+        |  print(length(a[lo..hi]))
+      """.stripMargin,
+      "3\n",
+      mlir = true,
     ),
     Case(
       "arrays",
@@ -1943,6 +2177,95 @@ object NexProgramCorpus:
         |  print(m[:, 0..=2])
       """.stripMargin,
       "[[1, 2, 3], [4, 5, 6]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime row range",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(m[lo..hi, :])
+      """.stripMargin,
+      "[[4, 5, 6], [7, 8, 9]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime column range",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        |  val lo = 1
+        |  val hi = 3
+        |  print(m[:, lo..hi])
+      """.stripMargin,
+      "[[2, 3], [6, 7]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime ranges on both axes",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val r0 = 1
+        |  val r1 = 3
+        |  val c0 = 0
+        |  val c1 = 2
+        |  print(m[r0..r1, c0..c1])
+      """.stripMargin,
+      "[[4, 5], [7, 8]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime row index drops a dimension",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        |  val i = 1
+        |  print(m[i, :])
+      """.stripMargin,
+      "[4, 5, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 slice with runtime column index drops a dimension",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  val j = 2
+        |  print(m[:, j])
+      """.stripMargin,
+      "[3, 6]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 leading-open row slice with runtime hi",
+      """
+        |def main() =
+        |  val m = [[1, 2], [3, 4], [5, 6], [7, 8]]
+        |  val hi = 2
+        |  print(m[..hi, :])
+      """.stripMargin,
+      "[[1, 2], [3, 4]]\n",
+      mlir = true,
+    ),
+    Case(
+      "arrays",
+      "rank-2 trailing-open column slice with runtime lo",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        |  val lo = 2
+        |  print(m[:, lo..])
+      """.stripMargin,
+      "[[3, 4], [7, 8]]\n",
       mlir = true,
     ),
     Case(

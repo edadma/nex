@@ -100,6 +100,8 @@ class NexMLIRCodegen:
     out.append("func.func private @nex_print_array_1d_bool(i64, i64)\n")
     out.append("func.func private @nex_print_array_2d_bool(i64, i64, i64)\n")
     out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
+    out.append("func.func private @nex_trap_slice_oob()\n")
+    out.append("func.func private @nex_trap_axis_oob()\n")
     // libm bridges declared by the `@intrinsic` decls discovered above.
     // Two-argument libm fns (atan2, hypot, pow) get a (f64, f64) -> f64
     // signature; everything else is unary. `pow` is also declared
@@ -247,6 +249,24 @@ class NexMLIRCodegen:
       val i64R = fresh("dimi")
       out.append(s"  $i64R = arith.index_castui $dimR : index to i64\n")
       i64R
+
+  /** Recover an `index`-typed dimension length for a tensor axis. Used
+    * by index-wrap + bounds-trap sites that need an index extent
+    * without bouncing through `i64`. Static dims emit a constant;
+    * dynamic dims use `tensor.dim`.
+    */
+  private def tensorDimAsIndex(tReg: String, ty: MTensor, axis: Int): String =
+    val d = ty.shape(axis)
+    if d >= 0 then
+      val r = fresh("dimx")
+      out.append(s"  $r = arith.constant $d : index\n")
+      r
+    else
+      val axisR = fresh("daxis")
+      out.append(s"  $axisR = arith.constant $axis : index\n")
+      val r = fresh("dim")
+      out.append(s"  $r = tensor.dim $tReg, $axisR : ${ty.text}\n")
+      r
 
   /** Emit `tensor.empty(...)` for either a static or dynamic shape.
     * `dynSizes` carries the SSA names of `index`-typed values for each
@@ -502,6 +522,23 @@ class NexMLIRCodegen:
         case t: MTensor if t.shape.nonEmpty => emitReduceInlineLambda(av, t, iv, lam)
         case other                          => notYet(s"reduce over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, lam: TLambda), _, _)
+        if s.kind == SymKind.Prelude && s.name == "filter" && lam.params.size == 1 =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitFilterInlineLambda(av, t, lam)
+        case other                   => notYet(s"filter over $other")
+
+    case TCall(TVarRef(s, _, _), List(arr, lam: TLambda), _, tpe)
+        if s.kind == SymKind.Prelude && s.name == "flatMap" && lam.params.size == 1 =>
+      val av = emitExpr(arr)
+      val outElem = tpe match
+        case TyArray(e, _) => e
+        case other         => notYet(s"flatMap returns non-array $other")
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitFlatMapInlineLambda(av, t, lam, outElem)
+        case other                   => notYet(s"flatMap over $other")
+
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && (s.name == "min" || s.name == "max") =>
       val av = emitExpr(arr)
@@ -601,8 +638,13 @@ class NexMLIRCodegen:
       val iv = emitExpr(idx)
       (av.ty, iv.ty) match
         case (t @ MTensor(et, List(_)), MScalar(TyInteger)) =>
-          val idxR = fresh("idx")
-          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val len = tensorDimAsIndex(av.reg, t, 0)
+          val rawR = fresh("idxraw")
+          out.append(s"  $rawR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val idxR = wrapNegBound(rawR, len)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          emitAxisIndexTrap(idxR, len, c0Idx)
           val r = fresh("elt")
           out.append(s"  $r = tensor.extract ${av.reg}[$idxR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
@@ -611,8 +653,13 @@ class NexMLIRCodegen:
           // rank-1 tensor. The row axis collapses; the column axis is
           // copied wholesale. `tensor.extract_slice`'s rank-reducing form
           // handles the rank drop when a static size-1 axis is present.
-          val idxR = fresh("ridx")
-          out.append(s"  $idxR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val rows = tensorDimAsIndex(av.reg, t, 0)
+          val rawR = fresh("ridxraw")
+          out.append(s"  $rawR = arith.index_cast ${iv.reg} : i64 to index\n")
+          val idxR = wrapNegBound(rawR, rows)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          emitAxisIndexTrap(idxR, rows, c0Idx)
           val outTy = MTensor(et, List(cols))
           val r     = fresh("row")
           out.append(
@@ -628,10 +675,18 @@ class NexMLIRCodegen:
       val cv = emitExpr(colIdx)
       (av.ty, rv.ty, cv.ty) match
         case (t @ MTensor(et, List(_, _)), MScalar(TyInteger), MScalar(TyInteger)) =>
-          val rR = fresh("ridx")
-          out.append(s"  $rR = arith.index_cast ${rv.reg} : i64 to index\n")
-          val cR = fresh("cidx")
-          out.append(s"  $cR = arith.index_cast ${cv.reg} : i64 to index\n")
+          val rows = tensorDimAsIndex(av.reg, t, 0)
+          val cols = tensorDimAsIndex(av.reg, t, 1)
+          val c0Idx = fresh("c0")
+          out.append(s"  $c0Idx = arith.constant 0 : index\n")
+          val rRaw = fresh("rraw")
+          out.append(s"  $rRaw = arith.index_cast ${rv.reg} : i64 to index\n")
+          val rR = wrapNegBound(rRaw, rows)
+          emitAxisIndexTrap(rR, rows, c0Idx)
+          val cRaw = fresh("craw")
+          out.append(s"  $cRaw = arith.index_cast ${cv.reg} : i64 to index\n")
+          val cR = wrapNegBound(cRaw, cols)
+          emitAxisIndexTrap(cR, cols, c0Idx)
           val r = fresh("elt")
           out.append(s"  $r = tensor.extract ${av.reg}[$rR, $cR] : ${t.text}\n")
           MlirVal(r, MScalar(et))
@@ -683,13 +738,24 @@ class NexMLIRCodegen:
         case other =>
           notYet(s"rank-1 slice on $other")
 
+    case TSlice(arr, loE, hiE, inclusive, strideE, _, _) =>
+      val av = emitExpr(arr)
+      av.ty match
+        case t @ MTensor(_, List(_)) =>
+          emitRank1SliceDynamic(av, t, loE, hiE, inclusive, strideE)
+        case other =>
+          notYet(s"rank-1 slice on $other")
+
     case TSlice2(arr, rowAx, colAx, _, _) =>
       val av = emitExpr(arr)
       av.ty match
         case t @ MTensor(_, List(rows, cols)) =>
-          val rowSpec = axisToSlice(rowAx, rows)
-          val colSpec = axisToSlice(colAx, cols)
-          emitRank2Slice(av, t, rowSpec, colSpec)
+          if rows >= 0 && cols >= 0 && isStaticAxis(rowAx) && isStaticAxis(colAx) then
+            val rowSpec = axisToSlice(rowAx, rows)
+            val colSpec = axisToSlice(colAx, cols)
+            emitRank2Slice(av, t, rowSpec, colSpec)
+          else
+            emitRank2SliceDynamic(av, t, rowAx, colAx)
         case other =>
           notYet(s"rank-2 slice on $other")
 
@@ -777,6 +843,19 @@ class NexMLIRCodegen:
       case None    => env.remove(loopVar.id)
     out.append("  }\n")
 
+  /** True when an axis spec can be fully resolved at compile time:
+    * `TAxisAll`, a literal `TAxisIndex`, or a `TAxisRange` whose
+    * bounds are literals and stride is omitted. Used as the dispatch
+    * gate between the static-size [[emitRank2Slice]] fast path and
+    * the dynamic-size [[emitRank2SliceDynamic]] path.
+    */
+  private def isStaticAxis(spec: TAxisSpec): Boolean = spec match
+    case TAxisAll                                                                       => true
+    case TAxisIndex(TIntLit(_, _, _))                                                   => true
+    case TAxisRange(Some(TIntLit(_, _, _)), Some(TIntLit(_, _, _)), _, None)            => true
+    case TAxisRange(None, Some(TIntLit(_, _, _)), _, None)                              => true
+    case _                                                                              => false
+
   /** Resolved spec for one axis of a rank-2 slice. `offset` and `size`
     * are the corresponding entries in the `tensor.extract_slice`
     * offsets/sizes lists; `collapsed` is true when this axis was a
@@ -826,6 +905,142 @@ class NexMLIRCodegen:
     )
     MlirVal(r, outTy)
 
+  /** Resolved axis for the dynamic-rank-2 path. `offset`, `size`, and
+    * `stride` are SSA `index` values (or literal strings for the
+    * trivial 0 / 1 / size-1 cases). `collapsed` carries the
+    * rank-reducing flag for `TAxisIndex`. The result type's
+    * corresponding entry is built from these in
+    * [[emitRank2SliceDynamic]] — collapsed axes drop entirely; the
+    * remaining axes are `?` since their size flows in via the SSA
+    * operand.
+    */
+  private case class AxisSliceD(
+      offset:    String,
+      size:      String,
+      stride:    String,
+      collapsed: Boolean,
+  )
+
+  /** Resolve a `TAxisSpec` to its concrete operand triple for the
+    * rank-2 dynamic-bound slice path. Mirrors
+    * [[emitRank1SliceDynamic]] for one axis at a time; the source
+    * dimension may itself be dynamic in which case the default `hi`
+    * comes from `tensor.dim`.
+    */
+  private def emitAxisSliceDynamic(
+      spec:     TAxisSpec,
+      srcTy:    MTensor,
+      srcReg:   String,
+      axisIdx:  Int,
+      c0Idx:    String,
+      c1Idx:    String,
+  ): AxisSliceD =
+    val srcDim = srcTy.shape(axisIdx)
+    def srcDimIdx(): String =
+      if srcDim >= 0 then
+        val r = fresh("sdim")
+        out.append(s"  $r = arith.constant $srcDim : index\n")
+        r
+      else
+        val ax = fresh("daxis")
+        out.append(s"  $ax = arith.constant $axisIdx : index\n")
+        val r = fresh("sdim")
+        out.append(s"  $r = tensor.dim $srcReg, $ax : ${srcTy.text}\n")
+        r
+
+    spec match
+      case TAxisAll =>
+        AxisSliceD(c0Idx, srcDimIdx(), c1Idx, collapsed = false)
+
+      case TAxisIndex(e) =>
+        val total = srcDimIdx()
+        val v = emitExpr(e)
+        val rawR = fresh("airaw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        val offsetR = wrapNegBound(rawR, total)
+        emitAxisIndexTrap(offsetR, total, c0Idx)
+        AxisSliceD(offsetR, "1", "1", collapsed = true)
+
+      case TAxisRange(loE, hiE, inclusive, strideE) =>
+        val total = srcDimIdx()
+        val loIdx = loE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val rawR = fresh("loraw")
+            out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+            wrapNegBound(rawR, total)
+          case None => c0Idx
+        val hiIdx = hiE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val rawR = fresh("hiraw")
+            out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+            val wrapped = wrapNegBound(rawR, total)
+            if inclusive then
+              val r = fresh("hix1")
+              out.append(s"  $r = arith.addi $wrapped, $c1Idx : index\n")
+              r
+            else wrapped
+          case None =>
+            if inclusive then
+              val r = fresh("hix1")
+              out.append(s"  $r = arith.addi $total, $c1Idx : index\n")
+              r
+            else total
+        val strideIdx = strideE match
+          case Some(e) =>
+            val v = emitExpr(e)
+            val r = fresh("stx")
+            out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+            r
+          case None => c1Idx
+        emitSliceBoundsTrap(loIdx, hiIdx, total, strideIdx, c0Idx, strideE.isDefined)
+        val rawSpan = fresh("span")
+        out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
+        val spanC = fresh("spanc")
+        out.append(s"  $spanC = arith.maxsi $rawSpan, $c0Idx : index\n")
+        val strideM1 = fresh("stm1")
+        out.append(s"  $strideM1 = arith.subi $strideIdx, $c1Idx : index\n")
+        val numer = fresh("num")
+        out.append(s"  $numer = arith.addi $spanC, $strideM1 : index\n")
+        val sz = fresh("asz")
+        out.append(s"  $sz = arith.divui $numer, $strideIdx : index\n")
+        AxisSliceD(loIdx, sz, strideIdx, collapsed = false)
+
+  /** Rank-2 slice with runtime axes — runtime bounds, open-ended
+    * forms, and stride all flow through here. Each axis resolves to
+    * an SSA `(offset, size, stride)` triple via
+    * [[emitAxisSliceDynamic]]; the result type drops collapsed axes
+    * and uses `?` for the rest. The static-bound fast path in
+    * [[emitRank2Slice]] still handles the all-literal case for
+    * tighter IR.
+    */
+  private def emitRank2SliceDynamic(
+      av:    MlirVal,
+      srcTy: MTensor,
+      rowAx: TAxisSpec,
+      colAx: TAxisSpec,
+  ): MlirVal =
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+
+    val rowAxis = emitAxisSliceDynamic(rowAx, srcTy, av.reg, 0, c0Idx, c1Idx)
+    val colAxis = emitAxisSliceDynamic(colAx, srcTy, av.reg, 1, c0Idx, c1Idx)
+
+    val outShape = List(rowAxis, colAxis).filterNot(_.collapsed).map(_ => -1)
+    val outTy    = MTensor(srcTy.elem, outShape)
+
+    val r = fresh("dsl2")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}" +
+        s"[${rowAxis.offset}, ${colAxis.offset}] " +
+        s"[${rowAxis.size}, ${colAxis.size}] " +
+        s"[${rowAxis.stride}, ${colAxis.stride}] : ${srcTy.text} to ${outTy.text}\n",
+    )
+    MlirVal(r, outTy)
+
   /** Rank-1 slice `a[lo..hi]` / `a[lo..=hi]` with literal bounds.
     * Lowers to `tensor.extract_slice` with a static offset / size /
     * unit stride, which produces a freshly-allocated tensor of the
@@ -842,6 +1057,168 @@ class NexMLIRCodegen:
     val r = fresh("sl")
     out.append(s"  $r = tensor.extract_slice ${av.reg}[$offset] [$len] [1] : ${srcTy.text} to ${outTy.text}\n")
     MlirVal(r, outTy)
+
+  /** Rank-1 slice with any combination of open-ended bounds, runtime
+    * bounds, and stride. Always produces `tensor<?xT>`:
+    *
+    *   - Open `lo` (`a[..hi]`) defaults to 0; open `hi` (`a[lo..]`) to
+    *     the source length recovered via `tensor.dim`.
+    *   - `[..= ]` (inclusive) bumps the upper bound by one.
+    *   - Stride defaults to 1; runtime stride uses ceil-divide for the
+    *     output length: `(max(0, span) + stride - 1) / stride`.
+    *
+    * Negative-bound wrap (spec §4.14): `lo`/`hi` < 0 maps to
+    * `bound + len` before the bounds check, so `a[-3..len]` selects
+    * the last three elements. The check itself trips `lo < 0` after
+    * wrap (over-negative input) or `hi > len`, routing through
+    * `nex_trap_slice_oob`. Stride <= 0 also traps.
+    */
+  private def emitRank1SliceDynamic(
+      av:        MlirVal,
+      srcTy:     MTensor,
+      loE:       Option[TExpr],
+      hiE:       Option[TExpr],
+      inclusive: Boolean,
+      strideE:   Option[TExpr],
+  ): MlirVal =
+    val outTy = MTensor(srcTy.elem, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+
+    val srcLenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("srclen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("srclen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val loIdx = loE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val rawR = fresh("loraw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        wrapNegBound(rawR, srcLenIdx)
+      case None => c0Idx
+
+    val hiIdx = hiE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val rawR = fresh("hiraw")
+        out.append(s"  $rawR = arith.index_cast ${v.reg} : i64 to index\n")
+        val wrapped = wrapNegBound(rawR, srcLenIdx)
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $wrapped, $c1Idx : index\n")
+          r
+        else wrapped
+      case None =>
+        if inclusive then
+          val r = fresh("hix1")
+          out.append(s"  $r = arith.addi $srcLenIdx, $c1Idx : index\n")
+          r
+        else srcLenIdx
+
+    val strideIdx = strideE match
+      case Some(e) =>
+        val v = emitExpr(e)
+        val r = fresh("stx")
+        out.append(s"  $r = arith.index_cast ${v.reg} : i64 to index\n")
+        r
+      case None => c1Idx
+
+    emitSliceBoundsTrap(loIdx, hiIdx, srcLenIdx, strideIdx, c0Idx, strideE.isDefined)
+
+    val rawSpan = fresh("span")
+    out.append(s"  $rawSpan = arith.subi $hiIdx, $loIdx : index\n")
+    val spanClamped = fresh("spanc")
+    out.append(s"  $spanClamped = arith.maxsi $rawSpan, $c0Idx : index\n")
+    val strideM1 = fresh("stm1")
+    out.append(s"  $strideM1 = arith.subi $strideIdx, $c1Idx : index\n")
+    val numerator = fresh("num")
+    out.append(s"  $numerator = arith.addi $spanClamped, $strideM1 : index\n")
+    val sliceLen = fresh("slen")
+    out.append(s"  $sliceLen = arith.divui $numerator, $strideIdx : index\n")
+
+    val r = fresh("dsl")
+    out.append(
+      s"  $r = tensor.extract_slice ${av.reg}[$loIdx] [$sliceLen] [$strideIdx] : ${srcTy.text} to ${outTy.text}\n",
+    )
+    MlirVal(r, outTy)
+
+  /** Negative-bound wrap (spec §4.14): if `raw < 0` return `raw + extent`,
+    * otherwise `raw`. Mirrors the LLVM backend's `wrapNegBound`. The
+    * caller's bounds check still runs on the result, so an
+    * over-negative input (e.g. `lo = -10` on a length-3 array)
+    * still trips the `< 0` clause and traps.
+    */
+  private def wrapNegBound(raw: String, extent: String): String =
+    val c0 = fresh("wc0")
+    out.append(s"  $c0 = arith.constant 0 : index\n")
+    val isNeg = fresh("wneg")
+    out.append(s"  $isNeg = arith.cmpi slt, $raw, $c0 : index\n")
+    val wrapped = fresh("wwrap")
+    out.append(s"  $wrapped = arith.addi $raw, $extent : index\n")
+    val out0 = fresh("wout")
+    out.append(s"  $out0 = arith.select $isNeg, $wrapped, $raw : index\n")
+    out0
+
+  /** Emit the rank-1 slice bounds-check trap. Conditions match the LLVM
+    * backend: post-wrap `lo < 0` (over-negative), `hi < lo`, `hi >
+    * srcLen`, plus stride `<= 0` when the slice was user-stride'd.
+    * Branch to `nex_trap_slice_oob` on failure; the function exits.
+    */
+  private def emitSliceBoundsTrap(
+      loIdx:    String,
+      hiIdx:    String,
+      srcLen:   String,
+      stride:   String,
+      c0Idx:    String,
+      hasStride: Boolean,
+  ): Unit =
+    val negLo = fresh("nlo")
+    out.append(s"  $negLo = arith.cmpi slt, $loIdx, $c0Idx : index\n")
+    val hiLtLo = fresh("hlt")
+    out.append(s"  $hiLtLo = arith.cmpi slt, $hiIdx, $loIdx : index\n")
+    val hiBad = fresh("hbad")
+    out.append(s"  $hiBad = arith.cmpi sgt, $hiIdx, $srcLen : index\n")
+    val any01 = fresh("any1")
+    out.append(s"  $any01 = arith.ori $negLo, $hiLtLo : i1\n")
+    val any02 = fresh("any2")
+    out.append(s"  $any02 = arith.ori $any01, $hiBad : i1\n")
+    val any = if hasStride then
+      val sBad = fresh("sbad")
+      out.append(s"  $sBad = arith.cmpi sle, $stride, $c0Idx : index\n")
+      val a = fresh("any")
+      out.append(s"  $a = arith.ori $any02, $sBad : i1\n")
+      a
+    else any02
+    out.append(s"  scf.if $any {\n")
+    out.append(s"    func.call @nex_trap_slice_oob() : () -> ()\n")
+    out.append(s"    scf.yield\n")
+    out.append(s"  }\n")
+
+  /** Axis-index trap for the rank-2 `TAxisIndex` case: after wrap,
+    * `iv < 0` or `iv >= total` routes through `nex_trap_axis_oob`.
+    */
+  private def emitAxisIndexTrap(iv: String, total: String, c0Idx: String): Unit =
+    val neg = fresh("aneg")
+    out.append(s"  $neg = arith.cmpi slt, $iv, $c0Idx : index\n")
+    val ge = fresh("age")
+    out.append(s"  $ge = arith.cmpi sge, $iv, $total : index\n")
+    val bad = fresh("abad")
+    out.append(s"  $bad = arith.ori $neg, $ge : i1\n")
+    out.append(s"  scf.if $bad {\n")
+    out.append(s"    func.call @nex_trap_axis_oob() : () -> ()\n")
+    out.append(s"    scf.yield\n")
+    out.append(s"  }\n")
 
   /** Allocate a stack slot for a `var <sym>` scalar binding and store
     * the initial value. The slot lives in `varSlots` keyed by symbol
@@ -1084,6 +1461,235 @@ class NexMLIRCodegen:
       case Some(v) => env(paramSym.id) = v
       case None    => env.remove(paramSym.id)
     MlirVal(outR, outTy)
+
+  /** `filter(arr, x -> pred)` with an inline one-param predicate. Output
+    * length depends on how many elements satisfy the predicate, so the
+    * result has dynamic shape `tensor<?xT>` and is built in two passes:
+    *
+    *   1. Count matches into an i64 carried as an `scf.for` iter_arg.
+    *   2. Allocate `tensor.empty(%count)` and walk again, inserting each
+    *      matched element at the next write position via `tensor.insert`.
+    *      Both the output tensor and the write cursor are iter_args.
+    *
+    * The predicate body is emitted twice — once per pass — using the
+    * same lambda parameter symbol bound to a fresh per-pass element
+    * extract. Predicates are pure (Nex value-level expressions), so
+    * re-emission is semantically safe.
+    */
+  private def emitFilterInlineLambda(av: MlirVal, srcTy: MTensor, lam: TLambda): MlirVal =
+    val elemT = srcTy.elem
+    val elemS = scalarText(elemT)
+    val outTy = MTensor(elemT, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val c0I64 = fresh("c0i")
+    out.append(s"  $c0I64 = arith.constant 0 : i64\n")
+    val c1I64 = fresh("c1i")
+    out.append(s"  $c1I64 = arith.constant 1 : i64\n")
+
+    val lenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("flen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("flen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val paramSym = lam.params.head
+    val prev     = env.get(paramSym.id)
+
+    val ivPass1   = fresh("fi1")
+    val accName   = fresh("acc")
+    val countOut  = fresh("count")
+    out.append(
+      s"  $countOut = scf.for $ivPass1 = $c0Idx to $lenIdx step $c1Idx iter_args($accName = $c0I64) -> (i64) {\n",
+    )
+    val elt1 = fresh("elt")
+    out.append(s"    $elt1 = tensor.extract ${av.reg}[$ivPass1] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt1, MScalar(elemT))
+    val pred1 = emitExpr(lam.body)
+    val nextAcc = fresh("nacc")
+    out.append(s"    $nextAcc = scf.if ${pred1.reg} -> (i64) {\n")
+    val plus1 = fresh("plus1")
+    out.append(s"      $plus1 = arith.addi $accName, $c1I64 : i64\n")
+    out.append(s"      scf.yield $plus1 : i64\n")
+    out.append("    } else {\n")
+    out.append(s"      scf.yield $accName : i64\n")
+    out.append("    }\n")
+    out.append(s"    scf.yield $nextAcc : i64\n")
+    out.append("  }\n")
+
+    val countIdx = fresh("countidx")
+    out.append(s"  $countIdx = arith.index_cast $countOut : i64 to index\n")
+    val outInit  = emitTensorEmpty(outTy, List(countIdx))
+
+    val ivPass2  = fresh("fi2")
+    val outIter  = fresh("oit")
+    val wposIter = fresh("wp")
+    val resPair  = fresh("res")
+    out.append(
+      s"  $resPair:2 = scf.for $ivPass2 = $c0Idx to $lenIdx step $c1Idx " +
+        s"iter_args($outIter = $outInit, $wposIter = $c0Idx) -> (${outTy.text}, index) {\n",
+    )
+    val elt2 = fresh("elt")
+    out.append(s"    $elt2 = tensor.extract ${av.reg}[$ivPass2] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt2, MScalar(elemT))
+    val pred2 = emitExpr(lam.body)
+    val nrPair = fresh("nr")
+    out.append(s"    $nrPair:2 = scf.if ${pred2.reg} -> (${outTy.text}, index) {\n")
+    val inserted = fresh("ins")
+    out.append(s"      $inserted = tensor.insert $elt2 into $outIter[$wposIter] : ${outTy.text}\n")
+    val nwpos = fresh("nwp")
+    out.append(s"      $nwpos = arith.addi $wposIter, $c1Idx : index\n")
+    out.append(s"      scf.yield $inserted, $nwpos : ${outTy.text}, index\n")
+    out.append("    } else {\n")
+    out.append(s"      scf.yield $outIter, $wposIter : ${outTy.text}, index\n")
+    out.append("    }\n")
+    out.append(s"    scf.yield $nrPair#0, $nrPair#1 : ${outTy.text}, index\n")
+    out.append("  }\n")
+
+    prev match
+      case Some(v) => env(paramSym.id) = v
+      case None    => env.remove(paramSym.id)
+
+    MlirVal(s"$resPair#0", outTy)
+
+  /** `flatMap(arr, x -> [...])` on rank-1. The lambda returns a
+    * rank-1 array each call; the result concatenates them. Output
+    * length is the sum of inner lengths, so the codegen mirrors
+    * [[emitFilterInlineLambda]] with an extra dimension of nesting:
+    *
+    *   1. Pass 1 walks the input, emits the lambda body once per
+    *      iteration, reads the inner tensor's first dim via
+    *      `tensor.dim`, and accumulates the i64 sum.
+    *   2. Pass 2 allocates `tensor<?xU>` of that size and walks
+    *      again. For each iteration it emits the lambda body a
+    *      second time, then runs a nested `scf.for` over the inner
+    *      tensor that copies element-by-element into the output at
+    *      `wpos + j`. The output tensor flows through the nested
+    *      loop as an iter_arg; `wpos` advances by the inner length
+    *      after each outer iteration.
+    *
+    * Two re-emissions of the lambda body (vs. one for filter) is
+    * accepted: lambda bodies are pure Nex value-level expressions.
+    */
+  private def emitFlatMapInlineLambda(
+      av:      MlirVal,
+      srcTy:   MTensor,
+      lam:     TLambda,
+      outElem: Type,
+  ): MlirVal =
+    val srcElemT = srcTy.elem
+    val outTy    = MTensor(outElem, List(-1))
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+    val c0I64 = fresh("c0i")
+    out.append(s"  $c0I64 = arith.constant 0 : i64\n")
+
+    val lenIdx =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("flen")
+        out.append(s"  $r = arith.constant ${srcTy.shape.head} : index\n")
+        r
+      else
+        val axisR = fresh("axis")
+        out.append(s"  $axisR = arith.constant 0 : index\n")
+        val r = fresh("flen")
+        out.append(s"  $r = tensor.dim ${av.reg}, $axisR : ${srcTy.text}\n")
+        r
+
+    val paramSym = lam.params.head
+    val prev     = env.get(paramSym.id)
+
+    val ivPass1  = fresh("fi1")
+    val accName  = fresh("acc")
+    val totalOut = fresh("total")
+    out.append(
+      s"  $totalOut = scf.for $ivPass1 = $c0Idx to $lenIdx step $c1Idx iter_args($accName = $c0I64) -> (i64) {\n",
+    )
+    val elt1 = fresh("elt")
+    out.append(s"    $elt1 = tensor.extract ${av.reg}[$ivPass1] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt1, MScalar(srcElemT))
+    val inner1 = emitExpr(lam.body)
+    val innerTy1 = inner1.ty match
+      case t @ MTensor(_, List(_)) => t
+      case other =>
+        notYet(s"flatMap lambda body did not produce rank-1 tensor: $other")
+    val innerLenIdx1 = fresh("ilen")
+    if innerTy1.shape.head >= 0 then
+      out.append(s"    $innerLenIdx1 = arith.constant ${innerTy1.shape.head} : index\n")
+    else
+      val iaxis = fresh("iaxis")
+      out.append(s"    $iaxis = arith.constant 0 : index\n")
+      out.append(s"    $innerLenIdx1 = tensor.dim ${inner1.reg}, $iaxis : ${innerTy1.text}\n")
+    val innerLenI64 = fresh("ileni")
+    out.append(s"    $innerLenI64 = arith.index_castui $innerLenIdx1 : index to i64\n")
+    val newAcc = fresh("nacc")
+    out.append(s"    $newAcc = arith.addi $accName, $innerLenI64 : i64\n")
+    out.append(s"    scf.yield $newAcc : i64\n")
+    out.append("  }\n")
+
+    val totalIdx = fresh("totalidx")
+    out.append(s"  $totalIdx = arith.index_cast $totalOut : i64 to index\n")
+    val outInit  = emitTensorEmpty(outTy, List(totalIdx))
+
+    val ivPass2  = fresh("fi2")
+    val outIter  = fresh("oit")
+    val wposIter = fresh("wp")
+    val resPair  = fresh("res")
+    out.append(
+      s"  $resPair:2 = scf.for $ivPass2 = $c0Idx to $lenIdx step $c1Idx " +
+        s"iter_args($outIter = $outInit, $wposIter = $c0Idx) -> (${outTy.text}, index) {\n",
+    )
+    val elt2 = fresh("elt")
+    out.append(s"    $elt2 = tensor.extract ${av.reg}[$ivPass2] : ${srcTy.text}\n")
+    env(paramSym.id) = MlirVal(elt2, MScalar(srcElemT))
+    val inner2 = emitExpr(lam.body)
+    val innerTy2 = inner2.ty.asInstanceOf[MTensor]
+    val innerLenIdx2 = fresh("ilen2")
+    if innerTy2.shape.head >= 0 then
+      out.append(s"    $innerLenIdx2 = arith.constant ${innerTy2.shape.head} : index\n")
+    else
+      val iaxis = fresh("iaxis2")
+      out.append(s"    $iaxis = arith.constant 0 : index\n")
+      out.append(s"    $innerLenIdx2 = tensor.dim ${inner2.reg}, $iaxis : ${innerTy2.text}\n")
+
+    val ivInner  = fresh("ij")
+    val outInner = fresh("oin")
+    val outAfter = fresh("oaft")
+    out.append(
+      s"    $outAfter = scf.for $ivInner = $c0Idx to $innerLenIdx2 step $c1Idx " +
+        s"iter_args($outInner = $outIter) -> (${outTy.text}) {\n",
+    )
+    val v = fresh("v")
+    out.append(s"      $v = tensor.extract ${inner2.reg}[$ivInner] : ${innerTy2.text}\n")
+    val destIdx = fresh("dst")
+    out.append(s"      $destIdx = arith.addi $wposIter, $ivInner : index\n")
+    val ins = fresh("ins")
+    out.append(s"      $ins = tensor.insert $v into $outInner[$destIdx] : ${outTy.text}\n")
+    out.append(s"      scf.yield $ins : ${outTy.text}\n")
+    out.append("    }\n")
+
+    val newWpos = fresh("nwp")
+    out.append(s"    $newWpos = arith.addi $wposIter, $innerLenIdx2 : index\n")
+    out.append(s"    scf.yield $outAfter, $newWpos : ${outTy.text}, index\n")
+    out.append("  }\n")
+
+    prev match
+      case Some(v) => env(paramSym.id) = v
+      case None    => env.remove(paramSym.id)
+
+    MlirVal(s"$resPair#0", outTy)
 
   /** `reduce(arr, init, lambda)` with an inline two-param lambda.
     * Nex spec §10.4: the lambda is `(acc, x) -> body`. Lowers to
