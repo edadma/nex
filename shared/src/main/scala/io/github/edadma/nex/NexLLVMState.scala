@@ -219,6 +219,7 @@ protected trait NexLLVMState:
     case TyBool          => "bool"
     case TyString        => "string"
     case TyUnit          => "unit"
+    case TyByteArray     => "bytes"
     case TyArray(e, 1)   => s"array_${mangleTypeForLLVM(e)}"
     case TyArray(e, r)   => s"array${r}_${mangleTypeForLLVM(e)}"
     case TyTuple(es)     => es.map(mangleTypeForLLVM).mkString("tup_", "_", "")
@@ -571,6 +572,7 @@ protected trait NexLLVMState:
     case TyUnit         => "void"
     case TyString       => "ptr"
     case TyComplex      => "{ double, double }"
+    case TyByteArray    => "ptr"
     case TyArray(_,_)   => "ptr"
     case TyTuple(elems)        => elems.map(llvmType).mkString("{ ", ", ", " }")
     case TyStruct(_, fields)   => fields.map(f => llvmType(f._2)).mkString("{ ", ", ", " }")

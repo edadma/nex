@@ -710,6 +710,9 @@ class NexElaborator
       case NamedType("complex64") => TyComplex
       case NamedType("unit")      => TyUnit
       case NamedType("string")    => TyString
+      case NamedType("byte")      =>
+        err("`byte` is not a scalar type — use `[byte]` for a byte buffer; bytes widen to `integer` when read", t)
+        TyUnknown
       case NamedType(other)     =>
         // Read the fresh symbol from the table — the symbol stored in
         // scope.bindings is the snapshot from Pass A and may be stale
@@ -758,10 +761,14 @@ class NexElaborator
           case _ =>
             err(s"unknown type `$name`", t); TyUnknown
       case ArrayType(inner) =>
-        // Detect rank-2 by recursive shape (only rank 1 and 2 in v0).
+        // `[byte]` is a dedicated buffer type, not a `TyArray(TyByte, 1)`
+        // (no scalar `TyByte` exists). Recognized at this rank-1 layer so
+        // `[[byte]]` errors at the deeper rank-2 path via the byte-scalar
+        // diagnostic above.
         inner match
-          case ArrayType(deep) => TyArray(typeOf(deep), 2)
-          case _               => TyArray(typeOf(inner), 1)
+          case NamedType("byte") => TyByteArray
+          case ArrayType(deep)   => TyArray(typeOf(deep), 2)
+          case _                 => TyArray(typeOf(inner), 1)
       case TupleType(elems) => TyTuple(elems.map(typeOf))
       case FuncType(params, ret) =>
         TyFunc(params.map(p => (typeOf(p), ParamMode.Read)), typeOf(ret))

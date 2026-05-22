@@ -25,6 +25,14 @@ case object TyComplex extends Type
 case object TyUnit    extends Type
 case object TyString  extends Type
 
+/** Packed byte buffer — `[byte]` in source. A storage type for file I/O
+  * and image processing, not a participant in element-wise arithmetic
+  * or fusion. There is no scalar `byte`: indexed read widens to
+  * `integer` in 0..255, indexed write traps when the value is outside
+  * that range. Slicing copies. See §3.x and §10.4 of the spec.
+  */
+case object TyByteArray extends Type
+
 /** Rank-1 or rank-2 array. `rank` is `1` or `2` in v0; higher ranks are
   * deferred (§11).
   */

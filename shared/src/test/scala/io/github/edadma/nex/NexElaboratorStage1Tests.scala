@@ -1086,3 +1086,26 @@ class NexElaboratorStage1Tests extends AnyWordSpec with Matchers:
       tp.decls.collect { case e: TEnumDecl   => e.sym.name } should contain ("Color")
     }
   }
+
+  // ==========================================================================
+  // [byte] buffer type
+  // ==========================================================================
+
+  "[byte] buffer type" should {
+    "resolve `[byte]` in a function parameter annotation" in {
+      val tp = elab("""
+        |def f(b: [byte]): integer = 0
+        |def main() = print(0)
+      """.stripMargin)
+      val f = tp.decls.collectFirst { case d: TFunDecl if d.sym.name == "f" => d }.get
+      f.params.head.tpe shouldBe TyByteArray
+    }
+
+    "reject scalar `byte` as a type" in {
+      val errs = elabExpect("""
+        |def f(b: byte): integer = 0
+        |def main() = print(0)
+      """.stripMargin)
+      errs.exists(_.contains("`byte` is not a scalar type")) shouldBe true
+    }
+  }

@@ -187,6 +187,7 @@ class NexMonomorphize(symbols: SymbolTable):
     case TyBool           => "bool"
     case TyString         => "string"
     case TyUnit           => "unit"
+    case TyByteArray      => "bytes"
     case TyArray(e, 1)    => s"array_${mangleType(e)}"
     case TyArray(e, r)    => s"array${r}_${mangleType(e)}"
     case TyTuple(es)      => es.map(mangleType).mkString("tup_", "_", "")
