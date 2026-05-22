@@ -69,8 +69,9 @@ object LlvmBackend extends Backend:
       val binFile = tmpDir / "main"
       srcFile.writeText(src)
 
-      val tp = parseAndElab(src)
-      val ir = new NexLLVMCodegen().compile(tp)
+      val tp    = parseAndElab(src)
+      val fused = new NexFusion(tp.symbols).fuseProgram(tp)
+      val ir    = new NexLLVMCodegen().compile(fused)
       llFile.writeText(ir)
 
       val (rc, out) = runProc(Seq(
@@ -137,6 +138,7 @@ object MlirBackend extends Backend:
       val rtFile      = tmpDir / "mlir_runtime.c"
       val binFile     = tmpDir / "main"
 
+      // MLIR doesn't take fused input yet (see Cli.doCompileMlir).
       val tp = parseAndElab(src)
       val ir = new NexMLIRCodegen().compile(tp)
       mlirFile.writeText(ir)
