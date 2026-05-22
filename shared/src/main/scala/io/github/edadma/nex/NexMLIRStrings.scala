@@ -113,8 +113,48 @@ trait NexMLIRStrings:
         v.reg
       case mt: MTuple =>
         emitTupleToString(v.reg, mt)
+      case MComplex =>
+        emitComplexToString(v.reg)
       case other =>
         notYet(s"value-to-string for $other")
+
+  /** Format a complex value `{ re, im }` as `<re><±><|im|>i` into a
+    * fresh heap string descriptor. Mirrors the LLVM backend's
+    * `emitValueToStringComplex` one-for-one: emit `re`, pick `+`
+    * or `-` by `sign(im)`, take `|im|` via a branchless `negf` +
+    * `select`, emit `|im|`, append `i`. Each `nex_str_concat`
+    * operand is `dec`'d after.
+    */
+  protected def emitComplexToString(reg: String): String =
+    val (re, im) = emitUnpackComplex(reg)
+    val zero  = fresh("c2s_zero")
+    val isNeg = fresh("c2s_neg")
+    out.append(s"  $zero = arith.constant 0.000000e+00 : f64\n")
+    out.append(s"  $isNeg = arith.cmpf olt, $im, $zero : f64\n")
+    val negIm = fresh("c2s_neg_im")
+    out.append(s"  $negIm = arith.negf $im : f64\n")
+    val absIm = fresh("c2s_absim")
+    out.append(s"  $absIm = arith.select $isNeg, $negIm, $im : f64\n")
+    val reStr  = fresh("c2s_re")
+    out.append(s"  $reStr = func.call @nex_str_from_f64($re) : (f64) -> i64\n")
+    val imStr  = fresh("c2s_im")
+    out.append(s"  $imStr = func.call @nex_str_from_f64($absIm) : (f64) -> i64\n")
+    val plusS  = emitStringLiteral("+")
+    val minusS = emitStringLiteral("-")
+    val signS  = fresh("c2s_sign")
+    out.append(s"  $signS = arith.select $isNeg, $minusS, $plusS : i64\n")
+    val iSfx   = emitStringLiteral("i")
+    def concatInto(acc: String, next: String): String =
+      val r = fresh("c2sc")
+      out.append(s"  $r = func.call @nex_str_concat($acc, $next) : (i64, i64) -> i64\n")
+      out.append(s"  func.call @nex_str_dec($acc) : (i64) -> ()\n")
+      out.append(s"  func.call @nex_str_dec($next) : (i64) -> ()\n")
+      r
+    var acc = reStr
+    acc = concatInto(acc, signS)
+    acc = concatInto(acc, imStr)
+    acc = concatInto(acc, iSfx)
+    acc
 
   /** Format a tuple value as `(e0, e1, ..., eN-1)` into a heap string
     * descriptor. Extracts each slot with `llvm.extractvalue`, converts

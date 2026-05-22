@@ -190,6 +190,7 @@ object NexProgramCorpus:
       "complex from `i`",
       """def main() = print(3 + 4i)""",
       "3.0+4.0i\n",
+      mlir = true,
     ),
     Case(
       "scalar arithmetic",
@@ -201,6 +202,7 @@ object NexProgramCorpus:
         |  print(a * b)
       """.stripMargin,
       "2.0+0.0i\n",
+      mlir = true,
     ),
     Case(
       "scalar arithmetic",
@@ -2762,6 +2764,7 @@ object NexProgramCorpus:
       "sqrt of negative complex returns the principal imaginary root",
       """def main() = print(sqrt(-4.0 + 0i))""",
       "0.0+2.0i\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -2775,12 +2778,14 @@ object NexProgramCorpus:
       "exp(complex) — exp(0 + 0i) = 1 + 0i exactly",
       """def main() = print(exp(0.0 + 0i))""",
       "1.0+0.0i\n",
+      mlir = true,
     ),
     Case(
       "prelude",
       "sqrt(complex) — sqrt(-1 + 0i) = 0 + i",
       """def main() = print(sqrt(-1.0 + 0i))""",
       "0.0+1.0i\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -3943,6 +3948,7 @@ object NexProgramCorpus:
         |  print(s"z1.re = ${z1.re}, z1.im = ${z1.im}")
       """.stripMargin,
       "z1 + z2 = 4.0+1.0i\nz1 * z2 = 5.0+5.0i\n|z1| = 2.23606797749979\nz1.re = 1.0, z1.im = 2.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -4903,6 +4909,7 @@ object NexProgramCorpus:
         |  print(same(1.0 + 2.0i, 3.0 + 4.0i))
       """.stripMargin,
       "true\nfalse\n",
+      mlir = true,
     ),
     Case(
       "user generics",

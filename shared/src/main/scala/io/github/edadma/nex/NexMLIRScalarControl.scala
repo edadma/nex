@@ -440,6 +440,120 @@ trait NexMLIRScalarControl:
     out.append(s"  $r = arith.sitofp ${v.reg} : i64 to f64\n")
     MlirVal(r, MScalar(TyReal))
 
+  /** Pack a `(re, im)` pair into an `MComplex` SSA value via
+    * `llvm.mlir.undef` + two `llvm.insertvalue`. Mirrors the LLVM
+    * backend's `packComplex` helper one-for-one.
+    */
+  protected def emitPackComplex(reReg: String, imReg: String): MlirVal =
+    val u  = fresh("cundef")
+    val c0 = fresh("cmk_re")
+    val c1 = fresh("cmk_im")
+    out.append(s"  $u = llvm.mlir.undef : !llvm.struct<(f64, f64)>\n")
+    out.append(s"  $c0 = llvm.insertvalue $reReg, $u[0] : !llvm.struct<(f64, f64)>\n")
+    out.append(s"  $c1 = llvm.insertvalue $imReg, $c0[1] : !llvm.struct<(f64, f64)>\n")
+    MlirVal(c1, MComplex)
+
+  /** Unpack an `MComplex` SSA value into its `(re, im)` f64 components.
+    */
+  protected def emitUnpackComplex(reg: String): (String, String) =
+    val re = fresh("cre")
+    val im = fresh("cim")
+    out.append(s"  $re = llvm.extractvalue $reg[0] : !llvm.struct<(f64, f64)>\n")
+    out.append(s"  $im = llvm.extractvalue $reg[1] : !llvm.struct<(f64, f64)>\n")
+    (re, im)
+
+  /** Lift an arbitrary numeric `MlirVal` into a `(re, im)` f64 pair so
+    * the per-component complex arith formulas can run uniformly. An
+    * `MComplex` operand extracts both components; an `MScalar(TyReal)`
+    * uses the value as `re` and a fresh `0.0` constant as `im`; an
+    * `MScalar(TyInteger)` first lifts to f64. Mirrors the LLVM
+    * backend's `toComplex` helper.
+    */
+  protected def liftToComplex(v: MlirVal): (String, String) = v.ty match
+    case MComplex             => emitUnpackComplex(v.reg)
+    case MScalar(TyReal)      =>
+      val z = fresh("c_im0")
+      out.append(s"  $z = arith.constant 0.000000e+00 : f64\n")
+      (v.reg, z)
+    case MScalar(TyInteger)   =>
+      val r = promoteIntToReal(v)
+      val z = fresh("c_im0")
+      out.append(s"  $z = arith.constant 0.000000e+00 : f64\n")
+      (r.reg, z)
+    case other                =>
+      notYet(s"complex promotion from $other"); (v.reg, v.reg)
+
+  /** Per-component complex arithmetic. Caller has already split both
+    * operands into `(re, im)` pairs via [[liftToComplex]]. Returns a
+    * fresh packed `MComplex` value.
+    *
+    * Division traps on zero denominator via `nex_trap_with` carrying
+    * the same "complex division by zero" message the LLVM backend
+    * uses, so test-runner stdout parity holds.
+    */
+  protected def emitComplexArith(op: String, lre: String, lim: String, rre: String, rim: String): MlirVal =
+    op match
+      case "+" =>
+        val re = fresh("cadd_re")
+        val im = fresh("cadd_im")
+        out.append(s"  $re = arith.addf $lre, $rre : f64\n")
+        out.append(s"  $im = arith.addf $lim, $rim : f64\n")
+        emitPackComplex(re, im)
+      case "-" =>
+        val re = fresh("csub_re")
+        val im = fresh("csub_im")
+        out.append(s"  $re = arith.subf $lre, $rre : f64\n")
+        out.append(s"  $im = arith.subf $lim, $rim : f64\n")
+        emitPackComplex(re, im)
+      case "*" =>
+        // (a + bi)(c + di) = (ac - bd) + (ad + bc)i
+        val ac = fresh("cmul_ac"); val bd = fresh("cmul_bd")
+        val ad = fresh("cmul_ad"); val bc = fresh("cmul_bc")
+        val re = fresh("cmul_re"); val im = fresh("cmul_im")
+        out.append(s"  $ac = arith.mulf $lre, $rre : f64\n")
+        out.append(s"  $bd = arith.mulf $lim, $rim : f64\n")
+        out.append(s"  $ad = arith.mulf $lre, $rim : f64\n")
+        out.append(s"  $bc = arith.mulf $lim, $rre : f64\n")
+        out.append(s"  $re = arith.subf $ac, $bd : f64\n")
+        out.append(s"  $im = arith.addf $ad, $bc : f64\n")
+        emitPackComplex(re, im)
+      case "/" =>
+        // (a + bi) / (c + di) = ((ac + bd) + (bc - ad)i) / (c² + d²)
+        val cc  = fresh("cdiv_cc")
+        val dd  = fresh("cdiv_dd")
+        val den = fresh("cdiv_den")
+        out.append(s"  $cc = arith.mulf $rre, $rre : f64\n")
+        out.append(s"  $dd = arith.mulf $rim, $rim : f64\n")
+        out.append(s"  $den = arith.addf $cc, $dd : f64\n")
+        // Trap on zero denominator to match interpreter / LLVM behaviour.
+        val zero  = fresh("cdz_zero")
+        val isZ   = fresh("cdz_is0")
+        out.append(s"  $zero = arith.constant 0.000000e+00 : f64\n")
+        out.append(s"  $isZ = arith.cmpf oeq, $den, $zero : f64\n")
+        out.append(s"  scf.if $isZ {\n")
+        out.append(s"    func.call @nex_trap_complex_div_zero() : () -> ()\n")
+        out.append(s"    scf.yield\n")
+        out.append(s"  }\n")
+        val ac   = fresh("cdiv_ac")
+        val bd   = fresh("cdiv_bd")
+        val bc   = fresh("cdiv_bc")
+        val ad   = fresh("cdiv_ad")
+        val rnum = fresh("cdiv_rnum")
+        val inum = fresh("cdiv_inum")
+        val re   = fresh("cdiv_re")
+        val im   = fresh("cdiv_im")
+        out.append(s"  $ac = arith.mulf $lre, $rre : f64\n")
+        out.append(s"  $bd = arith.mulf $lim, $rim : f64\n")
+        out.append(s"  $bc = arith.mulf $lim, $rre : f64\n")
+        out.append(s"  $ad = arith.mulf $lre, $rim : f64\n")
+        out.append(s"  $rnum = arith.addf $ac, $bd : f64\n")
+        out.append(s"  $inum = arith.subf $bc, $ad : f64\n")
+        out.append(s"  $re = arith.divf $rnum, $den : f64\n")
+        out.append(s"  $im = arith.divf $inum, $den : f64\n")
+        emitPackComplex(re, im)
+      case other =>
+        notYet(s"complex `$other` op")
+
   protected def isComparisonOp(op: String): Boolean =
     op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
 
@@ -711,8 +825,65 @@ trait NexMLIRScalarControl:
       val r = fresh("abs")
       out.append(s"  $r = arith.select $cmp, $neg, ${v.reg} : f64\n")
       MlirVal(r, MScalar(TyReal))
+    case MComplex =>
+      // |z| = sqrt(re² + im²). Routes through the libm `sqrt` bridge
+      // already declared in the prologue scan (any complex prelude def
+      // registered with `tp.allDecls` walked it in).
+      val (re, im) = emitUnpackComplex(v.reg)
+      val rr   = fresh("absc_rr")
+      val ii   = fresh("absc_ii")
+      val ssum = fresh("absc_sum")
+      val r    = fresh("absc")
+      out.append(s"  $rr = arith.mulf $re, $re : f64\n")
+      out.append(s"  $ii = arith.mulf $im, $im : f64\n")
+      out.append(s"  $ssum = arith.addf $rr, $ii : f64\n")
+      out.append(s"  $r = func.call @sqrt($ssum) : (f64) -> f64\n")
+      MlirVal(r, MScalar(TyReal))
     case other =>
       notYet(s"abs of $other")
+
+  /** Scalar `sign(x)` returns `-1`, `0`, or `+1`. Branchless via two
+    * comparisons and a `select` chain (`pos ? 1 : (neg ? -1 : 0)`).
+    * Integer args produce an integer result; real args produce a real
+    * result (the prelude binds them as two separate name-based
+    * overloads). Used by the prelude's source-defined `sqrt(complex)`
+    * to pick the imaginary part's sign.
+    */
+  protected def emitScalarSign(v: MlirVal): MlirVal = v.ty match
+    case MScalar(TyInteger) =>
+      val zero  = fresh("z")
+      val one   = fresh("p1")
+      val negOne = fresh("n1")
+      val pos   = fresh("pos")
+      val neg   = fresh("neg")
+      val mid   = fresh("midi")
+      val r     = fresh("sgn")
+      out.append(s"  $zero = arith.constant 0 : i64\n")
+      out.append(s"  $one = arith.constant 1 : i64\n")
+      out.append(s"  $negOne = arith.constant -1 : i64\n")
+      out.append(s"  $pos = arith.cmpi sgt, ${v.reg}, $zero : i64\n")
+      out.append(s"  $neg = arith.cmpi slt, ${v.reg}, $zero : i64\n")
+      out.append(s"  $mid = arith.select $neg, $negOne, $zero : i64\n")
+      out.append(s"  $r = arith.select $pos, $one, $mid : i64\n")
+      MlirVal(r, MScalar(TyInteger))
+    case MScalar(TyReal) =>
+      val zero  = fresh("z")
+      val one   = fresh("p1")
+      val negOne = fresh("n1")
+      val pos   = fresh("pos")
+      val neg   = fresh("neg")
+      val mid   = fresh("midr")
+      val r     = fresh("sgn")
+      out.append(s"  $zero = arith.constant 0.000000e+00 : f64\n")
+      out.append(s"  $one = arith.constant 1.000000e+00 : f64\n")
+      out.append(s"  $negOne = arith.constant -1.000000e+00 : f64\n")
+      out.append(s"  $pos = arith.cmpf ogt, ${v.reg}, $zero : f64\n")
+      out.append(s"  $neg = arith.cmpf olt, ${v.reg}, $zero : f64\n")
+      out.append(s"  $mid = arith.select $neg, $negOne, $zero : f64\n")
+      out.append(s"  $r = arith.select $pos, $one, $mid : f64\n")
+      MlirVal(r, MScalar(TyReal))
+    case other =>
+      notYet(s"sign of $other")
 
 
   /** Convert a Nex elaborator-level `Type` to the codegen's
@@ -732,6 +903,7 @@ trait NexMLIRScalarControl:
     case TyInteger                                                => Some(MScalar(TyInteger))
     case TyReal                                                   => Some(MScalar(TyReal))
     case TyBool                                                   => Some(MScalar(TyBool))
+    case TyComplex                                                => Some(MComplex)
     case TyString                                                 => Some(MString)
     case TyArray(elem, 1) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1)))
     case TyArray(elem, 2) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1, -1)))
