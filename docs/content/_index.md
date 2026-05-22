@@ -10,6 +10,8 @@ summary: AOT-compiled. Fortran's heritage, modern syntax. Built-in complex numbe
 
 Nex is shaped after modern Fortran: a numerical-computing-first language with array operations as the default, IEEE 754 throughout, AOT compilation, and predictable performance. It updates the surface syntax to something modern (Scala 3-style indentation, expression-oriented control flow, math-flavored juxtaposition like `2pi` and `4a*c`) without giving up Fortran's strengths.
 
+A small example: vector normalization, $\hat v = v / \lVert v \rVert$ with $\lVert v \rVert = \sqrt{\sum_i v_i^2}$, reads back as one line per term in the formula.
+
 ```nex
 def normalize(v: [real]) =
   val mag = sqrt(sum(v * v))

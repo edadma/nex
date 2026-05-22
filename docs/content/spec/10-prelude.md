@@ -84,6 +84,17 @@ enumerate(a: [T]): [(integer, T)]
 zip(a: [T], b: [U]): [(T, U)]
 ```
 
+**Definitions.** Indices run $i = 0, \ldots, n-1$ where $n = $ `length(a)`.
+
+- `sum(a)` $= \sum_i a_i$ and `product(a)` $= \prod_i a_i$.
+- `min(a)` $= \min_i a_i$ and `max(a)` $= \max_i a_i$.
+- `dot(a, b)` $= \sum_i a_i\, b_i$ — `length(a)` must equal `length(b)`; mismatch traps.
+- `map(a, f)[i]` $= f(a_i)$.
+- `filter(a, p)` keeps each $a_i$ for which $p(a_i)$ is `true`, preserving the original order.
+- `reduce(a, z, f)` $= f(\ldots f(f(z, a_0), a_1) \ldots, a_{n-1})$ — left fold seeded with $z$.
+- `range(lo, hi)` $= [lo,\; lo+1, \ldots, hi-1]$ — exclusive upper; empty if $hi \le lo$.
+- `enumerate(a)[i]` $= (i, a_i)$ and `zip(a, b)[i]` $= (a_i, b_i)$ — `zip` truncates to $\min(\text{length}(a), \text{length}(b))$.
+
 **Calling convention.** All the higher-order array functions
 (`map` / `flatMap` / `reduce` / `filter`) and the rank-1 accessors
 (`length` / `sum` / `product` / `dot` / `enumerate` / `zip`)
@@ -120,6 +131,17 @@ sum(m: [[T]]): T                        // sum over all elements
 sum_axis(m: [[T]], axis: integer): [T]  // axis=0 → per-column; axis=1 → per-row
 map(m: [[T]], f: T -> U): [[U]]         // element-wise
 ```
+
+**Definitions.** For a matrix $M$ with row index $i = 0, \ldots, r-1$ and column index $j = 0, \ldots, c-1$ where $(r, c) = $ `shape(M)`:
+
+- `transpose(M)[i, j]` $= M_{j i}$ — an $r \times c$ matrix becomes $c \times r$.
+- `matmul(A, B)[i, j]` $= \sum_k A_{i k}\, B_{k j}$ — also written `A @ B`; `cols(A)` must equal `rows(B)`.
+- `diag(d)[i, j]` $= d_i$ if $i = j$, else $0$ — an $n \times n$ matrix from a length-$n$ vector.
+- `sum(M)` $= \sum_{i, j} M_{i j}$ — total over every element.
+- `sum_axis(M, 0)[j]` $= \sum_i M_{i j}$ — column sums; result length `cols(M)`.
+- `sum_axis(M, 1)[i]` $= \sum_j M_{i j}$ — row sums; result length `rows(M)`.
+- `map(M, f)[i, j]` $= f(M_{i j})$ — element-wise; shape preserved.
+- `flatten(M)[k]` $= M_{k \bmod r,\; k \div r}$ and `reshape(a, r, c)[i, j]` $= a[j \cdot r + i]$ — both follow the column-major storage convention from [§3.3](/spec/03-types/#33-array-types).
 
 These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. The user-facing surfaces for the same shape are generic functions ([§6.10](/spec/06-functions/#610-generic-functions)) and generic structs / enums ([§3.6](/spec/03-types/#36-generic-structs), [§3.8](/spec/03-types/#38-generic-enums)).
 
@@ -165,7 +187,17 @@ print(length(v))            // 3
 print(sum(v))               // 99 + 30 + 40 = 169
 ```
 
-`a.view(r)` returns a non-copying borrow into `a` covering the index range `r` (exclusive `lo..hi` or inclusive `lo..=hi`; negative bounds wrap from the end). Reads through the view see the source's current contents; writes (`v[i] = x`) update the source. Every `[T]` prelude function (`sum`, `length`, `map`, `dot`, …) accepts a view transparently. View-of-view collapses to a window into the original source — no chains. An out-of-bounds range traps.
+`a.view(r)` returns a non-copying borrow into `a` covering the index range `r` (exclusive `lo..hi` or inclusive `lo..=hi`; negative bounds wrap from the end). Reads through the view see the source's current contents; writes (`v[i] = x`) update the source. Every `[T]` prelude function (`sum`, `length`, `map`, `dot`, …) accepts a view transparently. An out-of-bounds range traps.
+
+A 3-arg form `a.view(lo..hi, k)` borrows every `k`-th element of the window:
+
+```nex
+val big    = [10, 20, 30, 40, 50, 60, 70, 80]
+val every2 = big.view(0..8, 2)      // [10, 30, 50, 70]
+val every3 = big.view(1..8, 3)      // [20, 50, 80]
+```
+
+`k` must be a positive integer; non-positive strides trap. View-of-view composes strides — `every2.view(0..4, 2)` borrows every 4th element of `big` — and the contiguous 2-arg form is the special case `k = 1`.
 
 A rank-2 matrix exposes the same `view` form for a contiguous row range:
 
@@ -177,9 +209,19 @@ print(rows(v))              // 2
 print(transpose(v))         // works on a view
 ```
 
-Row-major layout makes any row range contiguous in memory, so the rank-2 view shares the same descriptor mechanism as rank-1 — `rows`, `cols`, `shape`, `transpose`, `sum`, `sum_axis`, element indexing, and row indexing all accept a row-range view without copying.
+Row-major layout makes any row range contiguous in memory, so a row-range view shares the same flat descriptor mechanism as rank-1 — `rows`, `cols`, `shape`, `transpose`, `sum`, `sum_axis`, element indexing, and row indexing all accept a row-range view without copying.
 
-Spec §4.14 — `a[lo..hi]` allocates a fresh array and copies elements in. `a.view(lo..hi)` is the alternative for places where copying is wasteful: in-place algorithms (FFT, row pivoting), passing windows to reduction kernels, or working on a sub-range without changing the source. Rank-2 sub-rectangle views (`m.view(rowLo..rowHi, colLo..colHi)`) require a stride field in the descriptor and are deferred.
+A 3-arg form `m.view(rRange, cRange)` borrows a non-contiguous sub-matrix:
+
+```nex
+val sub = m.view(1..3, 0..2)        // [[4, 5], [7, 8]]   — 2×2 window
+sub[0, 1] = 99                      // writes through: m[1, 1] is now 99
+transpose(sub)                      // rank-2 ops work over the gap
+```
+
+The visible rows have gaps in the underlying buffer; the descriptor carries an explicit row-stride field so flat iteration (`sum`, `map`, `transpose`, `matmul`, …) decomposes the linear index back into `(r, c)` and picks up the right elements across the gap. The rank-1 and rank-2 3-arg forms disambiguate on the 3rd argument's shape — an integer is a stride (rank-1), a range is a column window (rank-2).
+
+Spec §4.14 — `a[lo..hi]` allocates a fresh array and copies elements in. `a.view(...)` is the alternative for places where copying is wasteful: in-place algorithms (FFT, row pivoting), passing windows to reduction kernels, or working on a sub-range without changing the source.
 
 ## 10.6 I/O
 

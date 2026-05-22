@@ -256,6 +256,13 @@ var src = [10, 20, 30, 40, 50]
 val win = src.view(1..4)             // borrows src[1..4] — [20, 30, 40]
 win[0] = 99                          // writes through: src is [10, 99, 30, 40, 50]
 sum(win)                             // 99 + 30 + 40 = 169
+
+// 3-arg form: strided view — borrow every k-th element of the window.
+val big   = [10, 20, 30, 40, 50, 60, 70, 80]
+val every2 = big.view(0..8, 2)       // [10, 30, 50, 70]
+val every3 = big.view(1..8, 3)       // [20, 50, 80]
+// View-of-view composes strides: this borrows every 4th of `big`.
+every2.view(0..4, 2)                 // [10, 50]
 ```
 
 ## Arrays — rank-2 (matrices)
@@ -292,6 +299,12 @@ val d  = u @ u                       // 61.0           dot (rank-1 @ rank-1)
 var grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
 val band = grid.view(1..3)           // rows 1..3 — a 2×3 view
 band[0, 1] = 99                      // writes through: grid[1, 1] is now 99
+
+// 3-arg form: sub-rectangle view — borrow a window in both axes. The
+// visible rows have gaps in the underlying buffer; the descriptor
+// carries a row-stride field so flat iteration (sum, map, transpose)
+// still picks up the right elements.
+val sub = grid.view(1..3, 0..2)      // [[4, 5], [99, 8]]    — 2×2 sub-matrix
 ```
 
 ## Slice assignment — Fortran-90 array sections
