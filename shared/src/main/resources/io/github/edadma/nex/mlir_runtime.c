@@ -20,6 +20,11 @@ void nex_trap_axis_oob(void) {
     exit(1);
 }
 
+void nex_trap_complex_div_zero(void) {
+    printf("trap: complex division by zero\n");
+    exit(1);
+}
+
 /* ---------------------------------------------------------------------------
  * Scalar formatting helpers used by both scalar print and the per-element
  * paths in the array printers. The trailing-newline variants follow

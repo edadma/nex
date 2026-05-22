@@ -125,8 +125,13 @@ object Cli:
             1
         catch
           case t: NexTrap =>
+            // Format matches the AOT runtime's `__nex_trap` output
+            // (write(2, "trap: <msg>\n", ...)) so user-visible stderr
+            // bytes from interp-via-CLI and a Nex-compiled binary
+            // agree byte-for-byte on the same trap. A leading source
+            // position is added when the trap carries one.
             val where = t.pos.map(p => s"${p.line}:${p.column}: ").getOrElse("")
-            Console.err.println(s"nex: ${where}trap: ${t.msg}")
+            Console.err.println(s"${where}trap: ${t.msg}")
             1
           case e: Throwable =>
             Console.err.println(s"nex: ${e.getMessage}")
@@ -183,8 +188,14 @@ object Cli:
           1
 
   private def doCompileLlvm(file: String, tp: TProgram): Int =
+    // Fuse element-wise / broadcast / map chains into TFusedLoop before
+    // codegen. The pass is semantically transparent — the interpreter
+    // has eval cases for both shapes and corpus parity tests pin the
+    // equivalence — so wiring it here lets compiled binaries enjoy the
+    // single-loop output without changing observable behaviour.
+    val fused = new NexFusion(tp.symbols).fuseProgram(tp)
     val ir =
-      try new NexLLVMCodegen().compile(tp)
+      try new NexLLVMCodegen().compile(fused)
       catch case e: NexCodegenError =>
         Console.err.println(s"nex: ${e.getMessage}")
         return 1
@@ -205,6 +216,11 @@ object Cli:
     val llvmHome = sys.env.getOrElse("NEX_LLVM_HOME", "/opt/homebrew/opt/llvm")
     val tool     = (name: String) => s"$llvmHome/bin/$name"
 
+    // NexFusion isn't applied for MLIR yet — its `emitFusedLoop1D` only
+    // handles rank-1 fused loops with statically-known lengths; rank-2
+    // and dynamic-length cases (e.g. broadcasts inside `def`s, ranges
+    // computed at runtime) trap with `notYet`. Picking up rank-2 and
+    // dynamic lengths is part of the MLIR strangler-fig follow-up.
     val mlirSrc      = new NexMLIRCodegen().compile(tp)
     val base         = stripNexSuffix(file).getOrElse(file)
     val mlirPath     = base + ".mlir"

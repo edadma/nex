@@ -16,6 +16,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |declare i32 @printf(ptr, ...)
         |declare i32 @snprintf(ptr, i64, ptr, ...)
+        |; Trap output uses write(2, ...) — fd 2 is stderr (POSIX). Going
+        |; through write rather than fprintf(stderr, ...) avoids declaring
+        |; the libc `stderr` global, which is a macro on many platforms.
+        |declare i64 @write(i32, ptr, i64)
         |declare ptr @malloc(i64)
         |declare ptr @realloc(ptr, i64)
         |declare void @free(ptr)
@@ -71,9 +75,13 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %hasm = icmp ne ptr %msg, null
         |  br i1 %hasm, label %prn, label %doab
         |prn:
-        |  ; Print via "%s" so a user-provided message with a literal `%`
-        |  ; cannot be interpreted as a format specifier.
-        |  call i32 (ptr, ...) @printf(ptr @.fmt_str_raw, ptr %msg)
+        |  ; Errors go to stderr (fd 2). Going through write(2, ...) keeps
+        |  ; the message off stdout, where it would corrupt redirected
+        |  ; output, and skips the `printf` format-specifier interpretation
+        |  ; pathway (a user-provided message with a literal `%` cannot
+        |  ; turn into a format directive).
+        |  %len = call i64 @strlen(ptr %msg)
+        |  %wr  = call i64 @write(i32 2, ptr %msg, i64 %len)
         |  br label %doab
         |doab:
         |  call void @abort()
