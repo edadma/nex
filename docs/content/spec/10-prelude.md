@@ -266,7 +266,29 @@ Explicit conversion functions (narrowing or non-promoting):
 to_real(x: integer): real
 to_integer(x: real): integer         // truncates toward zero
 to_complex(x: real): complex
+to_bytes(a: [integer]): [byte]       // traps if any element is outside 0..255
+to_integers(b: [byte]): [integer]    // widens; always safe
 ```
+
+The pair `to_bytes` / `to_integers` is the bridge between `[byte]` storage and the integer arithmetic surface — bytes are not first-class numbers and must be widened before any computation. See §3.3.1.
+
+## 10.9 The `[byte]` buffer
+
+Construction and length:
+
+```nex
+bytes(n: integer): [byte]            // zero-filled, length n
+length(b: [byte]): integer           // element count
+```
+
+File I/O — both routes route through the cross-platform runtime, so the same program reads and writes on JVM, JS, and native targets:
+
+```nex
+read_bytes(path: string): [byte]
+write_bytes(path: string, data: [byte]): unit
+```
+
+These two are the only file-I/O entry points the prelude offers in v0; the existing text-file helpers (`readFile` / `writeFile`) live in the host runtime and are not surfaced to Nex code yet.
 
 ## 10.8 Assertions
 
