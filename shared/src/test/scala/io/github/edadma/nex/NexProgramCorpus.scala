@@ -3603,6 +3603,7 @@ object NexProgramCorpus:
         |  zero_first(a)
       """.stripMargin,
       "",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3616,6 +3617,7 @@ object NexProgramCorpus:
         |  print(a[0])
       """.stripMargin,
       "10\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -3631,6 +3633,7 @@ object NexProgramCorpus:
         |  print(b[0])
       """.stripMargin,
       "10\n10\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",

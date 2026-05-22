@@ -238,17 +238,22 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     tp.allDecls.foreach {
       case f: TFunDecl
           if f.sym.name != "main" && !libmIntrinsics.contains(f.sym.id) =>
-        // Read the per-param mode list off the function's TyFunc — Mut
+        // Read the per-param mode list off the function's TyFunc. Mut
         // scalars lower to `memref<T>` ref slots so callee writes flow
-        // back to the caller's var. Mut on a non-scalar type stays
-        // un-registered (the tensor `mut [T]` ABI is a separate
-        // sub-project; closures/strings would need their own boxing).
+        // back to the caller's var. Mut tensors are passed by-value
+        // (`tensor<...>`) and rely on the elaborator's auto-clone pass
+        // (NexLifetime) to wrap any caller-aliased var in TClone before
+        // the call — that's enough to match the observable output for
+        // every mut-tensor corpus case where the caller doesn't share
+        // storage with the val source. Closures/strings as mut stay
+        // un-registered.
         val modes: List[ParamMode] = f.sym.tpe match
           case TyFunc(ps, _) if ps.size == f.params.size => ps.map(_._2)
           case _ => List.fill(f.params.size)(ParamMode.Read)
         val paramTys = f.params.zip(modes).map { case (p, mode) =>
           (mlirTypeOf(p.tpe), mode) match
             case (Some(s: MScalar), ParamMode.Mut) => Some(MMemref(s))
+            case (Some(t: MTensor), ParamMode.Mut) => Some(t)
             case (other, ParamMode.Read)           => other
             case _                                  => None
         }

@@ -1023,6 +1023,9 @@ trait NexMLIRScalarControl:
     */
   protected def emitUserDef(f: TFunDecl): Unit =
     val (name, paramTys, retTyOpt) = userDefs(f.sym.id)
+    val modes: List[ParamMode] = f.sym.tpe match
+      case TyFunc(ps, _) if ps.size == f.params.size => ps.map(_._2)
+      case _ => List.fill(f.params.size)(ParamMode.Read)
     val sigParts = f.params.zip(paramTys).zipWithIndex.map { case ((_, ty), i) =>
       s"%arg$i: ${ty.text}"
     }
@@ -1051,6 +1054,13 @@ trait NexMLIRScalarControl:
           // caller's slot uses, making mutations visible to both
           // sides.
           varSlots(p.id) = (s"%arg$i", scalar)
+        case t: MTensor if modes(i) == ParamMode.Mut =>
+          // `mut [T]` / `mut [[T]]` param: passed by value at the
+          // tensor SSA boundary. Register in varTensors so the
+          // callee's index/slice writes go through the SSA-rebinding
+          // path. Caller-side aliasing is handled upstream by
+          // NexLifetime's auto-clone analysis.
+          varTensors(p.id) = (s"%arg$i", t)
         case _ =>
           env(p.id) = MlirVal(s"%arg$i", ty)
     }
