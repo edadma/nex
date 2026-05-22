@@ -6,6 +6,14 @@ weight: 20
 
 ## Element-wise array operations (the fusion sweet spot)
 
+For arrays $a$ and $b$ of the same length, an element-wise expression like
+
+$$
+r_i \;=\; 2 a_i + b_i - 1 \qquad i = 0, \ldots, n-1
+$$
+
+compiles to a single loop — no temporary array for `2a`, no separate `+ b`, no separate `- 1.0`. The whole expression is the fusion unit.
+
 ```nex
 def main() =
   val a = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -19,6 +27,14 @@ def main() =
 ```
 
 ## A struct and a function over it
+
+A `Point` is a record of two reals, and `distance` is the Euclidean norm of the difference,
+
+$$
+d(p_1, p_2) \;=\; \sqrt{(x_1 - x_2)^2 + (y_1 - y_2)^2}.
+$$
+
+The function reads back as one line per term in the formula.
 
 ```nex
 struct Point

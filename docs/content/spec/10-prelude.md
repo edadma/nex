@@ -84,6 +84,17 @@ enumerate(a: [T]): [(integer, T)]
 zip(a: [T], b: [U]): [(T, U)]
 ```
 
+**Definitions.** Indices run $i = 0, \ldots, n-1$ where $n = $ `length(a)`.
+
+- `sum(a)` $= \sum_i a_i$ and `product(a)` $= \prod_i a_i$.
+- `min(a)` $= \min_i a_i$ and `max(a)` $= \max_i a_i$.
+- `dot(a, b)` $= \sum_i a_i\, b_i$ — `length(a)` must equal `length(b)`; mismatch traps.
+- `map(a, f)[i]` $= f(a_i)$.
+- `filter(a, p)` keeps each $a_i$ for which $p(a_i)$ is `true`, preserving the original order.
+- `reduce(a, z, f)` $= f(\ldots f(f(z, a_0), a_1) \ldots, a_{n-1})$ — left fold seeded with $z$.
+- `range(lo, hi)` $= [lo,\; lo+1, \ldots, hi-1]$ — exclusive upper; empty if $hi \le lo$.
+- `enumerate(a)[i]` $= (i, a_i)$ and `zip(a, b)[i]` $= (a_i, b_i)$ — `zip` truncates to $\min(\text{length}(a), \text{length}(b))$.
+
 **Calling convention.** All the higher-order array functions
 (`map` / `flatMap` / `reduce` / `filter`) and the rank-1 accessors
 (`length` / `sum` / `product` / `dot` / `enumerate` / `zip`)
@@ -120,6 +131,17 @@ sum(m: [[T]]): T                        // sum over all elements
 sum_axis(m: [[T]], axis: integer): [T]  // axis=0 → per-column; axis=1 → per-row
 map(m: [[T]], f: T -> U): [[U]]         // element-wise
 ```
+
+**Definitions.** For a matrix $M$ with row index $i = 0, \ldots, r-1$ and column index $j = 0, \ldots, c-1$ where $(r, c) = $ `shape(M)`:
+
+- `transpose(M)[i, j]` $= M_{j i}$ — an $r \times c$ matrix becomes $c \times r$.
+- `matmul(A, B)[i, j]` $= \sum_k A_{i k}\, B_{k j}$ — also written `A @ B`; `cols(A)` must equal `rows(B)`.
+- `diag(d)[i, j]` $= d_i$ if $i = j$, else $0$ — an $n \times n$ matrix from a length-$n$ vector.
+- `sum(M)` $= \sum_{i, j} M_{i j}$ — total over every element.
+- `sum_axis(M, 0)[j]` $= \sum_i M_{i j}$ — column sums; result length `cols(M)`.
+- `sum_axis(M, 1)[i]` $= \sum_j M_{i j}$ — row sums; result length `rows(M)`.
+- `map(M, f)[i, j]` $= f(M_{i j})$ — element-wise; shape preserved.
+- `flatten(M)[k]` $= M_{k \bmod r,\; k \div r}$ and `reshape(a, r, c)[i, j]` $= a[j \cdot r + i]$ — both follow the column-major storage convention from [§3.3](/spec/03-types/#33-array-types).
 
 These are built-in: the compiler knows their types and lowers them with fusion-aware codegen. The user-facing surfaces for the same shape are generic functions ([§6.10](/spec/06-functions/#610-generic-functions)) and generic structs / enums ([§3.6](/spec/03-types/#36-generic-structs), [§3.8](/spec/03-types/#38-generic-enums)).
 

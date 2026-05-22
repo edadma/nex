@@ -125,8 +125,13 @@ object Cli:
             1
         catch
           case t: NexTrap =>
+            // Format matches the AOT runtime's `__nex_trap` output
+            // (write(2, "trap: <msg>\n", ...)) so user-visible stderr
+            // bytes from interp-via-CLI and a Nex-compiled binary
+            // agree byte-for-byte on the same trap. A leading source
+            // position is added when the trap carries one.
             val where = t.pos.map(p => s"${p.line}:${p.column}: ").getOrElse("")
-            Console.err.println(s"nex: ${where}trap: ${t.msg}")
+            Console.err.println(s"${where}trap: ${t.msg}")
             1
           case e: Throwable =>
             Console.err.println(s"nex: ${e.getMessage}")
