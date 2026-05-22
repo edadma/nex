@@ -735,6 +735,14 @@ trait NexMLIRScalarControl:
     case TyString                                                 => Some(MString)
     case TyArray(elem, 1) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1)))
     case TyArray(elem, 2) if isMlirScalarType(elem)               => Some(MTensor(elem, List(-1, -1)))
+    case TyStruct(name, fields) =>
+      val fieldOpts = fields.map { case (fn, ft) => mlirTypeOf(ft).map(mt => (fn, mt)) }
+      if fieldOpts.forall(_.isDefined) then Some(MStruct(name, fieldOpts.map(_.get)))
+      else None
+    case TyTuple(elems) =>
+      val elemOpts = elems.map(mlirTypeOf)
+      if elemOpts.forall(_.isDefined) then Some(MTuple(elemOpts.map(_.get)))
+      else None
     case TyFunc(paramSpecs, retT) =>
       val paramOpts = paramSpecs.map { case (pt, _) => mlirTypeOf(pt) }
       val retOpt: Option[Option[MlirType]] = retT match
@@ -852,11 +860,15 @@ trait NexMLIRScalarControl:
     val savedEnv = env.toMap
     val savedVarSlots = varSlots.toMap
     val savedVarTensors = varTensors.toMap
+    val savedVarStructs = varStructs.toMap
+    val savedVarTuples = varTuples.toMap
     val savedBoxes = boxedVarBoxes.toMap
     nextReg = 0
     env.clear()
     varSlots.clear()
     varTensors.clear()
+    varStructs.clear()
+    varTuples.clear()
     boxedVarBoxes.clear()
     f.params.zip(paramTys).zipWithIndex.foreach { case ((p, ty), i) =>
       ty match
@@ -886,6 +898,10 @@ trait NexMLIRScalarControl:
     savedVarSlots.foreach { case (k, v) => varSlots(k) = v }
     varTensors.clear()
     savedVarTensors.foreach { case (k, v) => varTensors(k) = v }
+    varStructs.clear()
+    savedVarStructs.foreach { case (k, v) => varStructs(k) = v }
+    varTuples.clear()
+    savedVarTuples.foreach { case (k, v) => varTuples(k) = v }
     boxedVarBoxes.clear()
     savedBoxes.foreach { case (k, v) => boxedVarBoxes(k) = v }
 
