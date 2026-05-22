@@ -41,6 +41,9 @@ class NexLLVMCodegen
     with NexLLVMLambdas
     with NexLLVMArrays
     with NexLLVMPrint
+    with NexLLVMAsserts
+    with NexLLVMArrayPrelude
+    with NexLLVMMatrixPrelude
     with NexLLVMPrelude:
 
   /** Compile a program. Returns the full LLVM IR module text. */
