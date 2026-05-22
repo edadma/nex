@@ -63,12 +63,10 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
     emitLine(s"  $res = call ptr @__nex_arr2_alloc(i64 $cols, i64 $rows, i64 $esz)\n")
     val srcBuf = bufPtr(arrV, arr.tpe)
     val dstBuf = bufPtr(res, resultT)
-    // for i in 0..rows: for j in 0..cols: dst[j*rows + i] = src[i*cols + j]
+    // for i in 0..rows: for j in 0..cols: dst[j*rows + i] = src[i*rowStride + j]
     emitCountingLoop(rows, "tp.r") { i =>
       emitCountingLoop(cols, "tp.c") { j =>
-        val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $i, $cols\n")
-        val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $j\n")
-        val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+        val srcSlt = emitArr2ElemGep(arrV, srcBuf, i, j, stT)
         val v      = loadElem(stT, srcSlt, llT)
         val dstOff = newReg(); emitLine(s"  $dstOff = mul i64 $j, $rows\n")
         val dstK   = newReg(); emitLine(s"  $dstK = add i64 $dstOff, $i\n")
@@ -124,13 +122,9 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
             val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
             storeElem(stT, zeroOf(elem), accSlot)
             emitCountingLoop(n, "mm.k") { k =>
-              val aOff = newReg(); emitLine(s"  $aOff = mul i64 $i, $n\n")
-              val aK   = newReg(); emitLine(s"  $aK = add i64 $aOff, $k\n")
-              val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $aK\n")
+              val aSlt = emitArr2ElemGep(aV, aBuf, i, k, stT)
               val av   = loadElem(stT, aSlt, llT)
-              val bOff = newReg(); emitLine(s"  $bOff = mul i64 $k, $p\n")
-              val bK   = newReg(); emitLine(s"  $bK = add i64 $bOff, $j\n")
-              val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $bK\n")
+              val bSlt = emitArr2ElemGep(bV, bBuf, k, j, stT)
               val bv   = loadElem(stT, bSlt, llT)
               val prod = emitScalarBinOpSimple("*", av, bv, elem)
               val cur  = loadElem(stT, accSlot, llT)
@@ -156,11 +150,9 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
           val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
           storeElem(stT, zeroOf(elem), accSlot)
           emitCountingLoop(n, "mv.k") { k =>
-            val aOff = newReg(); emitLine(s"  $aOff = mul i64 $i, $n\n")
-            val aK   = newReg(); emitLine(s"  $aK = add i64 $aOff, $k\n")
-            val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $aK\n")
+            val aSlt = emitArr2ElemGep(aV, aBuf, i, k, stT)
             val av   = loadElem(stT, aSlt, llT)
-            val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $k\n")
+            val bSlt = emitArr1ElemGep(bV, bBuf, k, stT)
             val bv   = loadElem(stT, bSlt, llT)
             val prod = emitScalarBinOpSimple("*", av, bv, elem)
             val cur  = loadElem(stT, accSlot, llT)
@@ -183,11 +175,9 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
           val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
           storeElem(stT, zeroOf(elem), accSlot)
           emitCountingLoop(n, "vm.k") { k =>
-            val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $k\n")
+            val aSlt = emitArr1ElemGep(aV, aBuf, k, stT)
             val av   = loadElem(stT, aSlt, llT)
-            val bOff = newReg(); emitLine(s"  $bOff = mul i64 $k, $p\n")
-            val bK   = newReg(); emitLine(s"  $bK = add i64 $bOff, $j\n")
-            val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $bK\n")
+            val bSlt = emitArr2ElemGep(bV, bBuf, k, j, stT)
             val bv   = loadElem(stT, bSlt, llT)
             val prod = emitScalarBinOpSimple("*", av, bv, elem)
             val cur  = loadElem(stT, accSlot, llT)
@@ -205,9 +195,9 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
         val accSlot = newReg(); emitLine(s"  $accSlot = alloca $llT\n")
         storeElem(stT, zeroOf(elem), accSlot)
         emitCountingLoop(n, "dot.k") { k =>
-          val aSlt = newReg(); emitLine(s"  $aSlt = getelementptr inbounds $stT, ptr $aBuf, i64 $k\n")
+          val aSlt = emitArr1ElemGep(aV, aBuf, k, stT)
           val av   = loadElem(stT, aSlt, llT)
-          val bSlt = newReg(); emitLine(s"  $bSlt = getelementptr inbounds $stT, ptr $bBuf, i64 $k\n")
+          val bSlt = emitArr1ElemGep(bV, bBuf, k, stT)
           val bv   = loadElem(stT, bSlt, llT)
           val prod = emitScalarBinOpSimple("*", av, bv, elem)
           val cur  = loadElem(stT, accSlot, llT)
@@ -248,7 +238,7 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
     val srcBuf = bufPtr(arrV, arr.tpe)
     // Stamp diagonal: dst[i*n + i] = src[i]
     emitCountingLoop(n, "diag.fill") { i =>
-      val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $i\n")
+      val srcSlt = emitArr1ElemGep(arrV, srcBuf, i, stT)
       val v      = loadElem(stT, srcSlt, llT)
       val off    = newReg(); emitLine(s"  $off = mul i64 $i, $n\n")
       val k      = newReg(); emitLine(s"  $k = add i64 $off, $i\n")
@@ -277,11 +267,14 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
     val srcBuf = bufPtr(arrV, arr.tpe)
     val dstBuf = bufPtr(res, resultT)
     // for r in 0..rows: for c in 0..cols: dst[r*cols + c] = src[c*rows + r]
+    // Source is treated as a flat 1D buffer of `m*n` elements
+    // (column-major), so use the rank-aware flat GEP helper so sub-rect
+    // rank-2 sources still index the right physical slot.
     emitCountingLoop(rows, "rs.r") { r =>
       emitCountingLoop(cols, "rs.c") { c =>
         val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $c, $rows\n")
         val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $r\n")
-        val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+        val srcSlt = emitArrElemGep(arrV, srcBuf, srcK, stT, arr.tpe)
         val v      = loadElem(stT, srcSlt, llT)
         val dstOff = newReg(); emitLine(s"  $dstOff = mul i64 $r, $cols\n")
         val dstK   = newReg(); emitLine(s"  $dstK = add i64 $dstOff, $c\n")
@@ -311,7 +304,7 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
         val srcBuf = bufPtr(arrV, arr.tpe)
         val dstBuf = bufPtr(res, resultT)
         emitCountingLoop(n, "fl.k") { k =>
-          val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $k\n")
+          val srcSlt = emitArr1ElemGep(arrV, srcBuf, k, stT)
           val v      = loadElem(stT, srcSlt, llT)
           val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $k\n")
           storeElem(stT, v, dstSlt)
@@ -329,9 +322,7 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
         emitLine(s"  store i64 0, ptr $idxSlot\n")
         emitCountingLoop(cols, "fl.col") { col =>
           emitCountingLoop(rows, "fl.row") { row =>
-            val srcOff = newReg(); emitLine(s"  $srcOff = mul i64 $row, $cols\n")
-            val srcK   = newReg(); emitLine(s"  $srcK = add i64 $srcOff, $col\n")
-            val srcSlt = newReg(); emitLine(s"  $srcSlt = getelementptr inbounds $stT, ptr $srcBuf, i64 $srcK\n")
+            val srcSlt = emitArr2ElemGep(arrV, srcBuf, row, col, stT)
             val v      = loadElem(stT, srcSlt, llT)
             val idx    = newReg(); emitLine(s"  $idx = load i64, ptr $idxSlot\n")
             val dstSlt = newReg(); emitLine(s"  $dstSlt = getelementptr inbounds $stT, ptr $dstBuf, i64 $idx\n")
@@ -392,9 +383,7 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
       emitLine(s"  $accSlot = alloca $accLLT\n")
       storeElem(stT, zeroOf(elem), accSlot)
       emitCountingLoop(rows, "sumax.0.row") { i =>
-        val rowOff = newReg(); emitLine(s"  $rowOff = mul i64 $i, $cols\n")
-        val k      = newReg(); emitLine(s"  $k = add i64 $rowOff, $j\n")
-        val slot   = newReg(); emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $k\n")
+        val slot   = emitArr2ElemGep(mV, buf, i, j, stT)
         val e      = loadElem(stT, slot, llT)
         val cur    = newReg(); emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
         val nxt    = emitScalarBinOpSimple("+", cur, e, elem)
@@ -424,10 +413,8 @@ protected trait NexLLVMMatrixPrelude extends NexLLVMState:
       val accSlot = newReg()
       emitLine(s"  $accSlot = alloca $accLLT\n")
       storeElem(stT, zeroOf(elem), accSlot)
-      val rowOff = newReg(); emitLine(s"  $rowOff = mul i64 $i, $cols\n")
       emitCountingLoop(cols, "sumax.1.col") { j =>
-        val k    = newReg(); emitLine(s"  $k = add i64 $rowOff, $j\n")
-        val slot = newReg(); emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $k\n")
+        val slot = emitArr2ElemGep(mV, buf, i, j, stT)
         val e    = loadElem(stT, slot, llT)
         val cur  = newReg(); emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
         val nxt  = emitScalarBinOpSimple("+", cur, e, elem)

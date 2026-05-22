@@ -73,19 +73,22 @@ protected trait NexInterpArrays:
     hiRaw: Long,
     inclusive: Boolean,
     step: Int,
+    colRange: Option[(Long, Long, Boolean)],
     p: Option[scala.util.parsing.input.Position],
   ): Value =
     src match
       case VArray1(b) =>
+        if colRange.isDefined then trap("view: sub-rectangle requires a rank-2 source", p)
         buildView1(b, 0, b.size, 1, loRaw, hiRaw, inclusive, step, p)
       case VArray1View(b, off, len, srcStride) =>
+        if colRange.isDefined then trap("view: sub-rectangle requires a rank-2 source", p)
         buildView1(b, off, len, srcStride, loRaw, hiRaw, inclusive, step, p)
       case VArray2(b, r, c) =>
-        if step != 1 then trap("view: stride is rank-1 only (chunk 2)", p)
-        buildView2(b, 0, r, c, loRaw, hiRaw, inclusive, p)
-      case VArray2View(b, rowOff, r, c) =>
-        if step != 1 then trap("view: stride is rank-1 only (chunk 2)", p)
-        buildView2(b, rowOff, r, c, loRaw, hiRaw, inclusive, p)
+        if step != 1 then trap("view: stride is rank-1 only", p)
+        buildView2(b, 0, r, c, c, 0, loRaw, hiRaw, inclusive, colRange, p)
+      case VArray2View(b, rowOff, r, c, rowStride, colOff) =>
+        if step != 1 then trap("view: stride is rank-1 only", p)
+        buildView2(b, rowOff, r, c, rowStride, colOff, loRaw, hiRaw, inclusive, colRange, p)
       case other =>
         trap(s"view: not an array: ${formatValue(other)}", p)
 
@@ -119,17 +122,35 @@ protected trait NexInterpArrays:
     buf: mutable.ArrayBuffer[Value],
     rowBase: Int,
     srcRows: Int,
-    cols: Int,
+    srcCols: Int,
+    srcRowStride: Int,
+    srcColOff: Int,
     loRaw: Long,
     hiRaw: Long,
     inclusive: Boolean,
+    colRange: Option[(Long, Long, Boolean)],
     p: Option[scala.util.parsing.input.Position],
   ): Value =
     val lo = wrapNeg(loRaw, srcRows).toInt
     val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcRows) + 1 else wrapNeg(hiRaw, srcRows)).toInt
     if lo < 0 || hiExclusive > srcRows || hiExclusive < lo then
-      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on $srcRows×$cols matrix", p)
-    VArray2View(buf, rowBase + lo, hiExclusive - lo, cols)
+      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on $srcRows×$srcCols matrix", p)
+    val newRows = hiExclusive - lo
+    colRange match
+      case None =>
+        // Row-range view: inherit source col count + colOff, advance
+        // rowOff by `lo` rows.
+        VArray2View(buf, rowBase + lo, newRows, srcCols, srcRowStride, srcColOff)
+      case Some((cLoRaw, cHiRaw, cInclusive)) =>
+        // Sub-rectangle view: also bounds-wrap the column range; new
+        // colOff = srcColOff + cLo, rowStride stays the source's
+        // rowStride so per-element indexing skips the gap between
+        // visible rows in the underlying flat buffer.
+        val cLo = wrapNeg(cLoRaw, srcCols).toInt
+        val cHiExcl = (if cInclusive then wrapNeg(cHiRaw, srcCols) + 1 else wrapNeg(cHiRaw, srcCols)).toInt
+        if cLo < 0 || cHiExcl > srcCols || cHiExcl < cLo then
+          trap(s"view: out-of-bounds col slice $cLoRaw..${if cInclusive then "=" else ""}$cHiRaw on $srcRows×$srcCols matrix", p)
+        VArray2View(buf, rowBase + lo, newRows, cHiExcl - cLo, srcRowStride, srcColOff + cLo)
 
   protected def indexGet(arr: Value, idx: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     (arr, idx) match
@@ -141,18 +162,18 @@ protected trait NexInterpArrays:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt)
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
         if ki < 0 || ki >= r || kj < 0 || kj >= c then
           trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        buf((rowOff + ki.toInt) * c + kj.toInt)
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i))) =>
+        buf((rowOff + ki.toInt) * rowStride + colOff + kj.toInt)
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i))) =>
         val ki = wrapNeg(i, r)
         if ki < 0 || ki >= r then trap(s"index out of bounds: $i (rows=$r)", p)
         val row = mutable.ArrayBuffer.empty[Value]
         var k   = 0
-        while k < c do { row += buf((rowOff + ki.toInt) * c + k); k += 1 }
+        while k < c do { row += buf((rowOff + ki.toInt) * rowStride + colOff + k); k += 1 }
         VArray1(row)
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
@@ -183,12 +204,12 @@ protected trait NexInterpArrays:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt) = rhs
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
         if ki < 0 || ki >= r || kj < 0 || kj >= c then
           trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        buf((rowOff + ki.toInt) * c + kj.toInt) = rhs
+        buf((rowOff + ki.toInt) * rowStride + colOff + kj.toInt) = rhs
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -473,9 +494,9 @@ protected trait NexInterpArrays:
       val rows = for i <- 0 until r yield
         (for j <- 0 until c yield formatValue(b(i * c + j))).mkString("[", ", ", "]")
       rows.mkString("[", ", ", "]")
-    case VArray2View(buf, rowOff, r, c) =>
+    case VArray2View(buf, rowOff, r, c, rowStride, colOff) =>
       val rows = for i <- 0 until r yield
-        (for j <- 0 until c yield formatValue(buf((rowOff + i) * c + j))).mkString("[", ", ", "]")
+        (for j <- 0 until c yield formatValue(buf((rowOff + i) * rowStride + colOff + j))).mkString("[", ", ", "]")
       rows.mkString("[", ", ", "]")
     case VTuple(es)     => es.map(formatValue).mkString("(", ", ", ")")
     case VStruct(n, fs) => fs.map((k, v) => s"$k=${formatValue(v)}").mkString(s"$n { ", ", ", " }")

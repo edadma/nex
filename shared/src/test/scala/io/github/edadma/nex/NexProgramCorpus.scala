@@ -4824,6 +4824,121 @@ object NexProgramCorpus:
     ),
 
     // ============================================================
+    // rank-2 sub-rectangle views — `m.view(rRange, cRange)` borrows
+    // a non-contiguous sub-matrix. Descriptor carries the owner's
+    // rowStride so per-element indexing skips the gap between
+    // visible rows in the underlying flat buffer. View-of-view
+    // composes via colOff + rowStride inheritance.
+    // ============================================================
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "sub-rect view reads source elements at the right offsets",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  val v = m.view(0..2, 1..3)
+        |  print(v[0, 0])
+        |  print(v[0, 1])
+        |  print(v[1, 0])
+        |  print(v[1, 1])
+      """.stripMargin,
+      "2\n3\n6\n7\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "sub-rect shape reflects the row+col window",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10], [11, 12, 13, 14, 15]]
+        |  val v = m.view(1..3, 1..4)
+        |  print(rows(v))
+        |  print(cols(v))
+        |  print(shape(v))
+      """.stripMargin,
+      "2\n3\n(2, 3)\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "writes through a sub-rect view update the source matrix",
+      """
+        |def main() =
+        |  var m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  val v = m.view(0..2, 1..3)
+        |  v[0, 0] = 99
+        |  v[1, 1] = 77
+        |  print(m)
+      """.stripMargin,
+      "[[1, 99, 3, 4], [5, 6, 77, 8], [9, 10, 11, 12]]\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "row extraction (v[i]) on a sub-rect view returns the right elements",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  val v = m.view(0..3, 1..3)
+        |  print(v[0])
+        |  print(v[1])
+        |  print(v[2])
+      """.stripMargin,
+      "[2, 3]\n[6, 7]\n[10, 11]\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "formatValue prints sub-rect view in the expected nested form",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  print(m.view(0..2, 1..3))
+      """.stripMargin,
+      "[[2, 3], [6, 7]]\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "sum on a sub-rect view accounts for row stride",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  val v = m.view(0..2, 1..3)
+        |  print(sum(v))
+      """.stripMargin,
+      "18\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "view-of-view composes col offsets",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10], [11, 12, 13, 14, 15], [16, 17, 18, 19, 20]]
+        |  val v1 = m.view(0..4, 1..4)
+        |  val v2 = v1.view(1..3, 1..3)
+        |  print(v2)
+      """.stripMargin,
+      "[[8, 9], [13, 14]]\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "transpose of a sub-rect view produces the right transposed values",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
+        |  print(transpose(m.view(0..2, 1..3)))
+      """.stripMargin,
+      "[[2, 6], [3, 7]]\n",
+    ),
+    Case(
+      "rank-2 sub-rectangle view-style slicing",
+      "out-of-bounds col range traps",
+      """
+        |def main() =
+        |  val m = [[1, 2, 3], [4, 5, 6]]
+        |  assert_traps(() -> m.view(0..2, 0..10), "view")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+
+    // ============================================================
     // const expressions calling functions — spec §5.3. The RHS may
     // call any pure function (prelude or user-defined) so long as
     // the result type is scalar. Compile-time evaluation is optional

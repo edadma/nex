@@ -692,7 +692,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     * points at the source (or, for view-of-view, the root owner —
     * the runtime collapses chains).
     */
-  protected def emitViewCall(arr: TExpr, r: TExpr, step: Option[TExpr], resultT: Type): String =
+  protected def emitViewCall(arr: TExpr, r: TExpr, third: Option[TExpr], resultT: Type): String =
     val (loE, hiE, inclusive) = r match
       case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
         (lo, hi, op == "..=")
@@ -701,34 +701,56 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val esz = elemSize(arrayElem(arr.tpe))
     val av  = emitExpr(arr)
     val rank = arrayRank(arr.tpe)
-    if step.isDefined && rank != 1 then
-      notImpl(s"view stride is rank-1 only (chunk 2); rank-$rank lands with chunk 4")
+    // Rank-2 sub-rect: the 3rd arg is a second range (column range)
+    // — unpack its bounds the same way as the first range. Rank-1
+    // strided: the 3rd arg is an integer stride. Elaborator already
+    // validated the disambiguation.
+    val (subColRange, subStep) = (rank, third) match
+      case (2, Some(TBinOp(op, clo, chi, _, _))) if op == ".." || op == "..=" =>
+        (Some((clo, chi, op == "..=")), None)
+      case (2, Some(other)) =>
+        notImpl(s"rank-2 view 3rd arg must be a range, got ${other.tpe}")
+      case (1, Some(stepE)) =>
+        (None, Some(stepE))
+      case _ =>
+        (None, None)
     val srcLen = newReg()
     rank match
       case 1 => emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
       case 2 => emitLine(s"  $srcLen = call i64 @__nex_arr2_rows(ptr $av)\n")
       case n => notYet(s"view on rank $n (only rank-1 and rank-2 supported)")
-    def wrapNegHere(raw: String): String =
+    def wrapNegAgainst(raw: String, extent: String): String =
       val isNeg = newReg(); emitLine(s"  $isNeg = icmp slt i64 $raw, 0\n")
-      val wrapped = newReg(); emitLine(s"  $wrapped = add i64 $raw, $srcLen\n")
+      val wrapped = newReg(); emitLine(s"  $wrapped = add i64 $raw, $extent\n")
       val out = newReg(); emitLine(s"  $out = select i1 $isNeg, i64 $wrapped, i64 $raw\n")
       out
-    val loV = wrapNegHere(emitExpr(loE))
-    val hiRaw = wrapNegHere(emitExpr(hiE))
+    val loV = wrapNegAgainst(emitExpr(loE), srcLen)
+    val hiRaw = wrapNegAgainst(emitExpr(hiE), srcLen)
     val hiV =
       if inclusive then
         val r = newReg(); emitLine(s"  $r = add i64 $hiRaw, 1\n"); r
       else hiRaw
     val res = newReg()
-    (rank, step) match
-      case (1, None) =>
+    (rank, subStep, subColRange) match
+      case (1, None, _) =>
         emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
-      case (1, Some(stepE)) =>
+      case (1, Some(stepE), _) =>
         val stepV = emitExpr(stepE)
         emitLine(s"  $res = call ptr @__nex_arr1_view_strided(ptr $av, i64 $loV, i64 $hiV, i64 $stepV, i64 $esz)\n")
-      case (2, _) =>
+      case (2, _, None) =>
         emitLine(s"  $res = call ptr @__nex_arr2_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
-      case _ => // unreachable — caught above
+      case (2, _, Some((cloE, chiE, cInclusive))) =>
+        // Sub-rectangle view: bounds-wrap the col range against the
+        // source's cols (not rows used above).
+        val srcCols = newReg(); emitLine(s"  $srcCols = call i64 @__nex_arr2_cols(ptr $av)\n")
+        val cLoV = wrapNegAgainst(emitExpr(cloE), srcCols)
+        val cHiRaw = wrapNegAgainst(emitExpr(chiE), srcCols)
+        val cHiV =
+          if cInclusive then
+            val rr = newReg(); emitLine(s"  $rr = add i64 $cHiRaw, 1\n"); rr
+          else cHiRaw
+        emitLine(s"  $res = call ptr @__nex_arr2_view_sub(ptr $av, i64 $loV, i64 $hiV, i64 $cLoV, i64 $cHiV, i64 $esz)\n")
+      case _ => // unreachable
     emitArrDec(av, arr.tpe)
     res
 

@@ -120,11 +120,18 @@ protected trait NexLLVMArrays extends NexLLVMState:
         emitTerminator(s"  unreachable\n")
         startBlock(okL)
         // Allocate the row + memcpy from the source row's flat offset.
+        // Use rowStride for the source physical offset so sub-rect views
+        // pick the right row across the gap between visible rows; the
+        // memcpy still copies `cols` contiguous elements because each
+        // row is contiguous in the underlying buffer (only the gap
+        // BETWEEN rows is `rowStride - cols`).
         val desc   = newReg()
         emitLine(s"  $desc = call ptr @__nex_arr1_alloc(i64 $cols, i64 $esz)\n")
         val srcBuf = bufPtr(arrV, arr.tpe)
         val dstBuf = bufPtr(desc, resultT)
-        val flat   = newReg(); emitLine(s"  $flat = mul i64 $ii, $cols\n")
+        val srcSp  = newReg(); emitLine(s"  $srcSp = getelementptr inbounds %nex_arr2, ptr $arrV, i32 0, i32 4\n")
+        val srcRS  = newReg(); emitLine(s"  $srcRS = load i64, ptr $srcSp\n")
+        val flat   = newReg(); emitLine(s"  $flat = mul i64 $ii, $srcRS\n")
         val srcRow = newReg()
         emitLine(s"  $srcRow = getelementptr inbounds $stT, ptr $srcBuf, i64 $flat\n")
         val bytes  = newReg(); emitLine(s"  $bytes = mul i64 $cols, $esz\n")
@@ -288,10 +295,41 @@ protected trait NexLLVMArrays extends NexLLVMState:
   protected def emitArrElemGep(descReg: String, bufReg: String, iReg: String, stT: String, t: Type): String =
     arrayRank(t) match
       case 1 => emitArr1ElemGep(descReg, bufReg, iReg, stT)
-      case _ =>
-        val slot = newReg()
-        emitLine(s"  $slot = getelementptr inbounds $stT, ptr $bufReg, i64 $iReg\n")
-        slot
+      case _ => emitArr2FlatElemGep(descReg, bufReg, iReg, stT)
+
+  protected def emitArr2ElemGep(descReg: String, bufReg: String, rReg: String, cReg: String, stT: String): String =
+    val sp = newReg()
+    emitLine(s"  $sp = getelementptr inbounds %nex_arr2, ptr $descReg, i32 0, i32 4\n")
+    val rs = newReg()
+    emitLine(s"  $rs = load i64, ptr $sp\n")
+    val rowOff = newReg()
+    emitLine(s"  $rowOff = mul i64 $rReg, $rs\n")
+    val idx = newReg()
+    emitLine(s"  $idx = add i64 $rowOff, $cReg\n")
+    val slot = newReg()
+    emitLine(s"  $slot = getelementptr inbounds $stT, ptr $bufReg, i64 $idx\n")
+    slot
+
+  protected def emitArr2FlatElemGep(descReg: String, bufReg: String, kReg: String, stT: String): String =
+    val cp = newReg()
+    emitLine(s"  $cp = getelementptr inbounds %nex_arr2, ptr $descReg, i32 0, i32 2\n")
+    val c = newReg()
+    emitLine(s"  $c = load i64, ptr $cp\n")
+    val sp = newReg()
+    emitLine(s"  $sp = getelementptr inbounds %nex_arr2, ptr $descReg, i32 0, i32 4\n")
+    val rs = newReg()
+    emitLine(s"  $rs = load i64, ptr $sp\n")
+    val r = newReg()
+    emitLine(s"  $r = sdiv i64 $kReg, $c\n")
+    val col = newReg()
+    emitLine(s"  $col = srem i64 $kReg, $c\n")
+    val rowOff = newReg()
+    emitLine(s"  $rowOff = mul i64 $r, $rs\n")
+    val idx = newReg()
+    emitLine(s"  $idx = add i64 $rowOff, $col\n")
+    val slot = newReg()
+    emitLine(s"  $slot = getelementptr inbounds $stT, ptr $bufReg, i64 $idx\n")
+    slot
 
   /** Emit `op` between two scalar values of the same Nex type, returning
     * the SSA register of the result. Reuses the existing [[binOpInst]]
@@ -1005,23 +1043,56 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * into a fresh allocation. Source's owning share is released.
     */
   protected def emitClone(arr: TExpr, resultT: Type): String =
-    // Tier-1 perf optimization: lower deep-copy to a single
-    // `@llvm.memcpy.p0.p0.i64` instead of a per-element store loop.
-    // The src and dst buffers are guaranteed non-aliasing (the
-    // destination came from a fresh malloc); LLVM constant-folds
-    // the size when the length is statically known.
-    val elem = arrayElem(arr.tpe)
-    val esz  = elemSize(elem)
+    // Tier-1 perf optimization: when the source is provably contiguous
+    // (owner==null at runtime) the per-element loop simplifies to a
+    // memcpy through LLVM's loop optimizer; views (rank-1 strided or
+    // rank-2 sub-rect) need the stride-aware element walk for correct
+    // results. We dispatch at runtime via the descriptor's owner
+    // field: owned arrays take the memcpy fast path, views fall
+    // through to the element loop. Destination is always freshly
+    // allocated (contiguous), so writes use direct GEPs.
+    val rank   = arrayRank(arr.tpe)
+    val elem   = arrayElem(arr.tpe)
+    val esz    = elemSize(elem)
+    val stT    = storageType(elem)
+    val llT    = llvmType(elem)
 
-    val src  = emitExpr(arr)
-    val desc = allocLike(src, arr.tpe, elem)
-    val len  = flatLengthOf(src, arr.tpe)
-    val sBuf = bufPtr(src, arr.tpe)
-    val oBuf = bufPtr(desc, resultT)
+    val src    = emitExpr(arr)
+    val desc   = allocLike(src, arr.tpe, elem)
+    val len    = flatLengthOf(src, arr.tpe)
+    val sBuf   = bufPtr(src, arr.tpe)
+    val oBuf   = bufPtr(desc, resultT)
 
+    // Owner-field index: rank-1 → 4, rank-2 → 5.
+    val ownerIdx = rank match
+      case 1 => 4
+      case 2 => 5
+      case _ => 4
+    val op    = newReg(); emitLine(s"  $op = getelementptr inbounds %nex_arr$rank, ptr $src, i32 0, i32 $ownerIdx\n")
+    val own   = newReg(); emitLine(s"  $own = load ptr, ptr $op\n")
+    val isOwn = newReg(); emitLine(s"  $isOwn = icmp eq ptr $own, null\n")
+
+    val mcpyL = freshLabel("clone.mcpy")
+    val walkL = freshLabel("clone.walk")
+    val doneL = freshLabel("clone.done")
+
+    emitTerminator(s"  br i1 $isOwn, label %$mcpyL, label %$walkL\n")
+    startBlock(mcpyL)
     val bytes = newReg()
     emitLine(s"  $bytes = mul i64 $len, $esz\n")
     emitLine(s"  call void @llvm.memcpy.p0.p0.i64(ptr $oBuf, ptr $sBuf, i64 $bytes, i1 false)\n")
+    emitTerminator(s"  br label %$doneL\n")
+
+    startBlock(walkL)
+    emitCountingLoop(len, "clone.elem") { k =>
+      val sSlot = emitArrElemGep(src, sBuf, k, stT, arr.tpe)
+      val v     = loadElem(stT, sSlot, llT)
+      val dSlot = newReg()
+      emitLine(s"  $dSlot = getelementptr inbounds $stT, ptr $oBuf, i64 $k\n")
+      storeElem(stT, v, dSlot)
+    }
+    emitTerminator(s"  br label %$doneL\n")
+    startBlock(doneL)
 
     emitArrDec(src, arr.tpe)
     desc

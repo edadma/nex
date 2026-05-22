@@ -305,18 +305,30 @@ protected trait NexElabInferPrelude extends NexElabState:
         // First arg: a rank-1 or rank-2 array. Second arg: a range
         // expression (typed `TyArray(TyInteger, 1)`); the codegen
         // unpacks its bounds rather than reading the materialised range.
-        // Rank-1: borrows an element range. Rank-2: borrows a row
-        // range (contiguous in row-major layout). Optional third arg:
-        // integer stride for the `by k` form (rank-1 only — rank-2
-        // stride lands with chunk 4). Result type matches the source.
+        // Third arg disambiguates by type:
+        //   - integer → rank-1 strided view's `by k` stride
+        //   - range (TyArray(TyInteger, 1)) → rank-2 sub-rectangle's
+        //     column range
+        // Rank-1: borrows an element range (optionally with stride);
+        // rank-2: borrows a row range, or a sub-rectangle when a
+        // second range is supplied.
         aa(0).tpe match
           case TyArray(_, r) if r > 2 =>
             err(s"view first argument requires a rank-1 or rank-2 array, got rank $r", p)
-          case TyArray(_, 2) if aa.size == 3 =>
-            err("view stride argument is rank-1 only", p)
           case _ =>
-        if aa.size == 3 && aa(2).tpe != TyInteger && aa(2).tpe != TyUnknown then
-          err(s"view stride must be integer, got ${aa(2).tpe}", p)
+        if aa.size == 3 then
+          val arg0Rank = aa(0).tpe match
+            case TyArray(_, r) => r
+            case _             => 0
+          val arg2Tpe = aa(2).tpe
+          (arg0Rank, arg2Tpe) match
+            case (1, TyInteger | TyUnknown) => ()           // rank-1 + integer stride
+            case (1, _)                     =>
+              err(s"rank-1 view third argument must be integer stride, got $arg2Tpe", p)
+            case (2, TyArray(TyInteger, 1) | TyUnknown) => ()  // rank-2 + range
+            case (2, _)                     =>
+              err(s"rank-2 view third argument must be a range (sub-rectangle), got $arg2Tpe", p)
+            case _                          => ()
         TCall(callee, aa, p, aa(0).tpe)
 
       case _ =>

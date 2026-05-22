@@ -326,10 +326,25 @@ protected trait NexLLVMState:
   protected def emitArr1ElemGep(descReg: String, bufReg: String, iReg: String, stT: String): String
 
   /** Rank-agnostic flat-buffer slot GEP. Rank-1 routes through
-    * [[emitArr1ElemGep]] (stride-aware); rank-2 uses a direct typed
-    * GEP into the contiguous row-major buffer (chunk 4 will add stride
-    * to the rank-2 descriptor too). */
+    * [[emitArr1ElemGep]] (stride-aware); rank-2 routes through
+    * [[emitArr2FlatElemGep]] (sub-rect-view-aware via the descriptor's
+    * rowStride). */
   protected def emitArrElemGep(descReg: String, bufReg: String, iReg: String, stT: String, t: Type): String
+
+  /** Stride-aware (r, c) → typed GEP for a rank-2 array. Uses the
+    * descriptor's `rowStride` field (default == cols for owned and
+    * row-range views, > cols for sub-rect views) so per-element
+    * indexing lands on the right physical slot regardless of how the
+    * view selects its window. */
+  protected def emitArr2ElemGep(descReg: String, bufReg: String, rReg: String, cReg: String, stT: String): String
+
+  /** Stride-aware flat-index GEP for a rank-2 array. `kReg` is the
+    * logical flat index (0..rows*cols-1) in row-major order; this
+    * helper decomposes it into (r, c) and emits the rowStride-aware
+    * physical offset. For owned / row-range arrays the kReg-to-slot
+    * mapping is the standard `data[k]`; for sub-rect views the
+    * intermediate (r, c) decomposition picks up the row-pitch gap. */
+  protected def emitArr2FlatElemGep(descReg: String, bufReg: String, kReg: String, stT: String): String
 
   protected def emitPreamble(): Unit
   protected def emitInitFunction(bindings: List[TTopBinding]): Unit
