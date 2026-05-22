@@ -101,19 +101,24 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; A string's `data` field always points at a NUL-terminated buffer so
         |; we can hand it straight to libc (`printf("%s", data)`); `length`
         |; tracks the byte count NOT counting the terminator.
-        |; Rank-1 array descriptor: { refcount, length, data, owner }. The
-        |; trailing `owner` field encodes view ownership — null for an owned
-        |; array (the data buffer was malloc'd alongside the descriptor and
-        |; must be freed when the refcount hits zero), non-null for a view
-        |; (the data pointer is a borrow into the owner's buffer; freeing
-        |; releases the owner's reference instead of the data). Views share
-        |; the same LLVM type as owned arrays, so every existing read /
-        |; write / iteration path works transparently. The rank-2
-        |; descriptor uses the same scheme: `owner` is null for an owned
-        |; rank-2 array, non-null for a row-range view (the data pointer
-        |; is a borrow into the owner's row-major buffer).
-        |%nex_arr1 = type { i64, i64, ptr, ptr }
-        |%nex_arr2 = type { i64, i64, i64, ptr, ptr }
+        |; Rank-1 array descriptor: { refcount, length, data, stride, owner }.
+        |; The `stride` field counts elements between consecutive logical
+        |; positions in `data` — 1 for an owned array (contiguous) and for
+        |; a contiguous view, > 1 for a `by k` strided view. Every per-
+        |; element access scales the index by stride before walking the
+        |; buffer. The trailing `owner` field encodes view ownership —
+        |; null for an owned array (the data buffer was malloc'd alongside
+        |; the descriptor and must be freed when the refcount hits zero),
+        |; non-null for a view (the data pointer is a borrow into the
+        |; owner's buffer; freeing releases the owner's reference instead
+        |; of the data). Views share the same LLVM type as owned arrays,
+        |; so every existing read / write / iteration path works
+        |; transparently. The rank-2 descriptor uses the same scheme:
+        |; `owner` is null for an owned rank-2 array, non-null for a
+        |; row-range view (the data pointer is a borrow into the owner's
+        |; row-major buffer).
+        |%nex_arr1 = type { i64, i64, ptr, i64, ptr }
+        |%nex_arr2 = type { i64, i64, i64, ptr, i64, ptr }
         |%nex_str  = type { i64, i64, ptr }
         |
         |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
@@ -483,11 +488,11 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |; --- Rank-1 runtime helpers -------------------------------------------
         |
-        |; Allocate a rank-1 array. Returns a fresh %nex_arr1* with refcount=1
-        |; and owner=null (owned, not a view).
+        |; Allocate a rank-1 array. Returns a fresh %nex_arr1* with refcount=1,
+        |; stride=1, and owner=null (owned, not a view).
         |define ptr @__nex_arr1_alloc(i64 %len, i64 %elem_size) {
         |entry:
-        |  %desc = call ptr @malloc(i64 32)
+        |  %desc = call ptr @malloc(i64 40)
         |  %rcp  = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %lp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 1
@@ -496,7 +501,9 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %bytes = mul i64 %len, %elem_size
         |  %buf   = call ptr @malloc(i64 %bytes)
         |  store ptr %buf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  store i64 1, ptr %sp
+        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 4
         |  store ptr null, ptr %op
         |  ret ptr %desc
         |}
@@ -510,35 +517,67 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; underlying buffer alone (it dies with the owner).
         |define ptr @__nex_arr1_view(ptr %src, i64 %lo, i64 %hi, i64 %elem_size) {
         |entry:
+        |  %r = call ptr @__nex_arr1_view_strided(ptr %src, i64 %lo, i64 %hi, i64 1, i64 %elem_size)
+        |  ret ptr %r
+        |}
+        |
+        |; Strided variant of __nex_arr1_view. `step` selects every `step`-th
+        |; element from the source's `lo..hi` window — `step=1` matches the
+        |; contiguous form. The view's logical length is ceil((hi-lo)/step).
+        |; Stride 1 is folded into the contiguous fast path so view-of-view
+        |; collapse over a contiguous outer survives unchanged.
+        |;
+        |; View-of-view multiplies the strides: `b.view(0..10 by 2).view(0..3 by 2)`
+        |; yields a logical [b[0], b[4], b[8]] view with effective stride 4 over
+        |; the root owner, mirroring NumPy semantics.
+        |define ptr @__nex_arr1_view_strided(ptr %src, i64 %lo, i64 %hi, i64 %step, i64 %elem_size) {
+        |entry:
         |  %slp = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 1
         |  %slen = load i64, ptr %slp
-        |  %loBad  = icmp slt i64 %lo, 0
-        |  %hiBad  = icmp sgt i64 %hi, %slen
-        |  %ordBad = icmp slt i64 %hi, %lo
+        |  %loBad   = icmp slt i64 %lo, 0
+        |  %hiBad   = icmp sgt i64 %hi, %slen
+        |  %ordBad  = icmp slt i64 %hi, %lo
+        |  %stepBad = icmp sle i64 %step, 0
         |  %b1   = or i1 %loBad, %hiBad
-        |  %bad  = or i1 %b1, %ordBad
+        |  %b2   = or i1 %b1, %ordBad
+        |  %bad  = or i1 %b2, %stepBad
         |  br i1 %bad, label %trap, label %ok
         |trap:
         |  call void @__nex_trap_with(ptr @.view_oob_msg)
         |  unreachable
         |ok:
+        |  %sspp = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 3
+        |  %sstride = load i64, ptr %sspp
+        |  ; Step through source's logical positions but the byte offset
+        |  ; must account for the source's existing stride (so view-of-view
+        |  ; over an already-strided source still indexes the underlying
+        |  ; buffer correctly).
         |  %sdp  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 2
         |  %sbuf = load ptr, ptr %sdp
-        |  %byte_off = mul i64 %lo, %elem_size
+        |  %loScaled = mul i64 %lo, %sstride
+        |  %byte_off = mul i64 %loScaled, %elem_size
         |  %vbuf = getelementptr inbounds i8, ptr %sbuf, i64 %byte_off
-        |  %vlen = sub i64 %hi, %lo
+        |  ; Logical view length = ceil((hi - lo) / step).
+        |  %span = sub i64 %hi, %lo
+        |  %spanPlus = add i64 %span, %step
+        |  %spanAdj = sub i64 %spanPlus, 1
+        |  %vlen = sdiv i64 %spanAdj, %step
+        |  ; Effective stride against the root buffer = source stride * step.
+        |  %vstride = mul i64 %sstride, %step
         |  call void @__nex_arr1_inc(ptr %src)
-        |  %desc = call ptr @malloc(i64 32)
+        |  %desc = call ptr @malloc(i64 40)
         |  %rcp  = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %lp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 1
         |  store i64 %vlen, ptr %lp
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 2
         |  store ptr %vbuf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  store i64 %vstride, ptr %sp
+        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 4
         |  ; If src is itself a view, chain through to the underlying owner
         |  ; so view-of-view doesn't grow arbitrary chains.
-        |  %sop  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 3
+        |  %sop  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 4
         |  %srcOwner = load ptr, ptr %sop
         |  %srcIsView = icmp ne ptr %srcOwner, null
         |  %root = select i1 %srcIsView, ptr %srcOwner, ptr %src
@@ -584,7 +623,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ; Free our descriptor and decref the owner; the owner's data dies
         |  ; with its own refcount. An owned array (owner == null) frees its
         |  ; data buffer and descriptor as before.
-        |  %op  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 3
+        |  %op  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 4
         |  %own = load ptr, ptr %op
         |  %isv = icmp ne ptr %own, null
         |  br i1 %isv, label %free_view, label %free_owned
@@ -614,7 +653,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; size `elem_size` bytes. Negative indices wrap from the end: idx = -1
         |; → len-1, idx = -2 → len-2, etc. (matches Python / NumPy). Bounds-
         |; checked AFTER wrap so an out-of-range negative (e.g. idx = -10 on
-        |; a 3-element array → wrapped to -7) still traps.
+        |; a 3-element array → wrapped to -7) still traps. The physical
+        |; address is `data + i * stride * elem_size`; for owned arrays
+        |; stride is 1 and the address is contiguous, for a `view(by k)`
+        |; strided view stride > 1 selects every k-th element.
         |define ptr @__nex_arr1_slot(ptr %a, i64 %idx, i64 %elem_size) {
         |entry:
         |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
@@ -632,7 +674,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |ok:
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
         |  %buf  = load ptr, ptr %dp
-        |  %byte_off = mul i64 %i, %elem_size
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 3
+        |  %stride = load i64, ptr %sp
+        |  %strided  = mul i64 %i, %stride
+        |  %byte_off = mul i64 %strided, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
         |}
@@ -954,7 +999,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |define ptr @__nex_arr2_alloc(i64 %rows, i64 %cols, i64 %elem_size) {
         |entry:
-        |  %desc = call ptr @malloc(i64 40)
+        |  %desc = call ptr @malloc(i64 48)
         |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
@@ -966,7 +1011,13 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %buf   = call ptr @malloc(i64 %bytes)
         |  %dp    = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
         |  store ptr %buf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  ; Owned arrays have rowStride = cols (contiguous row-major); sub-rect
+        |  ; views set rowStride to the underlying owner's cols, so per-element
+        |  ; offset math uses the physical row pitch rather than the view's
+        |  ; logical cols.
+        |  %sp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  store i64 %cols, ptr %sp
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 5
         |  store ptr null, ptr %op
         |  ret ptr %desc
         |}
@@ -997,7 +1048,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %iz  = icmp eq i64 %new, 0
         |  br i1 %iz, label %free_it, label %done
         |free_it:
-        |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 5
         |  %own  = load ptr, ptr %op
         |  %is_view = icmp ne ptr %own, null
         |  br i1 %is_view, label %free_view, label %free_owned
@@ -1067,7 +1118,13 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  call void @__nex_trap_with(ptr @.oob_msg)
         |  unreachable
         |ok:
-        |  %flat = mul i64 %ii, %c
+        |  ; Physical offset = ii * rowStride + jj; for owned arrays
+        |  ; rowStride==cols so this is the standard flat formula; for
+        |  ; sub-rect views rowStride is the owner's cols, picking the
+        |  ; right element across the gap between visible rows.
+        |  %sp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+        |  %rs   = load i64, ptr %sp
+        |  %flat = mul i64 %ii, %rs
         |  %idx  = add i64 %flat, %jj
         |  %dp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
         |  %buf  = load ptr, ptr %dp
@@ -1077,11 +1134,22 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |}
         |
         |; Returns a ptr to the k-th flat element (k in 0..rows*cols-1).
+        |; Logical row-major: k is decomposed into (r, c) = (k/cols, k%cols)
+        |; and the physical offset uses rowStride for sub-rect views. Owned
+        |; arrays' rowStride==cols folds the path to a direct byte offset.
         |define ptr @__nex_arr2_flat_slot(ptr %a, i64 %k, i64 %elem_size) {
         |entry:
-        |  %dp  = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
-        |  %buf = load ptr, ptr %dp
-        |  %byte_off = mul i64 %k, %elem_size
+        |  %cp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 2
+        |  %c    = load i64, ptr %cp
+        |  %sp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+        |  %rs   = load i64, ptr %sp
+        |  %r    = sdiv i64 %k, %c
+        |  %col  = srem i64 %k, %c
+        |  %rb   = mul i64 %r, %rs
+        |  %idx  = add i64 %rb, %col
+        |  %dp   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 3
+        |  %buf  = load ptr, ptr %dp
+        |  %byte_off = mul i64 %idx, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
         |}
@@ -1099,6 +1167,8 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %srows = load i64, ptr %srp
         |  %scp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 2
         |  %scols = load i64, ptr %scp
+        |  %ssp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 4
+        |  %srowStride = load i64, ptr %ssp
         |  %loBad  = icmp slt i64 %rowLo, 0
         |  %hiBad  = icmp sgt i64 %rowHi, %srows
         |  %ordBad = icmp slt i64 %rowHi, %rowLo
@@ -1111,12 +1181,14 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |ok:
         |  %sdp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 3
         |  %sbuf = load ptr, ptr %sdp
-        |  %row_stride = mul i64 %scols, %elem_size
-        |  %byte_off   = mul i64 %rowLo, %row_stride
+        |  ; Physical byte offset = rowLo * srowStride * elem_size (the
+        |  ; source's rowStride accounts for sub-rect-of-sub-rect chains).
+        |  %row_pitch = mul i64 %srowStride, %elem_size
+        |  %byte_off  = mul i64 %rowLo, %row_pitch
         |  %vbuf = getelementptr inbounds i8, ptr %sbuf, i64 %byte_off
         |  %vrows = sub i64 %rowHi, %rowLo
         |  call void @__nex_arr2_inc(ptr %src)
-        |  %desc = call ptr @malloc(i64 40)
+        |  %desc = call ptr @malloc(i64 48)
         |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
@@ -1125,8 +1197,83 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  store i64 %scols, ptr %cp
         |  %dp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
         |  store ptr %vbuf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
-        |  %sop  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 4
+        |  ; Inherit the source's rowStride — for a row-range over an owned
+        |  ; matrix this is the source cols (contiguous); for a row-range
+        |  ; over an already-strided sub-rect the source's rowStride is
+        |  ; already the owner's cols, so chains keep pointing at the
+        |  ; right physical pitch.
+        |  %vsp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  store i64 %srowStride, ptr %vsp
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 5
+        |  %sop  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 5
+        |  %srcOwner = load ptr, ptr %sop
+        |  %srcIsView = icmp ne ptr %srcOwner, null
+        |  %root = select i1 %srcIsView, ptr %srcOwner, ptr %src
+        |  br i1 %srcIsView, label %retarget, label %store_owner
+        |retarget:
+        |  call void @__nex_arr2_inc(ptr %srcOwner)
+        |  call void @__nex_arr2_dec(ptr %src)
+        |  br label %store_owner
+        |store_owner:
+        |  store ptr %root, ptr %op
+        |  ret ptr %desc
+        |}
+        |
+        |; Sub-rectangle view over a rank-2 array. Selects rows
+        |; `rowLo..rowHi` and cols `colLo..colHi` from `src`, returning a
+        |; non-contiguous view whose `rowStride` equals the source's
+        |; rowStride (so the row-major formula `r * rowStride + c`
+        |; lands on the correct physical element of the underlying buffer
+        |; even though the view's logical cols < rowStride). Bounds checks
+        |; on both axes; view-of-view collapses to the root owner.
+        |define ptr @__nex_arr2_view_sub(ptr %src, i64 %rowLo, i64 %rowHi, i64 %colLo, i64 %colHi, i64 %elem_size) {
+        |entry:
+        |  %srp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 1
+        |  %srows = load i64, ptr %srp
+        |  %scp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 2
+        |  %scols = load i64, ptr %scp
+        |  %ssp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 4
+        |  %srowStride = load i64, ptr %ssp
+        |  %rLoBad  = icmp slt i64 %rowLo, 0
+        |  %rHiBad  = icmp sgt i64 %rowHi, %srows
+        |  %rOrdBad = icmp slt i64 %rowHi, %rowLo
+        |  %cLoBad  = icmp slt i64 %colLo, 0
+        |  %cHiBad  = icmp sgt i64 %colHi, %scols
+        |  %cOrdBad = icmp slt i64 %colHi, %colLo
+        |  %t1 = or i1 %rLoBad, %rHiBad
+        |  %t2 = or i1 %t1, %rOrdBad
+        |  %t3 = or i1 %t2, %cLoBad
+        |  %t4 = or i1 %t3, %cHiBad
+        |  %bad = or i1 %t4, %cOrdBad
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.view_oob_msg)
+        |  unreachable
+        |ok:
+        |  %sdp  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 3
+        |  %sbuf = load ptr, ptr %sdp
+        |  ; Physical offset to the (rowLo, colLo) element of the source
+        |  ; buffer: (rowLo * srowStride + colLo) * elem_size.
+        |  %rowOff   = mul i64 %rowLo, %srowStride
+        |  %flatOff  = add i64 %rowOff, %colLo
+        |  %byte_off = mul i64 %flatOff, %elem_size
+        |  %vbuf = getelementptr inbounds i8, ptr %sbuf, i64 %byte_off
+        |  %vrows = sub i64 %rowHi, %rowLo
+        |  %vcols = sub i64 %colHi, %colLo
+        |  call void @__nex_arr2_inc(ptr %src)
+        |  %desc = call ptr @malloc(i64 48)
+        |  %rcp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %rp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 1
+        |  store i64 %vrows, ptr %rp
+        |  %cp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 2
+        |  store i64 %vcols, ptr %cp
+        |  %dp   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 3
+        |  store ptr %vbuf, ptr %dp
+        |  %vsp  = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 4
+        |  store i64 %srowStride, ptr %vsp
+        |  %op   = getelementptr inbounds %nex_arr2, ptr %desc, i32 0, i32 5
+        |  %sop  = getelementptr inbounds %nex_arr2, ptr %src, i32 0, i32 5
         |  %srcOwner = load ptr, ptr %sop
         |  %srcIsView = icmp ne ptr %srcOwner, null
         |  %root = select i1 %srcIsView, ptr %srcOwner, ptr %src
@@ -1444,7 +1591,19 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %new = sub i64 %rc, 1
          |  store i64 %new, ptr %rcp
          |  %iz  = icmp eq i64 %new, 0
-         |  br i1 %iz, label %walk, label %done
+         |  br i1 %iz, label %check_owner, label %done
+         |check_owner:
+         |  ; Views borrow their data buffer from the owner — don't deep-walk
+         |  ; or free, just release the owner reference and drop the
+         |  ; descriptor. Owned arrays fall through to %walk and free buf+desc.
+         |  %op   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 4
+         |  %own  = load ptr, ptr %op
+         |  %is_view = icmp ne ptr %own, null
+         |  br i1 %is_view, label %free_view, label %walk
+         |free_view:
+         |  call void @__nex_arr1_dec(ptr %own)
+         |  call void @free(ptr %a)
+         |  br label %done
          |walk:
          |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
          |  %len = load i64, ptr %lp
@@ -1492,7 +1651,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %iz  = icmp eq i64 %new, 0
          |  br i1 %iz, label %check_owner, label %done
          |check_owner:
-         |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 4
+         |  %op   = getelementptr inbounds %nex_arr2, ptr %a, i32 0, i32 5
          |  %own  = load ptr, ptr %op
          |  %is_view = icmp ne ptr %own, null
          |  br i1 %is_view, label %free_view, label %walk

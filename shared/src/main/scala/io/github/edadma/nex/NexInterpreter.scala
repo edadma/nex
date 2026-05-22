@@ -40,7 +40,7 @@ case class VArray1(buf: mutable.ArrayBuffer[Value])           extends Value
   * the JVM GC (Scala holds the source buffer alive as long as any view
   * references it).
   */
-case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int) extends Value
+case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int, stride: Int = 1) extends Value
 
 case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extends Value
 
@@ -51,7 +51,23 @@ case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extend
   * is the view's window — row-major layout makes any row range
   * contiguous, so no stride field is needed.
   */
-case class VArray2View(buf: mutable.ArrayBuffer[Value], rowOff: Int, rows: Int, cols: Int) extends Value
+/** A non-copying view into an owned rank-2 array. `rowOff`/`colOff`
+  * are the offsets of the view's (0, 0) cell within the source's flat
+  * row-major buffer; `rowStride` is the pitch between rows in that
+  * buffer (the owner's `cols`). The (r, c) element of the view lives
+  * at `buf((rowOff + r) * rowStride + colOff + c)`. For row-range
+  * views `colOff=0` and `rowStride=cols`; for sub-rectangle views
+  * `rowStride > cols` (encoding the gap between visible rows) and
+  * `colOff > 0` is allowed.
+  */
+case class VArray2View(
+    buf: mutable.ArrayBuffer[Value],
+    rowOff: Int,
+    rows: Int,
+    cols: Int,
+    rowStride: Int,
+    colOff: Int,
+) extends Value
 case class VTuple(elems: List[Value])                         extends Value
 case class VStruct(name: String, fields: mutable.LinkedHashMap[String, Value]) extends Value
 

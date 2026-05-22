@@ -38,17 +38,20 @@ protected trait NexInterpPrelude:
     * owned arrays and non-array values.
     */
   protected def coerceViewForRead(v: Value): Value = v match
-    case VArray1View(buf, off, len) =>
+    case VArray1View(buf, off, len, stride) =>
       val out = mutable.ArrayBuffer.empty[Value]
       var i = 0
-      while i < len do { out += buf(off + i); i += 1 }
+      while i < len do { out += buf(off + i * stride); i += 1 }
       VArray1(out)
-    case VArray2View(buf, rowOff, rows, cols) =>
-      val out   = mutable.ArrayBuffer.empty[Value]
-      val start = rowOff * cols
-      val total = rows * cols
-      var i = 0
-      while i < total do { out += buf(start + i); i += 1 }
+    case VArray2View(buf, rowOff, rows, cols, rowStride, colOff) =>
+      val out = mutable.ArrayBuffer.empty[Value]
+      var r = 0
+      while r < rows do
+        var c = 0
+        while c < cols do
+          out += buf((rowOff + r) * rowStride + colOff + c)
+          c += 1
+        r += 1
       VArray2(out, rows, cols)
     case other => other
 

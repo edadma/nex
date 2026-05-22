@@ -301,17 +301,34 @@ protected trait NexElabInferPrelude extends NexElabState:
         val bT = elemOf(aa(1).tpe).map(_._1).getOrElse(TyUnknown)
         TCall(callee, aa, p, TyArray(TyTuple(List(aT, bT)), 1))
 
-      case "view" if aa.size == 2 =>
+      case "view" if aa.size == 2 || aa.size == 3 =>
         // First arg: a rank-1 or rank-2 array. Second arg: a range
         // expression (typed `TyArray(TyInteger, 1)`); the codegen
         // unpacks its bounds rather than reading the materialised range.
-        // Rank-1: borrows an element range. Rank-2: borrows a row
-        // range (contiguous in row-major layout). Result type matches
-        // the source.
+        // Third arg disambiguates by type:
+        //   - integer → rank-1 strided view's `by k` stride
+        //   - range (TyArray(TyInteger, 1)) → rank-2 sub-rectangle's
+        //     column range
+        // Rank-1: borrows an element range (optionally with stride);
+        // rank-2: borrows a row range, or a sub-rectangle when a
+        // second range is supplied.
         aa(0).tpe match
           case TyArray(_, r) if r > 2 =>
             err(s"view first argument requires a rank-1 or rank-2 array, got rank $r", p)
           case _ =>
+        if aa.size == 3 then
+          val arg0Rank = aa(0).tpe match
+            case TyArray(_, r) => r
+            case _             => 0
+          val arg2Tpe = aa(2).tpe
+          (arg0Rank, arg2Tpe) match
+            case (1, TyInteger | TyUnknown) => ()           // rank-1 + integer stride
+            case (1, _)                     =>
+              err(s"rank-1 view third argument must be integer stride, got $arg2Tpe", p)
+            case (2, TyArray(TyInteger, 1) | TyUnknown) => ()  // rank-2 + range
+            case (2, _)                     =>
+              err(s"rank-2 view third argument must be a range (sub-rectangle), got $arg2Tpe", p)
+            case _                          => ()
         TCall(callee, aa, p, aa(0).tpe)
 
       case _ =>
@@ -558,12 +575,15 @@ protected trait NexElabInferPrelude extends NexElabState:
         args.head.tpe match
           case TyArray(e, 2) => TyArray(e, 1)
           case _             => TyUnknown
-      case "view" if args.size == 2 =>
-        // view(a, lo..hi) — same element type and rank as the source.
-        // The second arg is a range expression; range bounds typecheck
-        // separately. Rank-1 takes an element range; rank-2 takes a
-        // row range (the result is still a rank-2 matrix with fewer
-        // rows). Sub-rectangle (rank-2, two ranges) is deferred.
+      case "view" if args.size == 2 || args.size == 3 =>
+        // view(a, lo..hi) or view(a, lo..hi, stride) — same element
+        // type and rank as the source. The second arg is a range
+        // expression; range bounds typecheck separately. Rank-1 takes
+        // an element range; rank-2 takes a row range (the result is
+        // still a rank-2 matrix with fewer rows). Sub-rectangle (rank-2,
+        // two ranges) is deferred. Optional integer stride is rank-1
+        // only — chunk 2 added rank-1 stride; rank-2 stride lands with
+        // chunk 4's sub-rectangle support.
         args.head.tpe match
           case TyArray(e, 1) => TyArray(e, 1)
           case TyArray(e, 2) => TyArray(e, 2)

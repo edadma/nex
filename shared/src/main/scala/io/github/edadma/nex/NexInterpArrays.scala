@@ -63,18 +63,32 @@ protected trait NexInterpArrays:
     * source's buffer. For a rank-2 source (`VArray2` or `VArray2View`),
     * `lo`/`hi` pick a row range; the result is a `VArray2View` with
     * the same column count. View-of-view chains collapse to the root
-    * buffer. `inclusive` lifts `hi` by one. Out-of-bounds bounds trap.
+    * buffer. `inclusive` lifts `hi` by one. `step` selects every k-th
+    * logical element (rank-1 only; rank-2 ignores stride for chunk 2 —
+    * chunk 4 lands sub-rectangle views). Out-of-bounds bounds trap.
     */
-  protected def buildView(src: Value, loRaw: Long, hiRaw: Long, inclusive: Boolean, p: Option[scala.util.parsing.input.Position]): Value =
+  protected def buildView(
+    src: Value,
+    loRaw: Long,
+    hiRaw: Long,
+    inclusive: Boolean,
+    step: Int,
+    colRange: Option[(Long, Long, Boolean)],
+    p: Option[scala.util.parsing.input.Position],
+  ): Value =
     src match
       case VArray1(b) =>
-        buildView1(b, 0, b.size, loRaw, hiRaw, inclusive, p)
-      case VArray1View(b, off, len) =>
-        buildView1(b, off, len, loRaw, hiRaw, inclusive, p)
+        if colRange.isDefined then trap("view: sub-rectangle requires a rank-2 source", p)
+        buildView1(b, 0, b.size, 1, loRaw, hiRaw, inclusive, step, p)
+      case VArray1View(b, off, len, srcStride) =>
+        if colRange.isDefined then trap("view: sub-rectangle requires a rank-2 source", p)
+        buildView1(b, off, len, srcStride, loRaw, hiRaw, inclusive, step, p)
       case VArray2(b, r, c) =>
-        buildView2(b, 0, r, c, loRaw, hiRaw, inclusive, p)
-      case VArray2View(b, rowOff, r, c) =>
-        buildView2(b, rowOff, r, c, loRaw, hiRaw, inclusive, p)
+        if step != 1 then trap("view: stride is rank-1 only", p)
+        buildView2(b, 0, r, c, c, 0, loRaw, hiRaw, inclusive, colRange, p)
+      case VArray2View(b, rowOff, r, c, rowStride, colOff) =>
+        if step != 1 then trap("view: stride is rank-1 only", p)
+        buildView2(b, rowOff, r, c, rowStride, colOff, loRaw, hiRaw, inclusive, colRange, p)
       case other =>
         trap(s"view: not an array: ${formatValue(other)}", p)
 
@@ -82,55 +96,84 @@ protected trait NexInterpArrays:
     buf: mutable.ArrayBuffer[Value],
     baseOff: Int,
     srcLen: Int,
+    srcStride: Int,
     loRaw: Long,
     hiRaw: Long,
     inclusive: Boolean,
+    step: Int,
     p: Option[scala.util.parsing.input.Position],
   ): Value =
+    if step <= 0 then trap(s"view: stride must be positive, got $step", p)
     val lo = wrapNeg(loRaw, srcLen).toInt
     val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcLen) + 1 else wrapNeg(hiRaw, srcLen)).toInt
     if lo < 0 || hiExclusive > srcLen || hiExclusive < lo then
       trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on length-$srcLen array", p)
-    VArray1View(buf, baseOff + lo, hiExclusive - lo)
+    // Logical view length = ceil((hi - lo) / step). View elements live at
+    // physical offset `baseOff + (lo + i*step) * srcStride` in the root
+    // buffer; we fold srcStride*step into the new view's `stride` so
+    // every i in the new view's iteration walks the right physical step.
+    val span = hiExclusive - lo
+    val vlen = if span <= 0 then 0 else (span + step - 1) / step
+    val physOff = baseOff + lo * srcStride
+    val newStride = srcStride * step
+    VArray1View(buf, physOff, vlen, newStride)
 
   private def buildView2(
     buf: mutable.ArrayBuffer[Value],
     rowBase: Int,
     srcRows: Int,
-    cols: Int,
+    srcCols: Int,
+    srcRowStride: Int,
+    srcColOff: Int,
     loRaw: Long,
     hiRaw: Long,
     inclusive: Boolean,
+    colRange: Option[(Long, Long, Boolean)],
     p: Option[scala.util.parsing.input.Position],
   ): Value =
     val lo = wrapNeg(loRaw, srcRows).toInt
     val hiExclusive = (if inclusive then wrapNeg(hiRaw, srcRows) + 1 else wrapNeg(hiRaw, srcRows)).toInt
     if lo < 0 || hiExclusive > srcRows || hiExclusive < lo then
-      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on $srcRows×$cols matrix", p)
-    VArray2View(buf, rowBase + lo, hiExclusive - lo, cols)
+      trap(s"view: out-of-bounds slice $loRaw..${if inclusive then "=" else ""}$hiRaw on $srcRows×$srcCols matrix", p)
+    val newRows = hiExclusive - lo
+    colRange match
+      case None =>
+        // Row-range view: inherit source col count + colOff, advance
+        // rowOff by `lo` rows.
+        VArray2View(buf, rowBase + lo, newRows, srcCols, srcRowStride, srcColOff)
+      case Some((cLoRaw, cHiRaw, cInclusive)) =>
+        // Sub-rectangle view: also bounds-wrap the column range; new
+        // colOff = srcColOff + cLo, rowStride stays the source's
+        // rowStride so per-element indexing skips the gap between
+        // visible rows in the underlying flat buffer.
+        val cLo = wrapNeg(cLoRaw, srcCols).toInt
+        val cHiExcl = (if cInclusive then wrapNeg(cHiRaw, srcCols) + 1 else wrapNeg(cHiRaw, srcCols)).toInt
+        if cLo < 0 || cHiExcl > srcCols || cHiExcl < cLo then
+          trap(s"view: out-of-bounds col slice $cLoRaw..${if cInclusive then "=" else ""}$cHiRaw on $srcRows×$srcCols matrix", p)
+        VArray2View(buf, rowBase + lo, newRows, cHiExcl - cLo, srcRowStride, srcColOff + cLo)
 
   protected def indexGet(arr: Value, idx: List[Value], p: Option[scala.util.parsing.input.Position]): Value =
     (arr, idx) match
-      case (VArray1View(buf, off, len), List(VInt(i))) =>
+      case (VArray1View(buf, off, len, stride), List(VInt(i))) =>
         val k = wrapNeg(i, len)
         if k < 0 || k >= len then trap(s"index out of bounds: $i (len=$len)", p)
-        buf(off + k.toInt)
+        buf(off + k.toInt * stride)
       case (VArray1(b), List(VInt(i))) =>
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt)
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
         if ki < 0 || ki >= r || kj < 0 || kj >= c then
           trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        buf((rowOff + ki.toInt) * c + kj.toInt)
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i))) =>
+        buf((rowOff + ki.toInt) * rowStride + colOff + kj.toInt)
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i))) =>
         val ki = wrapNeg(i, r)
         if ki < 0 || ki >= r then trap(s"index out of bounds: $i (rows=$r)", p)
         val row = mutable.ArrayBuffer.empty[Value]
         var k   = 0
-        while k < c do { row += buf((rowOff + ki.toInt) * c + k); k += 1 }
+        while k < c do { row += buf((rowOff + ki.toInt) * rowStride + colOff + k); k += 1 }
         VArray1(row)
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
@@ -153,20 +196,20 @@ protected trait NexInterpArrays:
 
   protected def indexSet(arr: Value, idx: List[Value], rhs: Value, p: Option[scala.util.parsing.input.Position]): Unit =
     (arr, idx) match
-      case (VArray1View(buf, off, len), List(VInt(i))) =>
+      case (VArray1View(buf, off, len, stride), List(VInt(i))) =>
         val k = wrapNeg(i, len)
         if k < 0 || k >= len then trap(s"index out of bounds: $i (len=$len)", p)
-        buf(off + k.toInt) = rhs
+        buf(off + k.toInt * stride) = rhs
       case (VArray1(b), List(VInt(i))) =>
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt) = rhs
-      case (VArray2View(buf, rowOff, r, c), List(VInt(i), VInt(j))) =>
+      case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
         if ki < 0 || ki >= r || kj < 0 || kj >= c then
           trap(s"index out of bounds: ($i, $j) (shape=$r×$c)", p)
-        buf((rowOff + ki.toInt) * c + kj.toInt) = rhs
+        buf((rowOff + ki.toInt) * rowStride + colOff + kj.toInt) = rhs
       case (VArray2(b, r, c), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -445,15 +488,15 @@ protected trait NexInterpArrays:
     case VString(s)     => s
     case VUnit          => "()"
     case VArray1(b)     => b.map(formatValue).mkString("[", ", ", "]")
-    case VArray1View(buf, off, len) =>
-      (off until off + len).map(i => formatValue(buf(i))).mkString("[", ", ", "]")
+    case VArray1View(buf, off, len, stride) =>
+      (0 until len).map(i => formatValue(buf(off + i * stride))).mkString("[", ", ", "]")
     case VArray2(b, r, c) =>
       val rows = for i <- 0 until r yield
         (for j <- 0 until c yield formatValue(b(i * c + j))).mkString("[", ", ", "]")
       rows.mkString("[", ", ", "]")
-    case VArray2View(buf, rowOff, r, c) =>
+    case VArray2View(buf, rowOff, r, c, rowStride, colOff) =>
       val rows = for i <- 0 until r yield
-        (for j <- 0 until c yield formatValue(buf((rowOff + i) * c + j))).mkString("[", ", ", "]")
+        (for j <- 0 until c yield formatValue(buf((rowOff + i) * rowStride + colOff + j))).mkString("[", ", ", "]")
       rows.mkString("[", ", ", "]")
     case VTuple(es)     => es.map(formatValue).mkString("(", ", ", ")")
     case VStruct(n, fs) => fs.map((k, v) => s"$k=${formatValue(v)}").mkString(s"$n { ", ", ", " }")

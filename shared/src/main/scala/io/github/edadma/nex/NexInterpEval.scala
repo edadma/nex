@@ -145,17 +145,30 @@ protected trait NexInterpEval:
       callee match
         case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
           constructStruct(s, args.map(evalExpr(_, env)), p)
-        case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "view" && args.size == 2 =>
-          // `view(a, lo..hi)` — bypass the normal materialising call path.
-          // The range arg is a `TBinOp` whose evaluation would build a
-          // throwaway `[lo, lo+1, …]` array; we want the bounds and the
-          // inclusivity flag directly.
+        case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "view" && (args.size == 2 || args.size == 3) =>
+          // `view(a, lo..hi)`, `view(a, lo..hi, step)`, or
+          // `view(m, rRange, cRange)` — bypass the normal materialising
+          // call path. The range args are `TBinOp` nodes whose
+          // evaluation would build throwaway arrays; we want the
+          // bounds and inclusivity flags directly. The 3rd arg
+          // disambiguates by AST shape (range vs integer) — rank-1
+          // takes a stride, rank-2 takes a column range.
           val src = evalExpr(args(0), env)
+          val (step, colRange) =
+            if args.size == 3 then
+              args(2) match
+                case TBinOp(cop, clo, chi, _, _) if cop == ".." || cop == "..=" =>
+                  val cLoV = asReal(evalExpr(clo, env)).toLong
+                  val cHiV = asReal(evalExpr(chi, env)).toLong
+                  (1, Some((cLoV, cHiV, cop == "..=")))
+                case stepE =>
+                  (asReal(evalExpr(stepE, env)).toInt, None)
+            else (1, None)
           args(1) match
             case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
               val loV = asReal(evalExpr(lo, env)).toLong
               val hiV = asReal(evalExpr(hi, env)).toLong
-              buildView(src, loV, hiV, inclusive = op == "..=", p)
+              buildView(src, loV, hiV, inclusive = op == "..=", step, colRange, p)
             case other =>
               trap(s"view: second arg must be a range, got ${other.tpe}", p)
         case _ =>
