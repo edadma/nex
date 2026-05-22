@@ -50,6 +50,6 @@ def main() =
   print(s"wrote ${length(buf)} bytes")
 ```
 
-The program prints `wrote 6157 bytes` (header + 64 × 32 × 3 pixels) and leaves a real `gradient.ppm` on disk that any PPM viewer can open. The same source runs on the interpreter on JVM, Node, and native — `write_bytes` routes through the cross-platform runtime so the file appears in the same place on every backend.
+The program prints `wrote 6157 bytes` (header + 64 × 32 × 3 pixels) and leaves a real `gradient.ppm` on disk that any PPM viewer can open. The same source runs through `nex run` on the interpreter on JVM, Node, and native, and through `nex compile` on the LLVM AOT backend — `write_bytes` routes through the cross-platform runtime so the file appears in the same place on every backend, and the `[byte]` descriptor + ARC helpers in the AOT runtime produce a byte-identical PPM file to the interpreter's.
 
 A real image-processing pipeline would normally widen the byte buffer to `[integer]` (or to `[real]` for HDR / sRGB / linear-light math) with `to_integers`, do the computation, and narrow back to `[byte]` with `to_bytes` before writing. `[byte]` exists for the storage layer; it deliberately does not participate in element-wise arithmetic or fusion. See the Specification, §3.3.1.
