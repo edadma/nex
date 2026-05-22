@@ -299,6 +299,8 @@ protected trait NexLLVMState:
   protected def emitBroadcast(scalar: TExpr, arr: TExpr, op: String, scalarFirst: Boolean, resultT: Type): String
   protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], resultT: Type): String
   protected def emitSlice2(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, resultT: Type): String
+  protected def emitSliceAssign(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], value: TExpr): Unit
+  protected def emitSlice2Assign(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, value: TExpr): Unit
   protected def emitClone(arr: TExpr, resultT: Type): String
   protected def emitFlatIndex(arr: TExpr, idx: TExpr, resultT: Type): String
   protected def emitFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, cols: Option[TExpr], resultT: Type): String
@@ -364,6 +366,12 @@ protected trait NexLLVMState:
   // can stay backend-agnostic about the `{double, double}` layout.
   protected def packComplexCD(re: String, im: String): String
   protected def unpackComplex(z: String): (String, String)
+
+  // Implemented in [[NexLLVMValueToString]] — value-formatting helpers
+  // declared here so [[NexLLVMEnums]] can route per-field values
+  // through them when building per-enum `__nex_<enum>_to_str` helpers.
+  protected def emitTypedValueToString(v: String, t: Type): String
+  protected def concatChain(parts: List[String]): String
 
   // ---------------------------------------------------------------------------
   // Infrastructure helpers.
