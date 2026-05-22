@@ -40,7 +40,7 @@ case class VArray1(buf: mutable.ArrayBuffer[Value])           extends Value
   * the JVM GC (Scala holds the source buffer alive as long as any view
   * references it).
   */
-case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int) extends Value
+case class VArray1View(buf: mutable.ArrayBuffer[Value], off: Int, len: Int, stride: Int = 1) extends Value
 
 case class VArray2(buf: mutable.ArrayBuffer[Value], rows: Int, cols: Int) extends Value
 

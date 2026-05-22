@@ -101,18 +101,23 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; A string's `data` field always points at a NUL-terminated buffer so
         |; we can hand it straight to libc (`printf("%s", data)`); `length`
         |; tracks the byte count NOT counting the terminator.
-        |; Rank-1 array descriptor: { refcount, length, data, owner }. The
-        |; trailing `owner` field encodes view ownership — null for an owned
-        |; array (the data buffer was malloc'd alongside the descriptor and
-        |; must be freed when the refcount hits zero), non-null for a view
-        |; (the data pointer is a borrow into the owner's buffer; freeing
-        |; releases the owner's reference instead of the data). Views share
-        |; the same LLVM type as owned arrays, so every existing read /
-        |; write / iteration path works transparently. The rank-2
-        |; descriptor uses the same scheme: `owner` is null for an owned
-        |; rank-2 array, non-null for a row-range view (the data pointer
-        |; is a borrow into the owner's row-major buffer).
-        |%nex_arr1 = type { i64, i64, ptr, ptr }
+        |; Rank-1 array descriptor: { refcount, length, data, stride, owner }.
+        |; The `stride` field counts elements between consecutive logical
+        |; positions in `data` — 1 for an owned array (contiguous) and for
+        |; a contiguous view, > 1 for a `by k` strided view. Every per-
+        |; element access scales the index by stride before walking the
+        |; buffer. The trailing `owner` field encodes view ownership —
+        |; null for an owned array (the data buffer was malloc'd alongside
+        |; the descriptor and must be freed when the refcount hits zero),
+        |; non-null for a view (the data pointer is a borrow into the
+        |; owner's buffer; freeing releases the owner's reference instead
+        |; of the data). Views share the same LLVM type as owned arrays,
+        |; so every existing read / write / iteration path works
+        |; transparently. The rank-2 descriptor uses the same scheme:
+        |; `owner` is null for an owned rank-2 array, non-null for a
+        |; row-range view (the data pointer is a borrow into the owner's
+        |; row-major buffer).
+        |%nex_arr1 = type { i64, i64, ptr, i64, ptr }
         |%nex_arr2 = type { i64, i64, i64, ptr, ptr }
         |%nex_str  = type { i64, i64, ptr }
         |
@@ -483,11 +488,11 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |
         |; --- Rank-1 runtime helpers -------------------------------------------
         |
-        |; Allocate a rank-1 array. Returns a fresh %nex_arr1* with refcount=1
-        |; and owner=null (owned, not a view).
+        |; Allocate a rank-1 array. Returns a fresh %nex_arr1* with refcount=1,
+        |; stride=1, and owner=null (owned, not a view).
         |define ptr @__nex_arr1_alloc(i64 %len, i64 %elem_size) {
         |entry:
-        |  %desc = call ptr @malloc(i64 32)
+        |  %desc = call ptr @malloc(i64 40)
         |  %rcp  = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %lp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 1
@@ -496,7 +501,9 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %bytes = mul i64 %len, %elem_size
         |  %buf   = call ptr @malloc(i64 %bytes)
         |  store ptr %buf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  store i64 1, ptr %sp
+        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 4
         |  store ptr null, ptr %op
         |  ret ptr %desc
         |}
@@ -510,35 +517,67 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; underlying buffer alone (it dies with the owner).
         |define ptr @__nex_arr1_view(ptr %src, i64 %lo, i64 %hi, i64 %elem_size) {
         |entry:
+        |  %r = call ptr @__nex_arr1_view_strided(ptr %src, i64 %lo, i64 %hi, i64 1, i64 %elem_size)
+        |  ret ptr %r
+        |}
+        |
+        |; Strided variant of __nex_arr1_view. `step` selects every `step`-th
+        |; element from the source's `lo..hi` window — `step=1` matches the
+        |; contiguous form. The view's logical length is ceil((hi-lo)/step).
+        |; Stride 1 is folded into the contiguous fast path so view-of-view
+        |; collapse over a contiguous outer survives unchanged.
+        |;
+        |; View-of-view multiplies the strides: `b.view(0..10 by 2).view(0..3 by 2)`
+        |; yields a logical [b[0], b[4], b[8]] view with effective stride 4 over
+        |; the root owner, mirroring NumPy semantics.
+        |define ptr @__nex_arr1_view_strided(ptr %src, i64 %lo, i64 %hi, i64 %step, i64 %elem_size) {
+        |entry:
         |  %slp = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 1
         |  %slen = load i64, ptr %slp
-        |  %loBad  = icmp slt i64 %lo, 0
-        |  %hiBad  = icmp sgt i64 %hi, %slen
-        |  %ordBad = icmp slt i64 %hi, %lo
+        |  %loBad   = icmp slt i64 %lo, 0
+        |  %hiBad   = icmp sgt i64 %hi, %slen
+        |  %ordBad  = icmp slt i64 %hi, %lo
+        |  %stepBad = icmp sle i64 %step, 0
         |  %b1   = or i1 %loBad, %hiBad
-        |  %bad  = or i1 %b1, %ordBad
+        |  %b2   = or i1 %b1, %ordBad
+        |  %bad  = or i1 %b2, %stepBad
         |  br i1 %bad, label %trap, label %ok
         |trap:
         |  call void @__nex_trap_with(ptr @.view_oob_msg)
         |  unreachable
         |ok:
+        |  %sspp = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 3
+        |  %sstride = load i64, ptr %sspp
+        |  ; Step through source's logical positions but the byte offset
+        |  ; must account for the source's existing stride (so view-of-view
+        |  ; over an already-strided source still indexes the underlying
+        |  ; buffer correctly).
         |  %sdp  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 2
         |  %sbuf = load ptr, ptr %sdp
-        |  %byte_off = mul i64 %lo, %elem_size
+        |  %loScaled = mul i64 %lo, %sstride
+        |  %byte_off = mul i64 %loScaled, %elem_size
         |  %vbuf = getelementptr inbounds i8, ptr %sbuf, i64 %byte_off
-        |  %vlen = sub i64 %hi, %lo
+        |  ; Logical view length = ceil((hi - lo) / step).
+        |  %span = sub i64 %hi, %lo
+        |  %spanPlus = add i64 %span, %step
+        |  %spanAdj = sub i64 %spanPlus, 1
+        |  %vlen = sdiv i64 %spanAdj, %step
+        |  ; Effective stride against the root buffer = source stride * step.
+        |  %vstride = mul i64 %sstride, %step
         |  call void @__nex_arr1_inc(ptr %src)
-        |  %desc = call ptr @malloc(i64 32)
+        |  %desc = call ptr @malloc(i64 40)
         |  %rcp  = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 0
         |  store i64 1, ptr %rcp
         |  %lp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 1
         |  store i64 %vlen, ptr %lp
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 2
         |  store ptr %vbuf, ptr %dp
-        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 3
+        |  store i64 %vstride, ptr %sp
+        |  %op   = getelementptr inbounds %nex_arr1, ptr %desc, i32 0, i32 4
         |  ; If src is itself a view, chain through to the underlying owner
         |  ; so view-of-view doesn't grow arbitrary chains.
-        |  %sop  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 3
+        |  %sop  = getelementptr inbounds %nex_arr1, ptr %src, i32 0, i32 4
         |  %srcOwner = load ptr, ptr %sop
         |  %srcIsView = icmp ne ptr %srcOwner, null
         |  %root = select i1 %srcIsView, ptr %srcOwner, ptr %src
@@ -584,7 +623,7 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  ; Free our descriptor and decref the owner; the owner's data dies
         |  ; with its own refcount. An owned array (owner == null) frees its
         |  ; data buffer and descriptor as before.
-        |  %op  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 3
+        |  %op  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 4
         |  %own = load ptr, ptr %op
         |  %isv = icmp ne ptr %own, null
         |  br i1 %isv, label %free_view, label %free_owned
@@ -614,7 +653,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |; size `elem_size` bytes. Negative indices wrap from the end: idx = -1
         |; → len-1, idx = -2 → len-2, etc. (matches Python / NumPy). Bounds-
         |; checked AFTER wrap so an out-of-range negative (e.g. idx = -10 on
-        |; a 3-element array → wrapped to -7) still traps.
+        |; a 3-element array → wrapped to -7) still traps. The physical
+        |; address is `data + i * stride * elem_size`; for owned arrays
+        |; stride is 1 and the address is contiguous, for a `view(by k)`
+        |; strided view stride > 1 selects every k-th element.
         |define ptr @__nex_arr1_slot(ptr %a, i64 %idx, i64 %elem_size) {
         |entry:
         |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
@@ -632,7 +674,10 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |ok:
         |  %dp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 2
         |  %buf  = load ptr, ptr %dp
-        |  %byte_off = mul i64 %i, %elem_size
+        |  %sp   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 3
+        |  %stride = load i64, ptr %sp
+        |  %strided  = mul i64 %i, %stride
+        |  %byte_off = mul i64 %strided, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
         |}
@@ -1444,7 +1489,19 @@ protected trait NexLLVMPreamble extends NexLLVMState:
          |  %new = sub i64 %rc, 1
          |  store i64 %new, ptr %rcp
          |  %iz  = icmp eq i64 %new, 0
-         |  br i1 %iz, label %walk, label %done
+         |  br i1 %iz, label %check_owner, label %done
+         |check_owner:
+         |  ; Views borrow their data buffer from the owner — don't deep-walk
+         |  ; or free, just release the owner reference and drop the
+         |  ; descriptor. Owned arrays fall through to %walk and free buf+desc.
+         |  %op   = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 4
+         |  %own  = load ptr, ptr %op
+         |  %is_view = icmp ne ptr %own, null
+         |  br i1 %is_view, label %free_view, label %walk
+         |free_view:
+         |  call void @__nex_arr1_dec(ptr %own)
+         |  call void @free(ptr %a)
+         |  br label %done
          |walk:
          |  %lp  = getelementptr inbounds %nex_arr1, ptr %a, i32 0, i32 1
          |  %len = load i64, ptr %lp

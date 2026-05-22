@@ -145,17 +145,21 @@ protected trait NexInterpEval:
       callee match
         case TVarRef(s, _, _) if s.kind == SymKind.TypeName =>
           constructStruct(s, args.map(evalExpr(_, env)), p)
-        case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "view" && args.size == 2 =>
-          // `view(a, lo..hi)` — bypass the normal materialising call path.
-          // The range arg is a `TBinOp` whose evaluation would build a
-          // throwaway `[lo, lo+1, …]` array; we want the bounds and the
-          // inclusivity flag directly.
+        case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "view" && (args.size == 2 || args.size == 3) =>
+          // `view(a, lo..hi)` or `view(a, lo..hi, step)` — bypass the
+          // normal materialising call path. The range arg is a `TBinOp`
+          // whose evaluation would build a throwaway `[lo, lo+1, …]`
+          // array; we want the bounds and the inclusivity flag directly.
+          // The optional third arg is the stride for `view(by k)` semantics.
           val src = evalExpr(args(0), env)
+          val step =
+            if args.size == 3 then asReal(evalExpr(args(2), env)).toInt
+            else 1
           args(1) match
             case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
               val loV = asReal(evalExpr(lo, env)).toLong
               val hiV = asReal(evalExpr(hi, env)).toLong
-              buildView(src, loV, hiV, inclusive = op == "..=", p)
+              buildView(src, loV, hiV, inclusive = op == "..=", step, p)
             case other =>
               trap(s"view: second arg must be a range, got ${other.tpe}", p)
         case _ =>

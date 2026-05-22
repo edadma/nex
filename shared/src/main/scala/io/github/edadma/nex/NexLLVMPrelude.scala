@@ -288,12 +288,13 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("ones",     List(n))               => emitConstFill(n, "1", TyInteger, resultT)
       case ("identity", List(n))               => emitIdentityCall(n, resultT)
 
-      // view-style slicing (rank-1 contiguous). The range arg is a
-      // `TBinOp("..", lo, hi)` (exclusive) or `("..=", lo, hi)`
-      // (inclusive) — we unpack both bounds, lower an inclusive range
-      // to the equivalent exclusive `hi+1`, then call the runtime
-      // helper. The result descriptor borrows from the source.
-      case ("view", List(arr, r))               => emitViewCall(arr, r, resultT)
+      // view-style slicing. The range arg is a `TBinOp("..", lo, hi)`
+      // (exclusive) or `("..=", lo, hi)` (inclusive) — we unpack both
+      // bounds, lower an inclusive range to the equivalent exclusive
+      // `hi+1`, then call the runtime helper. With a third arg the
+      // view picks every k-th element (rank-1 strided form).
+      case ("view", List(arr, r))               => emitViewCall(arr, r, None, resultT)
+      case ("view", List(arr, r, step))         => emitViewCall(arr, r, Some(step), resultT)
 
       // §10.4 rank-2 ops.
       case ("shape",     List(a))              => emitShapeCall(a, resultT)

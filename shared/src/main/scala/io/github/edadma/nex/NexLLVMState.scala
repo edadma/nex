@@ -309,6 +309,28 @@ protected trait NexLLVMState:
   protected def emitCountingLoop(len: String, prefix: String)(genBody: String => Unit): Unit
   protected def bufPtr(desc: String, t: Type): String
 
+  /** Emit a typed GEP into a rank-1 array's data buffer accounting for
+    * the descriptor's stride. `descReg` is the array descriptor; `bufReg`
+    * is its data pointer (typically extracted via [[bufPtr]] before the
+    * loop); `iReg` is the loop index SSA; `stT` is the element storage-
+    * type token (`i64`, `double`, `{ double, double }`, etc.). Returns
+    * the slot SSA register.
+    *
+    * For owned arrays and chunk-1 contiguous views (stride=1) LLVM's
+    * optimizer folds the `mul i, 1` away, leaving exactly the same IR
+    * as a direct typed GEP. For chunk-2 `view(by k)` strided views the
+    * stride > 1 selects every k-th element. Use this in any rank-1
+    * iteration loop that walks a user-supplied source array; fresh
+    * result arrays (allocated locally with implicit stride=1) can keep
+    * the cheaper direct GEP form. */
+  protected def emitArr1ElemGep(descReg: String, bufReg: String, iReg: String, stT: String): String
+
+  /** Rank-agnostic flat-buffer slot GEP. Rank-1 routes through
+    * [[emitArr1ElemGep]] (stride-aware); rank-2 uses a direct typed
+    * GEP into the contiguous row-major buffer (chunk 4 will add stride
+    * to the rank-2 descriptor too). */
+  protected def emitArrElemGep(descReg: String, bufReg: String, iReg: String, stT: String, t: Type): String
+
   protected def emitPreamble(): Unit
   protected def emitInitFunction(bindings: List[TTopBinding]): Unit
 
@@ -343,7 +365,7 @@ protected trait NexLLVMState:
   protected def emitFillCall(n: TExpr, v: TExpr, resultT: Type): String
   protected def emitConstFill(n: TExpr, constStr: String, elemT: Type, resultT: Type): String
   protected def emitIdentityCall(n: TExpr, resultT: Type): String
-  protected def emitViewCall(arr: TExpr, r: TExpr, resultT: Type): String
+  protected def emitViewCall(arr: TExpr, r: TExpr, step: Option[TExpr], resultT: Type): String
 
   // Shared element-op helpers — implemented in [[NexLLVMArrayPrelude]],
   // also called from [[NexLLVMMatrixPrelude]]'s matmul/sum_axis kernels.

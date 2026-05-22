@@ -4723,6 +4723,107 @@ object NexProgramCorpus:
     ),
 
     // ============================================================
+    // rank-1 strided views — `a.view(lo..hi, k)` borrows every k-th
+    // element starting at lo. Three-arg form keeps the parser simple;
+    // descriptor carries a stride field. View-of-view multiplies
+    // strides.
+    // ============================================================
+    Case(
+      "rank-1 strided view-style slicing",
+      "stride 2 borrows every other element",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60]
+        |  val v = a.view(0..6, 2)
+        |  print(v)
+      """.stripMargin,
+      "[10, 30, 50]\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "strided view length collapses by ceil((hi-lo)/k)",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        |  val v = a.view(1..9, 3)
+        |  print(length(v))
+        |  print(v)
+      """.stripMargin,
+      "3\n[2, 5, 8]\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "strided view supports indexed read",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50, 60, 70]
+        |  val v = a.view(0..7, 3)
+        |  print(v[0])
+        |  print(v[1])
+        |  print(v[2])
+      """.stripMargin,
+      "10\n40\n70\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "write through a strided view updates the source",
+      """
+        |def main() =
+        |  var a = [1, 2, 3, 4, 5, 6]
+        |  val v = a.view(0..6, 2)
+        |  v[1] = 99
+        |  print(a)
+      """.stripMargin,
+      "[1, 2, 99, 4, 5, 6]\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "sum / map / reduce work transparently on a strided view",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5, 6, 7, 8]
+        |  val v = a.view(0..8, 2)
+        |  print(sum(v))
+        |  print(reduce(v, 0, (acc, x) -> acc + x * 10))
+      """.stripMargin,
+      "16\n160\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "view-of-view multiplies strides",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        |  val v1 = a.view(0..12, 2)
+        |  val v2 = v1.view(0..6, 2)
+        |  print(v2)
+      """.stripMargin,
+      "[1, 5, 9]\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "stride 1 is equivalent to a contiguous view",
+      """
+        |def main() =
+        |  val a = [10, 20, 30, 40, 50]
+        |  val v = a.view(1..4, 1)
+        |  print(v)
+      """.stripMargin,
+      "[20, 30, 40]\n",
+    ),
+    Case(
+      "rank-1 strided view-style slicing",
+      "non-positive stride traps",
+      """
+        |def main() =
+        |  val a = [1, 2, 3, 4, 5]
+        |  assert_traps(() -> a.view(0..5, 0), "view")
+        |  print("caught")
+      """.stripMargin,
+      "caught\n",
+    ),
+
+    // ============================================================
     // const expressions calling functions — spec §5.3. The RHS may
     // call any pure function (prelude or user-defined) so long as
     // the result type is scalar. Compile-time evaluation is optional

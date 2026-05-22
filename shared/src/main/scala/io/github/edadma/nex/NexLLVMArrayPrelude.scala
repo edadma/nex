@@ -62,8 +62,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val dstBuf  = bufPtr(res, resultT)
 
     emitCountingLoop(len, "hof.map") { i =>
-      val srcSlot = newReg()
-      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
+      val srcSlot = emitArrElemGep(arrV, srcBuf, i, srcStT, arr.tpe)
       val elem    = loadElem(srcStT, srcSlot, srcLLT)
       val y       = newReg()
       emitLine(s"  $y = call $resLLT (ptr, $srcLLT) $fnPtr(ptr $envPtr, $srcLLT $elem)\n")
@@ -103,8 +102,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val srcBuf  = bufPtr(arrV, arr.tpe)
 
     emitCountingLoop(len, "hof.reduce") { i =>
-      val srcSlot = newReg()
-      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
+      val srcSlot = emitArrElemGep(arrV, srcBuf, i, srcStT, arr.tpe)
       val elem    = loadElem(srcStT, srcSlot, srcLLT)
       val accCur  = newReg()
       emitLine(s"  $accCur = load $accLLT, ptr $accSlot\n")
@@ -151,8 +149,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val dstBuf  = bufPtr(res, resultT)
 
     emitCountingLoop(len, "hof.filter") { i =>
-      val srcSlot = newReg()
-      emitLine(s"  $srcSlot = getelementptr inbounds $stT, ptr $srcBuf, i64 $i\n")
+      val srcSlot = emitArr1ElemGep(arrV, srcBuf, i, stT)
       val v       = loadElem(stT, srcSlot, langT)
       val keep    = newReg()
       emitLine(s"  $keep = call i1 (ptr, $langT) $fnPtr(ptr $envPtr, $langT $v)\n")
@@ -397,11 +394,9 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     storeElem(stT, zeroOf(resultT), accSlot)
 
     emitCountingLoop(len, "hof.dot") { i =>
-      val aS = newReg()
-      emitLine(s"  $aS = getelementptr inbounds $stT, ptr $aBuf, i64 $i\n")
+      val aS = emitArr1ElemGep(av, aBuf, i, stT)
       val ae = loadElem(stT, aS, llT)
-      val bS = newReg()
-      emitLine(s"  $bS = getelementptr inbounds $stT, ptr $bBuf, i64 $i\n")
+      val bS = emitArr1ElemGep(bv, bBuf, i, stT)
       val be = loadElem(stT, bS, llT)
       val prod = emitScalarBinOpSimple("*", ae, be, elem)
       val cur  = newReg()
@@ -456,8 +451,9 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
 
     val buf     = bufPtr(arrV, arr.tpe)
     // Seed the accumulator with arr[0], then loop 1..len-1.
-    val firstSlot = newReg()
-    emitLine(s"  $firstSlot = getelementptr inbounds $stT, ptr $buf, i64 0\n")
+    val zeroIdx = newReg()
+    emitLine(s"  $zeroIdx = add i64 0, 0\n")
+    val firstSlot = emitArrElemGep(arrV, buf, zeroIdx, stT, arr.tpe)
     val first   = loadElem(stT, firstSlot, llT)
     val accSlot = newReg()
     emitLine(s"  $accSlot = alloca $accLLT\n")
@@ -466,8 +462,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val tail = newReg(); emitLine(s"  $tail = sub i64 $len, 1\n")
     emitCountingLoop(tail, labelPrefix) { i =>
       val j = newReg(); emitLine(s"  $j = add i64 $i, 1\n")
-      val slot = newReg()
-      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $j\n")
+      val slot = emitArrElemGep(arrV, buf, j, stT, arr.tpe)
       val e   = loadElem(stT, slot, llT)
       val cur = newReg()
       emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
@@ -511,8 +506,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     storeElem(stT, identity, accSlot)
 
     emitCountingLoop(len, labelPrefix) { i =>
-      val slot = newReg()
-      emitLine(s"  $slot = getelementptr inbounds $stT, ptr $buf, i64 $i\n")
+      val slot = emitArrElemGep(arrV, buf, i, stT, arr.tpe)
       val e   = loadElem(stT, slot, llT)
       val cur = newReg()
       emitLine(s"  $cur = load $accLLT, ptr $accSlot\n")
@@ -649,8 +643,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     emitLine(s"  store i64 0, ptr $countSlot\n")
 
     emitCountingLoop(srcLen, "hof.flatMap") { i =>
-      val srcSlot = newReg()
-      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
+      val srcSlot = emitArr1ElemGep(arrV, srcBuf, i, srcStT)
       val srcE    = loadElem(srcStT, srcSlot, srcLLT)
       val subArr  = newReg()
       emitLine(s"  $subArr = call ptr (ptr, $srcLLT) $fnPtr(ptr $envPtr, $srcLLT $srcE)\n")
@@ -658,8 +651,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
       emitLine(s"  $subLen = call i64 @__nex_arr1_len(ptr $subArr)\n")
       val subBuf  = bufPtr(subArr, resultT)
       emitCountingLoop(subLen, "hof.flatMap.inner") { j =>
-        val sSlot = newReg()
-        emitLine(s"  $sSlot = getelementptr inbounds $resStT, ptr $subBuf, i64 $j\n")
+        val sSlot = emitArr1ElemGep(subArr, subBuf, j, resStT)
         val sE    = loadElem(resStT, sSlot, resLLT)
         val cur   = newReg()
         emitLine(s"  $cur = load i64, ptr $countSlot\n")
@@ -700,7 +692,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     * points at the source (or, for view-of-view, the root owner —
     * the runtime collapses chains).
     */
-  protected def emitViewCall(arr: TExpr, r: TExpr, resultT: Type): String =
+  protected def emitViewCall(arr: TExpr, r: TExpr, step: Option[TExpr], resultT: Type): String =
     val (loE, hiE, inclusive) = r match
       case TBinOp(op, lo, hi, _, _) if op == ".." || op == "..=" =>
         (lo, hi, op == "..=")
@@ -709,6 +701,8 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val esz = elemSize(arrayElem(arr.tpe))
     val av  = emitExpr(arr)
     val rank = arrayRank(arr.tpe)
+    if step.isDefined && rank != 1 then
+      notImpl(s"view stride is rank-1 only (chunk 2); rank-$rank lands with chunk 4")
     val srcLen = newReg()
     rank match
       case 1 => emitLine(s"  $srcLen = call i64 @__nex_arr1_len(ptr $av)\n")
@@ -726,9 +720,14 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
         val r = newReg(); emitLine(s"  $r = add i64 $hiRaw, 1\n"); r
       else hiRaw
     val res = newReg()
-    rank match
-      case 1 => emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
-      case 2 => emitLine(s"  $res = call ptr @__nex_arr2_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+    (rank, step) match
+      case (1, None) =>
+        emitLine(s"  $res = call ptr @__nex_arr1_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
+      case (1, Some(stepE)) =>
+        val stepV = emitExpr(stepE)
+        emitLine(s"  $res = call ptr @__nex_arr1_view_strided(ptr $av, i64 $loV, i64 $hiV, i64 $stepV, i64 $esz)\n")
+      case (2, _) =>
+        emitLine(s"  $res = call ptr @__nex_arr2_view(ptr $av, i64 $loV, i64 $hiV, i64 $esz)\n")
       case _ => // unreachable — caught above
     emitArrDec(av, arr.tpe)
     res
@@ -772,8 +771,7 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val outBuf = bufPtr(out, resultT)
 
     emitCountingLoop(len, "enumerate") { i =>
-      val srcSlot = newReg()
-      emitLine(s"  $srcSlot = getelementptr inbounds $srcStT, ptr $srcBuf, i64 $i\n")
+      val srcSlot = emitArr1ElemGep(src, srcBuf, i, srcStT)
       val srcE    = loadElem(srcStT, srcSlot, srcLLT)
       val acc0    = newReg()
       emitLine(s"  $acc0 = insertvalue $outTupTy undef, i64 $i, 0\n")
@@ -813,11 +811,9 @@ protected trait NexLLVMArrayPrelude extends NexLLVMState:
     val outBuf = bufPtr(out, resultT)
 
     emitCountingLoop(len, "zip") { i =>
-      val aS = newReg()
-      emitLine(s"  $aS = getelementptr inbounds $aStT, ptr $aBuf, i64 $i\n")
+      val aS = emitArr1ElemGep(av, aBuf, i, aStT)
       val ae = loadElem(aStT, aS, aLLT)
-      val bS = newReg()
-      emitLine(s"  $bS = getelementptr inbounds $bStT, ptr $bBuf, i64 $i\n")
+      val bS = emitArr1ElemGep(bv, bBuf, i, bStT)
       val be = loadElem(bStT, bS, bLLT)
       val acc0 = newReg()
       emitLine(s"  $acc0 = insertvalue $outTupTy undef, $aLLT $ae, 0\n")

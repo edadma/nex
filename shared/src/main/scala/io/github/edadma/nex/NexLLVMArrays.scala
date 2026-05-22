@@ -274,6 +274,25 @@ protected trait NexLLVMArrays extends NexLLVMState:
         r
       case other => notYet(s"buf ptr of rank $other"); "null"
 
+  protected def emitArr1ElemGep(descReg: String, bufReg: String, iReg: String, stT: String): String =
+    val sp = newReg()
+    emitLine(s"  $sp = getelementptr inbounds %nex_arr1, ptr $descReg, i32 0, i32 3\n")
+    val stride = newReg()
+    emitLine(s"  $stride = load i64, ptr $sp\n")
+    val strided = newReg()
+    emitLine(s"  $strided = mul i64 $iReg, $stride\n")
+    val slot = newReg()
+    emitLine(s"  $slot = getelementptr inbounds $stT, ptr $bufReg, i64 $strided\n")
+    slot
+
+  protected def emitArrElemGep(descReg: String, bufReg: String, iReg: String, stT: String, t: Type): String =
+    arrayRank(t) match
+      case 1 => emitArr1ElemGep(descReg, bufReg, iReg, stT)
+      case _ =>
+        val slot = newReg()
+        emitLine(s"  $slot = getelementptr inbounds $stT, ptr $bufReg, i64 $iReg\n")
+        slot
+
   /** Emit `op` between two scalar values of the same Nex type, returning
     * the SSA register of the result. Reuses the existing [[binOpInst]]
     * table for the integer / real / bool cases; complex operands route
@@ -396,11 +415,9 @@ protected trait NexLLVMArrays extends NexLLVMState:
         else elemL
       else resE
     emitCountingLoop(lenR, "ew") { i =>
-      val lSlot = newReg()
-      emitLine(s"  $lSlot = getelementptr inbounds $stL, ptr $lBuf, i64 $i\n")
+      val lSlot = emitArrElemGep(lv, lBuf, i, stL, lhs.tpe)
       val ll0 = loadElem(stL, lSlot, langL)
-      val rSlot = newReg()
-      emitLine(s"  $rSlot = getelementptr inbounds $stR, ptr $rBuf, i64 $i\n")
+      val rSlot = emitArrElemGep(rv, rBuf, i, stR, rhs.tpe)
       val rr0 = loadElem(stR, rSlot, langR)
       val ll = liftScalarTo(ll0, elemL, opElem)
       val rr = liftScalarTo(rr0, elemR, opElem)
@@ -437,8 +454,7 @@ protected trait NexLLVMArrays extends NexLLVMState:
     val oBuf = bufPtr(desc, resultT)
 
     emitCountingLoop(lenR, "bc") { i =>
-      val aSlot = newReg()
-      emitLine(s"  $aSlot = getelementptr inbounds $stE, ptr $aBuf, i64 $i\n")
+      val aSlot = emitArrElemGep(av, aBuf, i, stE, arr.tpe)
       val e = loadElem(stE, aSlot, langE)
       val (l, r) = if scalarFirst then (sv, e) else (e, sv)
       val out = emitScalarBinOp(op, l, r, elem)
@@ -552,8 +568,7 @@ protected trait NexLLVMArrays extends NexLLVMState:
       else i
       val srcIdx = newReg()
       emitLine(s"  $srcIdx = add i64 $loV, $srcOff\n")
-      val sSlot = newReg()
-      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $srcIdx\n")
+      val sSlot = emitArr1ElemGep(av, srcBuf, srcIdx, stE)
       val v = loadElem(stE, sSlot, langE)
       val oSlot = newReg()
       emitLine(s"  $oSlot = getelementptr inbounds $stE, ptr $outBuf, i64 $i\n")
@@ -811,10 +826,8 @@ protected trait NexLLVMArrays extends NexLLVMState:
       else i
       val dIdx = newReg()
       emitLine(s"  $dIdx = add i64 $loV, $dOff\n")
-      val dSlot = newReg()
-      emitLine(s"  $dSlot = getelementptr inbounds $stE, ptr $dstBuf, i64 $dIdx\n")
-      val sSlot = newReg()
-      emitLine(s"  $sSlot = getelementptr inbounds $stE, ptr $srcBuf, i64 $i\n")
+      val dSlot = emitArr1ElemGep(av, dstBuf, dIdx, stE)
+      val sSlot = emitArr1ElemGep(rv, srcBuf, i, stE)
       val newV = loadElem(stE, sSlot, langE)
       if isRefCountedType(elem) then
         val oldV = loadElem(stE, dSlot, langE)

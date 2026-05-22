@@ -301,17 +301,22 @@ protected trait NexElabInferPrelude extends NexElabState:
         val bT = elemOf(aa(1).tpe).map(_._1).getOrElse(TyUnknown)
         TCall(callee, aa, p, TyArray(TyTuple(List(aT, bT)), 1))
 
-      case "view" if aa.size == 2 =>
+      case "view" if aa.size == 2 || aa.size == 3 =>
         // First arg: a rank-1 or rank-2 array. Second arg: a range
         // expression (typed `TyArray(TyInteger, 1)`); the codegen
         // unpacks its bounds rather than reading the materialised range.
         // Rank-1: borrows an element range. Rank-2: borrows a row
-        // range (contiguous in row-major layout). Result type matches
-        // the source.
+        // range (contiguous in row-major layout). Optional third arg:
+        // integer stride for the `by k` form (rank-1 only — rank-2
+        // stride lands with chunk 4). Result type matches the source.
         aa(0).tpe match
           case TyArray(_, r) if r > 2 =>
             err(s"view first argument requires a rank-1 or rank-2 array, got rank $r", p)
+          case TyArray(_, 2) if aa.size == 3 =>
+            err("view stride argument is rank-1 only", p)
           case _ =>
+        if aa.size == 3 && aa(2).tpe != TyInteger && aa(2).tpe != TyUnknown then
+          err(s"view stride must be integer, got ${aa(2).tpe}", p)
         TCall(callee, aa, p, aa(0).tpe)
 
       case _ =>
@@ -558,12 +563,15 @@ protected trait NexElabInferPrelude extends NexElabState:
         args.head.tpe match
           case TyArray(e, 2) => TyArray(e, 1)
           case _             => TyUnknown
-      case "view" if args.size == 2 =>
-        // view(a, lo..hi) — same element type and rank as the source.
-        // The second arg is a range expression; range bounds typecheck
-        // separately. Rank-1 takes an element range; rank-2 takes a
-        // row range (the result is still a rank-2 matrix with fewer
-        // rows). Sub-rectangle (rank-2, two ranges) is deferred.
+      case "view" if args.size == 2 || args.size == 3 =>
+        // view(a, lo..hi) or view(a, lo..hi, stride) — same element
+        // type and rank as the source. The second arg is a range
+        // expression; range bounds typecheck separately. Rank-1 takes
+        // an element range; rank-2 takes a row range (the result is
+        // still a rank-2 matrix with fewer rows). Sub-rectangle (rank-2,
+        // two ranges) is deferred. Optional integer stride is rank-1
+        // only — chunk 2 added rank-1 stride; rank-2 stride lands with
+        // chunk 4's sub-rectangle support.
         args.head.tpe match
           case TyArray(e, 1) => TyArray(e, 1)
           case TyArray(e, 2) => TyArray(e, 2)
