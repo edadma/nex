@@ -81,6 +81,20 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
   protected case class MMemref(scalar: MScalar) extends MlirType:
     def text: String = s"memref<${scalar.text}>"
 
+  /** A nominal struct value. Lowered to `!llvm.struct<(t0, t1, ...)>`
+    * from the LLVM dialect — the pass pipeline runs
+    * `convert-func-to-llvm` so LLVM-dialect types flow through
+    * func-boundary signatures unchanged. Construction emits
+    * `llvm.mlir.undef` + a chain of `llvm.insertvalue`; field access
+    * emits `llvm.extractvalue`. Field types are themselves `MlirType`
+    * so nested structs work as long as each inner field is a type
+    * the codegen can express.
+    */
+  protected case class MStruct(name: String, fields: List[(String, MlirType)]) extends MlirType:
+    def text: String =
+      val fieldText = fields.map(_._2.text).mkString(", ")
+      s"!llvm.struct<($fieldText)>"
+
   protected case class MlirVal(reg: String, ty: MlirType)
 
   protected val out             = new StringBuilder
@@ -115,6 +129,14 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     * to MLIR-emitted user defs.
     */
   protected val varTensors      = mutable.Map.empty[Int, (String, MTensor)]
+  /** `var` struct bindings live as SSA-rebinding entries: each
+    * mutation produces a new struct value (via `llvm.insertvalue`)
+    * and re-binds the entry to the new SSA register. Reads return
+    * the current register. Keyed by symbol id. Same pattern as
+    * [[varTensors]] — Nex's struct values are by-value at the source
+    * level, so this matches the source semantics naturally.
+    */
+  protected val varStructs      = mutable.Map.empty[Int, (String, MStruct)]
   /** Per-program registry of `@intrinsic("libm.X")` function symbols.
     * Populated at the start of [[compile]] by scanning every
     * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
@@ -164,6 +186,9 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     boxedVarSet.clear()
     boxedVarBoxes.clear()
     defThunks.clear()
+    varSlots.clear()
+    varTensors.clear()
+    varStructs.clear()
     currentLambdaCaptures = Map.empty
     tp.allDecls.foreach {
       case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
@@ -383,6 +408,100 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       case other =>
         notYet(s"print of $other")
 
+  /** Walk a `TField` chain to its innermost TVarRef. Returns the var
+    * symbol plus the field names from outer to inner. For
+    * `o.i.v` (parsed left-to-right) the AST is
+    * `TField(TField(TVarRef(o), "i"), "v")` — outermost is the
+    * leaf field, so we accumulate by prepending and reverse at the
+    * end. Returns None if the chain doesn't bottom out at a var-
+    * bound struct symbol.
+    */
+  protected def collectFieldPath(target: TField): (Symbol, List[String]) =
+    def loop(e: TExpr, acc: List[String]): (Symbol, List[String]) = e match
+      case TField(inner, name, _, _) => loop(inner, name :: acc)
+      case TVarRef(sym, _, _)        => (sym, acc)
+      case other                     => notYet(s"non-var receiver in field write: ${other.getClass.getSimpleName}")
+    loop(target, Nil)
+
+  /** Some(rootVarSym) when `target` chains through TFields down to a
+    * TVarRef whose symbol is in `varStructs`. Otherwise None.
+    */
+  protected def rootVarStructSym(target: TField): Option[Symbol] =
+    def loop(e: TExpr): Option[Symbol] = e match
+      case TField(inner, _, _, _) => loop(inner)
+      case TVarRef(sym, _, _) if varStructs.contains(sym.id) => Some(sym)
+      case _                       => None
+    loop(target)
+
+  /** Build the new outer-struct SSA value after assigning `rhs` to
+    * the field path. Recursive: at each level, extract the current
+    * field, dive into the rest of the path, then `insertvalue` the
+    * updated sub-struct back. The leaf insertion promotes
+    * `int → real` if the field type demands it (matches
+    * [[emitStructConstruct]]).
+    */
+  protected def writeFieldPath(
+      curReg: String,
+      curMs:  MStruct,
+      path:   List[String],
+      rhs:    MlirVal,
+  ): String =
+    path match
+      case Nil =>
+        notYet("empty field path in struct field write")
+      case List(leaf) =>
+        val idx = curMs.fields.indexWhere(_._1 == leaf)
+        if idx < 0 then notYet(s"field `$leaf` not found on struct ${curMs.name}")
+        val fieldTy = curMs.fields(idx)._2
+        val rhsReg = (rhs.ty, fieldTy) match
+          case (lt, rt) if lt == rt                  => rhs.reg
+          case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(rhs).reg
+          case (lt, rt) =>
+            notYet(s"struct field write: $lt -> $rt mismatch")
+        val next = fresh(s"st_${curMs.name}")
+        out.append(s"  $next = llvm.insertvalue $rhsReg, $curReg[$idx] : ${curMs.text}\n")
+        next
+      case head :: rest =>
+        val idx = curMs.fields.indexWhere(_._1 == head)
+        if idx < 0 then notYet(s"field `$head` not found on struct ${curMs.name}")
+        val fieldTy = curMs.fields(idx)._2 match
+          case s: MStruct => s
+          case other      => notYet(s"nested field write through non-struct field type $other")
+        val innerReg = fresh(s"f_${head}")
+        out.append(s"  $innerReg = llvm.extractvalue $curReg[$idx] : ${curMs.text}\n")
+        val newInner = writeFieldPath(innerReg, fieldTy, rest, rhs)
+        val next = fresh(s"st_${curMs.name}")
+        out.append(s"  $next = llvm.insertvalue $newInner, $curReg[$idx] : ${curMs.text}\n")
+        next
+
+  /** Lower a struct construction call. Builds an
+    * `llvm.mlir.undef : !llvm.struct<...>` and folds each arg into
+    * the corresponding slot with `llvm.insertvalue`. Args are emitted
+    * in source order; each one's MLIR value type must match the
+    * field's declared MLIR type. Promotes `int → real` at the slot
+    * boundary so `Point(3, 4)` with declared `x: real, y: real` works
+    * without surface coercion.
+    */
+  protected def emitStructConstruct(ms: MStruct, args: List[TExpr]): MlirVal =
+    if args.size != ms.fields.size then
+      notYet(s"struct ${ms.name}: arity mismatch (${args.size} args vs ${ms.fields.size} fields)")
+    val argVals = args.zip(ms.fields).map { case (a, (_, fieldTy)) =>
+      val av = emitExpr(a)
+      (av.ty, fieldTy) match
+        case (lt, rt) if lt == rt                  => av
+        case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
+        case (lt, rt) =>
+          notYet(s"struct ${ms.name}: arg type $lt does not match field type $rt")
+    }
+    val undef = fresh(s"st_${ms.name}_undef")
+    out.append(s"  $undef = llvm.mlir.undef : ${ms.text}\n")
+    var acc = undef
+    for ((v, idx) <- argVals.zipWithIndex) do
+      val next = fresh(s"st_${ms.name}")
+      out.append(s"  $next = llvm.insertvalue ${v.reg}, $acc[$idx] : ${ms.text}\n")
+      acc = next
+    MlirVal(acc, ms)
+
   /** The expression visitor. Every node that lowers must produce a
     * single SSA value with a known MLIR type; nodes that don't fit
     * (assignments, side effects, function calls other than the
@@ -503,6 +622,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
 
     case TVarRef(sym, _, _) if varTensors.contains(sym.id) =>
       val (reg, ty) = varTensors(sym.id)
+      MlirVal(reg, ty)
+
+    case TVarRef(sym, _, _) if varStructs.contains(sym.id) =>
+      val (reg, ty) = varStructs(sym.id)
       MlirVal(reg, ty)
 
     case TClone(inner, _, _) =>
@@ -775,6 +898,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
+    case TCall(TVarRef(s, _, _), args, _, tpe) if s.kind == SymKind.TypeName =>
+      // Struct constructor: `Point(x, y)` lowers like a tuple literal —
+      // `llvm.mlir.undef` of the struct's LLVM type, then a chain of
+      // `llvm.insertvalue` placing each arg into its declared slot.
+      // Field order is the source-declaration order, fixed by the
+      // TyStruct's field list.
+      mlirTypeOf(tpe) match
+        case Some(ms: MStruct) => emitStructConstruct(ms, args)
+        case _                  => notYet(s"unsupported struct constructor result type $tpe")
+
     case TCall(TVarRef(s, _, _), args, _, _) if userDefs.contains(s.id) =>
       val (name, paramTys, retTyOpt) = userDefs(s.id)
       retTyOpt match
@@ -891,6 +1024,19 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case (aty, rty, cty) =>
           notYet(s"rank-2 index on $aty with $rty, $cty")
 
+    case TField(receiver, fieldName, _, _) =>
+      val rv = emitExpr(receiver)
+      rv.ty match
+        case ms: MStruct =>
+          val idx = ms.fields.indexWhere(_._1 == fieldName)
+          if idx < 0 then notYet(s"field `$fieldName` not found on struct ${ms.name}")
+          val fieldTy = ms.fields(idx)._2
+          val r       = fresh(s"f_${fieldName}")
+          out.append(s"  $r = llvm.extractvalue ${rv.reg}[$idx] : ${ms.text}\n")
+          MlirVal(r, fieldTy)
+        case other =>
+          notYet(s"field access on non-struct type $other")
+
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
 
@@ -996,6 +1142,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       v.ty match
         case s: MScalar => allocVarSlot(sym, v.reg, s)
         case t: MTensor => varTensors(sym.id) = (v.reg, t)
+        case s: MStruct => varStructs(sym.id) = (v.reg, s)
         case other      => notYet(s"var binding for ${sym.name} of type $other")
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
@@ -1029,6 +1176,23 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       v.ty match
         case t: MTensor => varTensors(sym.id) = (v.reg, t)
         case other      => notYet(s"var-tensor reassign with type $other")
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varStructs.contains(sym.id) =>
+      val v = emitExpr(value)
+      v.ty match
+        case s: MStruct => varStructs(sym.id) = (v.reg, s)
+        case other      => notYet(s"var-struct reassign with type $other")
+    case TBlockExpr(TAssign(target: TField, value, _, _))
+        if rootVarStructSym(target).isDefined =>
+      // Field write on a var-bound struct, possibly through a chain
+      // of nested struct fields (`o.i.v = 99`). We collect the
+      // outer-to-inner field path, recursively extract along the
+      // chain, perform the leaf insertvalue, then insertvalue back
+      // out to the outer struct, finally rebinding the var slot.
+      val (rootSym, fieldPath) = collectFieldPath(target)
+      val (curReg, ms) = varStructs(rootSym.id)
+      val rhs = emitExpr(value)
+      val newRootReg = writeFieldPath(curReg, ms, fieldPath, rhs)
+      varStructs(rootSym.id) = (newRootReg, ms)
     case TBlockExpr(TAssign(TIndex(TVarRef(sym, _, _), List(idx), _, _), value, _, _))
         if varTensors.contains(sym.id) =>
       emitVarTensorIndexAssign(sym.id, List(idx), value)

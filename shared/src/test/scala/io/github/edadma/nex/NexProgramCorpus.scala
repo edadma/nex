@@ -2471,6 +2471,7 @@ object NexProgramCorpus:
         |  print(p.y)
       """.stripMargin,
       "3.0\n4.0\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2487,6 +2488,7 @@ object NexProgramCorpus:
         |  print(p.x)
       """.stripMargin,
       "99.0\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2504,6 +2506,7 @@ object NexProgramCorpus:
         |  print(p.y)
       """.stripMargin,
       "99\n2\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2523,6 +2526,7 @@ object NexProgramCorpus:
         |  print(o.i.v)
       """.stripMargin,
       "99\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2538,6 +2542,7 @@ object NexProgramCorpus:
         |  print(it.name)
       """.stripMargin,
       "foobar\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2558,6 +2563,7 @@ object NexProgramCorpus:
         |  print(c.v)
       """.stripMargin,
       "10\n99\n1\n99\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -2579,6 +2585,7 @@ object NexProgramCorpus:
         |  print(b.i.v)
       """.stripMargin,
       "1\n99\n",
+      mlir = true,
     ),
     Case(
       "structs",
@@ -3892,6 +3899,7 @@ object NexProgramCorpus:
         |  print(distance(origin, p))
       """.stripMargin,
       "[11.0, 23.0, 35.0, 47.0, 59.0]\n5.0\n",
+      mlir = true,
     ),
     Case(
       "docs/examples",
@@ -5015,6 +5023,7 @@ object NexProgramCorpus:
         |  print(b.value)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5031,6 +5040,7 @@ object NexProgramCorpus:
         |  print(b.value)
       """.stripMargin,
       "42\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5047,6 +5057,7 @@ object NexProgramCorpus:
         |  print(p.snd)
       """.stripMargin,
       "1\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5065,6 +5076,7 @@ object NexProgramCorpus:
         |  print(p.snd.snd)
       """.stripMargin,
       "1\n2\n3\n4\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5081,6 +5093,7 @@ object NexProgramCorpus:
         |  print(unbox(Box("hi")))
       """.stripMargin,
       "7\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5097,6 +5110,7 @@ object NexProgramCorpus:
         |  print(p.fst + q.snd)
       """.stripMargin,
       "5\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5112,6 +5126,7 @@ object NexProgramCorpus:
         |  print(if a.value < b.value then "less" else "geq")
       """.stripMargin,
       "less\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5128,6 +5143,7 @@ object NexProgramCorpus:
         |  print(p.snd)
       """.stripMargin,
       "1\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generic structs",
@@ -5143,6 +5159,7 @@ object NexProgramCorpus:
         |  print(b.value)
       """.stripMargin,
       "99\n",
+      mlir = true,
     ),
 
     // ========================================================================
