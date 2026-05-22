@@ -34,6 +34,13 @@ case class VString(value: String)                             extends Value
 case object VUnit                                             extends Value
 case class VArray1(buf: mutable.ArrayBuffer[Value])           extends Value
 
+/** Packed byte buffer — runtime form of `[byte]`. Indexed read widens
+  * `buf(i) & 0xFF` to a `VInt`; indexed write requires the right-hand
+  * value to land in 0..255 (otherwise the interpreter traps). Slicing
+  * copies. No element-wise arithmetic, no broadcasting, no views.
+  */
+case class VByteArray(buf: mutable.ArrayBuffer[Byte])         extends Value
+
 /** A non-copying borrow into an owned rank-1 array. `buf` aliases the
   * source array's buffer directly; `off` and `len` define the window.
   * Writing through a view updates the source. Lifetime is managed by

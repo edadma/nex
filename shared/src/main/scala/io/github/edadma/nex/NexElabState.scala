@@ -245,6 +245,9 @@ protected trait NexElabState:
       "print",
       // §10.7 type conversions
       "to_real", "to_integer", "to_complex",
+      "to_bytes", "to_integers",
+      // §10.x [byte] buffer constructors and I/O
+      "bytes", "read_bytes", "write_bytes",
       // §10.8 assertions
       "assert", "assert_eq", "assert_approx", "assert_traps",
     )

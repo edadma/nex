@@ -162,6 +162,10 @@ protected trait NexInterpArrays:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt)
+      case (VByteArray(b), List(VInt(i))) =>
+        val k = wrapNeg(i, b.size)
+        if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
+        VInt((b(k.toInt) & 0xFF).toLong)
       case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -204,6 +208,13 @@ protected trait NexInterpArrays:
         val k = wrapNeg(i, b.size)
         if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
         b(k.toInt) = rhs
+      case (VByteArray(b), List(VInt(i))) =>
+        val k = wrapNeg(i, b.size)
+        if k < 0 || k >= b.size then trap(s"index out of bounds: $i (len=${b.size})", p)
+        rhs match
+          case VInt(v) if v >= 0 && v <= 255 => b(k.toInt) = v.toByte
+          case VInt(v)                       => trap(s"byte value out of range 0..255: $v", p)
+          case _                             => trap(s"cannot store ${formatValue(rhs)} in a [byte] (need integer in 0..255)", p)
       case (VArray2View(buf, rowOff, r, c, rowStride, colOff), List(VInt(i), VInt(j))) =>
         val ki = wrapNeg(i, r)
         val kj = wrapNeg(j, c)
@@ -488,6 +499,8 @@ protected trait NexInterpArrays:
     case VString(s)     => s
     case VUnit          => "()"
     case VArray1(b)     => b.map(formatValue).mkString("[", ", ", "]")
+    case VByteArray(b)  =>
+      b.map(by => f"0x${by & 0xFF}%02X").mkString("[", ", ", "]")
     case VArray1View(buf, off, len, stride) =>
       (0 until len).map(i => formatValue(buf(off + i * stride))).mkString("[", ", ", "]")
     case VArray2(b, r, c) =>

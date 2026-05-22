@@ -163,6 +163,8 @@ protected trait NexElabInferPatterns extends NexElabState:
         arr.tpe match
           case TyArray(e, 1) =>
             TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyArray(e, 1))
+          case TyByteArray =>
+            TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyByteArray)
           case TyArray(_, r) =>
             err(s"rank-1 slice requires a rank-1 array, got rank $r", p)
             TSlice(arr, Some(lo), Some(hi), inclusive = op == "..=", None, p, TyUnknown)
@@ -191,6 +193,8 @@ protected trait NexElabInferPatterns extends NexElabState:
         arr.tpe match
           case TyArray(e, 1) =>
             TSlice(arr, lo, hi, inclusive, stride, p, TyArray(e, 1))
+          case TyByteArray =>
+            TSlice(arr, lo, hi, inclusive, stride, p, TyByteArray)
           case TyArray(_, r) =>
             err(s"rank-1 slice requires a rank-1 array, got rank $r", p)
             TSlice(arr, lo, hi, inclusive, stride, p, TyUnknown)
@@ -244,6 +248,7 @@ protected trait NexElabInferPatterns extends NexElabState:
           case TyArray(e, 1) if idx.size == 1 => e
           case TyArray(e, 2) if idx.size == 2 => e
           case TyArray(e, 2) if idx.size == 1 => TyArray(e, 1) // row slice
+          case TyByteArray   if idx.size == 1 => TyInteger     // [byte] indexed read widens to integer
           case TyUnknown                      => TyUnknown
           case other =>
             err(s"cannot index value of type $other", p); TyUnknown

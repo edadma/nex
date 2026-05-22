@@ -313,6 +313,23 @@ protected trait NexInterpEval:
               out += b(k)
               k += strideI
             VArray1(out)
+        case VByteArray(b) =>
+          val loRaw = asIntBound(lo, 0)
+          val hiRaw = asIntBound(hi, b.size)
+          val loI   = wrapNeg(loRaw, b.size).toInt
+          val hiI   = wrapNeg(hiRaw, b.size).toInt
+          val upper = if inclusive then hiI + 1 else hiI
+          if loI < 0 || upper > b.size || loI > upper then
+            trap(s"slice [$loRaw..${if inclusive then "=" else ""}$hiRaw] out of bounds for [byte] of size ${b.size}", p)
+          if strideI == 1 then
+            VByteArray(b.slice(loI, upper).to(mutable.ArrayBuffer))
+          else
+            val out = mutable.ArrayBuffer.empty[Byte]
+            var k   = loI
+            while k < upper do
+              out += b(k)
+              k += strideI
+            VByteArray(out)
         case other =>
           trap(s"rank-1 slice requires a rank-1 array, got ${formatValue(other)}", p)
 
@@ -929,6 +946,7 @@ protected trait NexInterpEval:
     case (VUnit, VUnit)         => true
     case (VTuple(xs), VTuple(ys)) => xs.size == ys.size && xs.zip(ys).forall((a, b) => valueEq(a, b))
     case (VArray1(x), VArray1(y)) => x.size == y.size && x.zip(y).forall((a, b) => valueEq(a, b))
+    case (VByteArray(x), VByteArray(y)) => x.size == y.size && x.zip(y).forall((a, b) => a == b)
     case (VArray2(b1, r1, c1), VArray2(b2, r2, c2)) =>
       r1 == r2 && c1 == c2 && b1.zip(b2).forall((a, b) => valueEq(a, b))
     case (VStruct(n1, f1), VStruct(n2, f2)) =>

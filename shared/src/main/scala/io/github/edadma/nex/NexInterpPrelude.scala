@@ -1,5 +1,7 @@
 package io.github.edadma.nex
 
+import io.github.edadma.cross_platform
+
 import scala.collection.mutable
 
 /** Prelude binding and dispatch for the tree-walking interpreter.
@@ -119,6 +121,7 @@ protected trait NexInterpPrelude:
       unary1(args, "length") {
         case VArray1(b)       => VInt(b.size.toLong)
         case VArray2(_, r, _) => VInt(r.toLong)
+        case VByteArray(b)    => VInt(b.size.toLong)
         case VString(s)       => VInt(s.length.toLong)
         case v                => trap(s"length: not an array/string: $v", None)
       }
@@ -361,6 +364,49 @@ protected trait NexInterpPrelude:
         case VComplex(re, im) => VComplex(re, im)
         case v                => VComplex(asReal(v), 0.0)
       }
+    case "bytes" =>
+      args match
+        case List(VInt(n)) =>
+          if n < 0 then trap(s"bytes: length must be non-negative, got $n", None)
+          val buf = mutable.ArrayBuffer.fill[Byte](n.toInt)(0)
+          VByteArray(buf)
+        case _ => trap(s"bytes expects an integer length", None)
+    case "to_bytes" =>
+      unary1(args, "to_bytes") {
+        case VArray1(b) =>
+          val out = mutable.ArrayBuffer.empty[Byte]
+          var i = 0
+          while i < b.size do
+            b(i) match
+              case VInt(v) if v >= 0 && v <= 255 => out += v.toByte
+              case VInt(v)                       => trap(s"to_bytes: element $i is out of range 0..255: $v", None)
+              case other                         => trap(s"to_bytes: element $i is not an integer: ${formatValue(other)}", None)
+            i += 1
+          VByteArray(out)
+        case other => trap(s"to_bytes: expected [integer], got ${formatValue(other)}", None)
+      }
+    case "to_integers" =>
+      unary1(args, "to_integers") {
+        case VByteArray(b) =>
+          val out = mutable.ArrayBuffer.empty[Value]
+          var i = 0
+          while i < b.size do { out += VInt((b(i) & 0xFF).toLong); i += 1 }
+          VArray1(out)
+        case other => trap(s"to_integers: expected [byte], got ${formatValue(other)}", None)
+      }
+    case "read_bytes" =>
+      unary1(args, "read_bytes") {
+        case VString(path) =>
+          val raw = cross_platform.readBytes(path)
+          VByteArray(mutable.ArrayBuffer.from(raw))
+        case other => trap(s"read_bytes: expected string path, got ${formatValue(other)}", None)
+      }
+    case "write_bytes" =>
+      args match
+        case List(VString(path), VByteArray(b)) =>
+          cross_platform.writeBytes(path, b.toArray)
+          VUnit
+        case _ => trap(s"write_bytes expects (string, [byte])", None)
     case "assert" =>
       args match
         case List(VBool(true))                  => VUnit
