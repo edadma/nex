@@ -299,6 +299,8 @@ protected trait NexLLVMState:
   protected def emitBroadcast(scalar: TExpr, arr: TExpr, op: String, scalarFirst: Boolean, resultT: Type): String
   protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], resultT: Type): String
   protected def emitSlice2(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, resultT: Type): String
+  protected def emitSliceAssign(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], value: TExpr): Unit
+  protected def emitSlice2Assign(arr: TExpr, rowAx: TAxisSpec, colAx: TAxisSpec, value: TExpr): Unit
   protected def emitClone(arr: TExpr, resultT: Type): String
   protected def emitFlatIndex(arr: TExpr, idx: TExpr, resultT: Type): String
   protected def emitFusedLoop(loopVar: Symbol, length: TExpr, body: TExpr, cols: Option[TExpr], resultT: Type): String
@@ -309,6 +311,67 @@ protected trait NexLLVMState:
 
   protected def emitPreamble(): Unit
   protected def emitInitFunction(bindings: List[TTopBinding]): Unit
+
+  // Implemented in [[NexLLVMPrelude]] — exposed so the assertion and
+  // array-prelude traits can lift integer-typed args to double without
+  // pulling in NexLLVMPrelude as a direct trait dependency.
+  protected def liftToReal(e: TExpr): String
+
+  // Implemented in [[NexLLVMAsserts]] (sibling trait) — emitPreludeCall
+  // dispatches into these for the §10.8 assertion family.
+  protected def emitAssertEq(a: TExpr, b: TExpr): Unit
+  protected def emitAssertTraps(fn: TExpr, expectedSubstr: Option[TExpr]): Unit
+  protected def emitAssertApprox(a: TExpr, b: TExpr, eps: TExpr): Unit
+  protected def emitAssertApproxComplex(a: TExpr, b: TExpr, eps: TExpr): Unit
+  protected def emitAssertApproxArr1(a: TExpr, b: TExpr, eps: TExpr): Unit
+  protected def emitAssertApproxArr2(a: TExpr, b: TExpr, eps: TExpr): Unit
+
+  // Implemented in [[NexLLVMArrayPrelude]] — §10.4 / §10.5 array HOFs,
+  // builders, reductions, construction, and view.
+  protected def emitSumCall(arr: TExpr, resultT: Type): String
+  protected def emitProductCall(arr: TExpr, resultT: Type): String
+  protected def emitDotCall(a: TExpr, b: TExpr, resultT: Type): String
+  protected def emitMinMaxCall(arr: TExpr, resultT: Type, isMin: Boolean): String
+  protected def emitRangeCall(loE: TExpr, hiE: TExpr): String
+  protected def emitEnumerateCall(arr: TExpr, resultT: Type): String
+  protected def emitZipCall(a: TExpr, b: TExpr, resultT: Type): String
+  protected def emitLinspaceCall(loE: TExpr, hiE: TExpr, nE: TExpr): String
+  protected def emitMapCall(arr: TExpr, fn: TExpr, resultT: Type): String
+  protected def emitFlatMapCall(arr: TExpr, fn: TExpr, resultT: Type): String
+  protected def emitReduceCall(arr: TExpr, init: TExpr, fn: TExpr, resultT: Type): String
+  protected def emitFilterCall(arr: TExpr, fn: TExpr, resultT: Type): String
+  protected def emitFillCall(n: TExpr, v: TExpr, resultT: Type): String
+  protected def emitConstFill(n: TExpr, constStr: String, elemT: Type, resultT: Type): String
+  protected def emitIdentityCall(n: TExpr, resultT: Type): String
+  protected def emitViewCall(arr: TExpr, r: TExpr, resultT: Type): String
+
+  // Shared element-op helpers — implemented in [[NexLLVMArrayPrelude]],
+  // also called from [[NexLLVMMatrixPrelude]]'s matmul/sum_axis kernels.
+  protected def emitScalarBinOpSimple(op: String, lv: String, rv: String, t: Type): String
+  protected def zeroOf(t: Type): String
+  protected def oneOf(t: Type): String
+
+  // Implemented in [[NexLLVMMatrixPrelude]] — §10.4 rank-2 ops.
+  protected def emitShapeCall(arr: TExpr, resultT: Type): String
+  protected def emitTransposeCall(arr: TExpr, resultT: Type): String
+  protected def emitMatMulCall(aE: TExpr, bE: TExpr, resultT: Type): String
+  protected def emitMatMulShared(aE: TExpr, bE: TExpr, resultT: Type): String
+  protected def emitDiagCall(arr: TExpr, resultT: Type): String
+  protected def emitReshapeCall(arr: TExpr, rowsE: TExpr, colsE: TExpr, resultT: Type): String
+  protected def emitFlattenCall(arr: TExpr, resultT: Type): String
+  protected def emitSumAxisCall(m: TExpr, axisE: TExpr, resultT: Type): String
+
+  // Implemented in [[NexLLVMPrelude]] — pack/unpack helpers for complex
+  // values, used here so element-wise reductions in [[NexLLVMArrayPrelude]]
+  // can stay backend-agnostic about the `{double, double}` layout.
+  protected def packComplexCD(re: String, im: String): String
+  protected def unpackComplex(z: String): (String, String)
+
+  // Implemented in [[NexLLVMValueToString]] — value-formatting helpers
+  // declared here so [[NexLLVMEnums]] can route per-field values
+  // through them when building per-enum `__nex_<enum>_to_str` helpers.
+  protected def emitTypedValueToString(v: String, t: Type): String
+  protected def concatChain(parts: List[String]): String
 
   // ---------------------------------------------------------------------------
   // Infrastructure helpers.

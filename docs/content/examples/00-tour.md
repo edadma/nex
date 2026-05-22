@@ -517,7 +517,67 @@ f(1)        // 100 — concrete integer overload
 f("hi")     // 200 — falls through to the generic
 ```
 
-Generic *structs* and *enums* are deferred (Stage 2 of the generics roadmap); this milestone covers generic functions only.
+Generic structs and enums use the same constraint set and specialization model — see the **Generic structs** and **Generic enums** sections below.
+
+## Generic structs
+
+A `struct` declaration may carry type parameters in `[...]` after the name. Field types reference the parameters; the compiler emits a specialized clone per distinct argument combination.
+
+```nex
+struct Box[T]
+  value: T
+end
+
+struct Pair[A, B]
+  fst: A
+  snd: B
+end
+
+val b = Box(42)                // T := integer
+val p = Pair(1, "hi")          // A := integer, B := string
+val q = Pair(1.0, 2.0)         // A := real, B := real
+```
+
+The constraint vocabulary is the same closed set as generic functions (`Numeric`, `Real`, `Float`, `Complex`, `Ord`, `Eq`, or bare `Any`). When call-site inference can't pin every parameter, write an explicit type on the binding:
+
+```nex
+val pp: Pair[integer, string] = Pair(1, "hi")
+```
+
+A type parameter on a function may thread through to a generic struct constructor — the function's specialization carries the right struct specialization along:
+
+```nex
+def pack[T](x: T, y: T): Pair[T, T] = Pair(x, y)
+
+val a = pack(1, 2)             // Pair$integer$integer
+val b = pack(1.5, 2.5)         // Pair$real$real
+```
+
+## Generic enums
+
+An `enum` may also take type parameters. Variant payloads name them; bare variants carry no payload but still belong to the specialization.
+
+```nex
+enum Opt[T] =
+  Some(value: T)
+  None
+
+enum Result[T, E] =
+  Ok(value: T)
+  Err(error: E)
+
+val x  = Some(42)              // Opt$integer
+val n: Opt[integer] = None     // bare variant — annotation pins T
+val r: Result[integer, string] = Ok(7)   // pins E that the use can't infer
+```
+
+A bare variant (`None`) carries no information to infer its enum's type parameters from — supply a declared type on the binding to push the parameter down. Multi-parameter enums where a single use pins only some parameters likewise need an explicit type ("cannot infer type for type parameter `E`" if you forget). Matching on a specialized enum uses ordinary patterns:
+
+```nex
+val msg = x match
+  Some(v) -> "got " + str(v)
+  None    -> "nothing"
+```
 
 ## Control flow
 

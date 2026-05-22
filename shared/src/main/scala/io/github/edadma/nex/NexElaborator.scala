@@ -5,18 +5,28 @@ import scala.util.parsing.input.{Position, Positional}
 
 /** The Nex elaborator. Drives the pipeline over a parsed program and
   * returns a fully typed, lowered [[TProgram]] (or a list of elaboration
-  * errors). The work is split across four trait files:
+  * errors). The work is split across several trait files in this package:
   *
-  *   - [[NexElabState]]      — shared state, scopes, symbol table,
-  *                             prelude registration, abstract cross-trait
-  *                             method declarations
-  *   - [[NexElabInference]]  — Stage 2 type inference + prelude HOF
-  *                             routing + inferIndex / inferField
-  *   - [[NexElabLowering]]   — Stage 3 sugar lowering + §6.4 mode
-  *                             validation
-  *   - this file             — Stage 1 name resolution (entry point,
-  *                             declarations, [[elabExpr]], [[typeOf]],
-  *                             block bindings, top-binding minting)
+  *   - [[NexElabState]]            — shared state, scopes, symbol table,
+  *                                   prelude registration, abstract
+  *                                   cross-trait method declarations
+  *   - [[NexElabInference]]        — Stage 2 type inference driver:
+  *                                   bidirectional arg / binding inference,
+  *                                   the [[infExpr]] dispatcher, and the
+  *                                   binop / arith / compare / call paths
+  *   - [[NexElabInferGenerics]]    — kind-variable unification, overload
+  *                                   resolution, generic-call /
+  *                                   generic-struct construction
+  *   - [[NexElabInferPrelude]]     — `const` validation, purity analysis,
+  *                                   prelude HOF / rank-1 routing, and the
+  *                                   per-name return-type lookup table
+  *   - [[NexElabInferPatterns]]    — match-pattern typing, exhaustiveness,
+  *                                   index / field inference
+  *   - [[NexElabLowering]]         — Stage 3 sugar lowering + §6.4 mode
+  *                                   validation
+  *   - this file                   — Stage 1 name resolution (entry point,
+  *                                   declarations, [[elabExpr]], [[typeOf]],
+  *                                   block bindings, top-binding minting)
   *
   * Pipeline overview:
   *
@@ -42,6 +52,9 @@ import scala.util.parsing.input.{Position, Positional}
   */
 class NexElaborator
     extends NexElabState
+    with NexElabInferGenerics
+    with NexElabInferPrelude
+    with NexElabInferPatterns
     with NexElabInference
     with NexElabLowering:
 
