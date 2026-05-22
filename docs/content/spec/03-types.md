@@ -50,6 +50,29 @@ Rank-2 arrays are **rectangular** — every row has the same number of columns. 
 
 Higher-rank arrays (`[[[T]]]` and beyond) and statically-shaped arrays (`[T; N]`, `[T; M, N]`) are *deferred*.
 
+### 3.3.1 The `[byte]` buffer type
+
+`[byte]` is a packed buffer of 8-bit values used for file I/O and image processing. It is a separate type from `[T]`, not `[byte] = [integer]` with a narrower range. There is no scalar `byte` type — bytes only exist as elements of a buffer.
+
+```nex
+val b: [byte] = bytes(64)        // zero-filled buffer of length 64
+val first = b[0]                 // first: integer (0..255)
+b[1] = 128                       // traps if RHS is outside 0..255
+```
+
+Indexed read widens to `integer` in the range `0..255`; indexed write requires the right-hand side to be an `integer` in the same range, otherwise it traps. The widening is unconditional — there is no implicit "is this within 0..255?" check on read, because by construction every stored byte already is.
+
+`[byte]` is a **storage** type, not a computation type:
+
+* No element-wise arithmetic (`b1 + b2` is a type error).
+* No broadcasting (`b + 1` is a type error).
+* No views (`b.view(lo..hi)` is not supported; slicing copies).
+* No participation in fusion.
+
+To do arithmetic on byte data, widen explicitly with `to_integers(b)`, compute on the resulting `[integer]`, and narrow back with `to_bytes(a)` (which traps if any element is outside `0..255`). This widen-compute-narrow pattern is the recommended shape for sRGB / HDR / linear-light pixel math, where the computation lives in `real` or `integer` regardless.
+
+Slicing `b[lo..hi]` (and the inclusive / open / strided variants from §4.14) returns a fresh `[byte]` copy. `length(b)` returns the buffer's element count. Structural equality (`==`, `!=`) compares lengths first and then bytes.
+
 ## 3.4 Tuple types
 
 A tuple type is a comma-separated list of types denoting a fixed-size heterogeneous product (n ≥ 2). Tuples are primarily used for multi-value return.

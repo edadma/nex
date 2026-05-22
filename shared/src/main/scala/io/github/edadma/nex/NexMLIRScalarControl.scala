@@ -923,6 +923,16 @@ trait NexMLIRScalarControl:
       if paramOpts.forall(_.isDefined) && retOpt.isDefined then
         Some(MFunc(paramOpts.map(_.get), retOpt.get))
       else None
+    case te: TyEnum                                               =>
+      // Every variant field type must be one of int / real / bool /
+      // string so each fits a single i64 payload slot. Aggregates are
+      // out of scope for the first cut.
+      val ok = te.variants.forall { case (_, fs) =>
+        fs.forall { case (_, ft) =>
+          ft == TyInteger || ft == TyReal || ft == TyBool || ft == TyString
+        }
+      }
+      if ok then Some(menumOf(te)) else None
     case _                                                        => None
 
   /** True when `e` is a scalar literal (after literal-fold of unary
@@ -1107,3 +1117,107 @@ trait NexMLIRScalarControl:
           TIf(cond, v, Some(tail), pos, tpe)
         case _ => body
     case _ => body
+
+  /** Emit a divide-by-zero check for `/` (real), `div` (int), `%`
+    * (int). Mirrors the LLVM backend's `emitDivZeroCheck` — Nex traps
+    * on these eagerly (rather than letting integer divide-by-zero
+    * become UB or letting real divide-by-zero produce inf), so an
+    * enclosing `assert_traps` can catch them with the matching
+    * substring. `/` on a TyInteger LHS still routes here because the
+    * elaborator lifts the int-int case to TyReal at the result level
+    * but the operand type stays integer at this dispatch point.
+    */
+  protected def emitScalarDivZeroCheck(op: String, lhsTy: MlirType, rv: MlirVal): Unit =
+    op match
+      case "div" | "%" if lhsTy == MScalar(TyInteger) =>
+        val zero = fresh("dzz")
+        out.append(s"  $zero = arith.constant 0 : i64\n")
+        val isZ = fresh("dzeq")
+        out.append(s"  $isZ = arith.cmpi eq, ${rv.reg}, $zero : i64\n")
+        out.append(s"  scf.if $isZ {\n")
+        out.append(s"    func.call @nex_trap_int_div_zero() : () -> ()\n")
+        out.append(s"  }\n")
+      case "/" if lhsTy == MScalar(TyReal) || rv.ty == MScalar(TyReal) =>
+        val zero = fresh("dzz")
+        out.append(s"  $zero = arith.constant 0.0 : f64\n")
+        val rhs = if rv.ty == MScalar(TyReal) then rv.reg
+                  else
+                    val pr = fresh("dzpr")
+                    out.append(s"  $pr = arith.sitofp ${rv.reg} : i64 to f64\n")
+                    pr
+        val isZ = fresh("dzeq")
+        out.append(s"  $isZ = arith.cmpf oeq, $rhs, $zero : f64\n")
+        out.append(s"  scf.if $isZ {\n")
+        out.append(s"    func.call @nex_trap_int_div_zero() : () -> ()\n")
+        out.append(s"  }\n")
+      case "/" if lhsTy == MScalar(TyInteger) && rv.ty == MScalar(TyInteger) =>
+        val zero = fresh("dzz")
+        out.append(s"  $zero = arith.constant 0 : i64\n")
+        val isZ = fresh("dzeq")
+        out.append(s"  $isZ = arith.cmpi eq, ${rv.reg}, $zero : i64\n")
+        out.append(s"  scf.if $isZ {\n")
+        out.append(s"    func.call @nex_trap_int_div_zero() : () -> ()\n")
+        out.append(s"  }\n")
+      case _ => ()
+
+  /** Emit `assert(cond[, msg])`. The false arm routes through
+    * `nex_assert_failed(msg_data, msg_len)` which calls `nex_trap_with`
+    * so an enclosing `assert_traps` catches and (with the 2-arg form)
+    * can match the user-supplied message via substring. The 1-arg form
+    * traps with the generic "assertion failed" message.
+    */
+  protected def emitAssertCall(cond: TExpr, msg: Option[TExpr]): Unit =
+    val cv = emitExpr(cond)
+    val mData = msg.map(emitExpr) match
+      case Some(mv) =>
+        val d = fresh("amd")
+        out.append(s"  $d = func.call @nex_str_data(${mv.reg}) : (i64) -> i64\n")
+        val l = fresh("aml")
+        out.append(s"  $l = func.call @nex_str_len(${mv.reg}) : (i64) -> i64\n")
+        Some((d, l, mv.reg))
+      case None => None
+    val one  = fresh("aone")
+    out.append(s"  $one = arith.constant 1 : i1\n")
+    val notC = fresh("anot")
+    out.append(s"  $notC = arith.xori ${cv.reg}, $one : i1\n")
+    out.append(s"  scf.if $notC {\n")
+    mData match
+      case Some((d, l, _)) =>
+        out.append(s"    func.call @nex_assert_failed($d, $l) : (i64, i64) -> ()\n")
+      case None =>
+        val zero = fresh("azero")
+        out.append(s"    $zero = arith.constant 0 : i64\n")
+        out.append(s"    func.call @nex_assert_failed($zero, $zero) : (i64, i64) -> ()\n")
+    out.append("  }\n")
+    mData.foreach { case (_, _, mreg) =>
+      out.append(s"  func.call @nex_str_dec($mreg) : (i64) -> ()\n")
+    }
+
+  /** Emit `assert_traps(fn[, substr])`. Hands off the closure's
+    * `(fn_ptr, env_ptr)` pair (extracted via the existing runtime
+    * helpers) plus the optional substring's `(data, len)` pair to the
+    * C-runtime `nex_assert_traps`, which manages the setjmp scope.
+    */
+  protected def emitAssertTrapsCall(fn: TExpr, sub: Option[TExpr]): Unit =
+    val cv = emitExpr(fn)
+    val fnp = fresh("atfp")
+    out.append(s"  $fnp = func.call @nex_closure_fn(${cv.reg}) : (i64) -> i64\n")
+    val envp = fresh("atep")
+    out.append(s"  $envp = func.call @nex_closure_env(${cv.reg}) : (i64) -> i64\n")
+    val (sd, sl, subReg) = sub.map(emitExpr) match
+      case Some(sv) =>
+        val d = fresh("atsd")
+        out.append(s"  $d = func.call @nex_str_data(${sv.reg}) : (i64) -> i64\n")
+        val l = fresh("atsl")
+        out.append(s"  $l = func.call @nex_str_len(${sv.reg}) : (i64) -> i64\n")
+        (d, l, Some(sv.reg))
+      case None =>
+        val z = fresh("atzero")
+        out.append(s"  $z = arith.constant 0 : i64\n")
+        (z, z, None)
+    out.append(
+      s"  func.call @nex_assert_traps($fnp, $envp, $sd, $sl) : (i64, i64, i64, i64) -> ()\n",
+    )
+    subReg.foreach { sr =>
+      out.append(s"  func.call @nex_str_dec($sr) : (i64) -> ()\n")
+    }

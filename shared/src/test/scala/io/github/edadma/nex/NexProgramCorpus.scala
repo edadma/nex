@@ -3034,6 +3034,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -3044,6 +3045,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -3054,6 +3056,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -4167,6 +4170,7 @@ object NexProgramCorpus:
         |  print(Blue)
       """.stripMargin,
       "Red\nGreen\nBlue\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4183,6 +4187,7 @@ object NexProgramCorpus:
         |  print(MaxIters(100, 0.5))
       """.stripMargin,
       "Converged(3.14)\nDiverged\nMaxIters(100, 0.5)\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4199,6 +4204,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "Converged(2.5)\nDiverged\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4215,6 +4221,7 @@ object NexProgramCorpus:
         |  print(advance(Done))
       """.stripMargin,
       "Continue(7)\nDone\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4237,6 +4244,7 @@ object NexProgramCorpus:
         |  print(label(Blue))
       """.stripMargin,
       "stop\ngo\nwait\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4259,6 +4267,7 @@ object NexProgramCorpus:
         |  print(describe(MaxIters(100, 2.5)))
       """.stripMargin,
       "3.14\n-1.0\n2.5\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4280,6 +4289,7 @@ object NexProgramCorpus:
         |  print(isRed(Blue))
       """.stripMargin,
       "true\nfalse\nfalse\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4299,6 +4309,7 @@ object NexProgramCorpus:
         |  print(kind(Halt))
       """.stripMargin,
       "continue\nhalt\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4316,6 +4327,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4332,6 +4344,7 @@ object NexProgramCorpus:
         |    Quit    -> print("bye")
       """.stripMargin,
       "hello\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4352,6 +4365,7 @@ object NexProgramCorpus:
         |  print(show(Unset))
       """.stripMargin,
       "true\nfalse\nfalse\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4372,6 +4386,7 @@ object NexProgramCorpus:
         |def main() = print(label(Green))
       """.stripMargin,
       "go\n",
+      mlir = true,
     ),
     Case(
       "sum types (enums)",
@@ -4386,6 +4401,7 @@ object NexProgramCorpus:
         |  print(s"result=${s}")
       """.stripMargin,
       "result=Converged(1.25)\n",
+      mlir = true,
     ),
     Case(
       "compound assignment",
@@ -5423,6 +5439,7 @@ object NexProgramCorpus:
         |  print(msg)
       """.stripMargin,
       "got\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5441,6 +5458,7 @@ object NexProgramCorpus:
         |  print(msg)
       """.stripMargin,
       "nothing\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5459,6 +5477,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5482,6 +5501,7 @@ object NexProgramCorpus:
         |  print(sb)
       """.stripMargin,
       "int\nstr\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5500,6 +5520,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5523,6 +5544,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "7\noops\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5543,6 +5565,7 @@ object NexProgramCorpus:
         |  print(unwrap_or(Some("hi"), "miss"))
       """.stripMargin,
       "7\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5566,6 +5589,7 @@ object NexProgramCorpus:
         |  print(bOk)
       """.stripMargin,
       "true\nfalse\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5584,6 +5608,7 @@ object NexProgramCorpus:
         |  print(v)
       """.stripMargin,
       "99\n",
+      mlir = true,
     ),
     Case(
       "user generic enums",
@@ -5602,6 +5627,7 @@ object NexProgramCorpus:
         |  print(s)
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
 
     // ========================================================================

@@ -307,6 +307,35 @@ band[0, 1] = 99                      // writes through: grid[1, 1] is now 99
 val sub = grid.view(1..3, 0..2)      // [[4, 5], [99, 8]]    — 2×2 sub-matrix
 ```
 
+## `[byte]` buffers
+
+A packed byte buffer for file I/O and image processing. Bytes are *storage* — indexing widens to an integer in `0..255`, and writes outside that range trap.
+
+```nex
+val b = bytes(4)                // zero-filled buffer, length 4
+b[0] = 0xFF                     // each cell holds 0..255
+b[1] = 0x80
+b[2] = 0x00
+b[3] = 0x42
+
+print(length(b))                // 4
+print(b[0])                     // 255       — read widens to integer
+print(b)                        // [0xFF, 0x80, 0x00, 0x42]
+
+// Widen, compute, narrow:
+val ints = to_integers(b)       // [255, 128, 0, 66]            : [integer]
+val out  = to_bytes(ints)       // back to [byte] — traps if any > 255
+
+// File I/O works on every backend (the prelude routes through
+// the cross-platform runtime, so the same program runs on JVM,
+// Node, and native).
+write_bytes("hello.bin", b)
+val read_back = read_bytes("hello.bin")
+print(read_back == b)           // true
+```
+
+There is no scalar `byte` type — `byte` only exists as the element of a `[byte]` buffer, and arithmetic on bytes is *always* done by widening to `integer`. There is no element-wise arithmetic, broadcasting, or view form for `[byte]`; slicing copies. The full design is in the Specification, §3.3.1 and §10.9.
+
 ## Slice assignment — Fortran-90 array sections
 
 A slice expression on the left of `=` overwrites the corresponding sub-extent of a `var` array in place. The buffer is mutated, not reallocated.

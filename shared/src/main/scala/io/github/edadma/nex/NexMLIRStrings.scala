@@ -115,6 +115,8 @@ trait NexMLIRStrings:
         emitTupleToString(v.reg, mt)
       case MComplex =>
         emitComplexToString(v.reg)
+      case me: MEnum =>
+        emitEnumValToString(v.reg, me)
       case other =>
         notYet(s"value-to-string for $other")
 

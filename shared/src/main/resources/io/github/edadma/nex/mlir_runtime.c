@@ -1,28 +1,110 @@
 #include <math.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
-/* Runtime traps. These mirror the LLVM-backend trap messages — the
- * MLIR backend has no setjmp/longjmp / `assert_traps` machinery yet, so
- * a trap prints to stdout (where parity tests compare) and exits with
- * status 1. The message text matches `NexLLVMPreamble`'s `slice_oob_msg`
- * and `axis_oob_msg` byte-for-byte.
+/* Trap-handling state. `nex_trap_buf` points at the active jmp_buf if
+ * an enclosing `assert_traps` is on the stack — `nex_trap_with` longjmps
+ * out of it when set, otherwise prints the message to stderr and aborts.
+ * `nex_trap_msg` stashes the message so the substring-form of
+ * `assert_traps` can read it after the longjmp.
+ *
+ * Errors go to stderr so the parity tests' stdout comparison stays clean
+ * for uncaught traps (matching the LLVM backend's behavior). Caught
+ * traps produce no output at all.
  */
-void nex_trap_slice_oob(void) {
-    printf("trap: slice out of bounds\n");
-    exit(1);
+static __thread jmp_buf *nex_trap_buf = NULL;
+static __thread const char *nex_trap_msg = NULL;
+
+void nex_trap_with(const char *msg) {
+    nex_trap_msg = msg;
+    if (nex_trap_buf != NULL) {
+        longjmp(*nex_trap_buf, 1);
+    }
+    if (msg != NULL) {
+        size_t n = strlen(msg);
+        ssize_t _ = write(2, msg, n);
+        (void)_;
+    }
+    abort();
 }
 
-void nex_trap_axis_oob(void) {
-    printf("trap: axis index out of bounds\n");
-    exit(1);
+static const char nex_msg_slice_oob[]      = "trap: slice out of bounds\n";
+static const char nex_msg_axis_oob[]       = "trap: axis index out of bounds\n";
+static const char nex_msg_complex_div0[]   = "trap: complex division by zero\n";
+static const char nex_msg_int_div0[]       = "trap: division by zero\n";
+static const char nex_msg_assert[]         = "trap: assertion failed\n";
+static const char nex_msg_assert_traps_no[] = "trap: assert_traps: expected trap, got no trap\n";
+static const char nex_msg_assert_traps_ss[] = "trap: assert_traps: trap message did not contain expected substring\n";
+
+void nex_trap_slice_oob(void)        { nex_trap_with(nex_msg_slice_oob); }
+void nex_trap_axis_oob(void)         { nex_trap_with(nex_msg_axis_oob); }
+void nex_trap_complex_div_zero(void) { nex_trap_with(nex_msg_complex_div0); }
+void nex_trap_int_div_zero(void)     { nex_trap_with(nex_msg_int_div0); }
+
+/* `assert(cond, msg)` lowers to a branch that calls this on the false
+ * arm. `msg_data` / `msg_len` come from the caller-supplied nex_str
+ * descriptor's contents; we copy into a static-sized buffer so we can
+ * pass a NUL-terminated cstring to write(2). Bounded to keep the
+ * runtime contract small — assertion messages longer than 1024 bytes
+ * are truncated on the uncaught path.
+ */
+void nex_assert_failed(const char *msg_data, int64_t msg_len) {
+    static __thread char buf[1024];
+    if (msg_len < 0) msg_len = 0;
+    if ((size_t)msg_len >= sizeof(buf)) msg_len = (int64_t)(sizeof(buf) - 1);
+    if (msg_data != NULL && msg_len > 0) memcpy(buf, msg_data, (size_t)msg_len);
+    buf[msg_len] = 0;
+    nex_trap_with(buf);
 }
 
-void nex_trap_complex_div_zero(void) {
-    printf("trap: complex division by zero\n");
-    exit(1);
+/* `assert_traps(fn[, substr])` — install a jmp_buf, invoke the thunk
+ * through its `{fn_ptr, env_ptr}` pair, and validate. The thunk's
+ * return value (if any) is discarded: every closure pointer is cast to
+ * `int64_t (*)(int64_t)` for the i64 / pointer / bool / unit cases the
+ * MLIR backend supports. f64 returns are not supported (different
+ * return register on most ABIs); the corpus doesn't exercise this
+ * shape today.
+ *
+ * substr_data / substr_len encode the optional second arg's nex_str
+ * contents. When substr_len > 0 and the caught trap's stashed message
+ * doesn't contain the substring, we trap again (caught by an outer
+ * assert_traps, or printed at the top level) with the
+ * `assert_traps: substring missing` message.
+ */
+typedef int64_t (*nex_thunk_i64_fn)(int64_t);
+
+void nex_assert_traps(int64_t fn_addr,
+                       int64_t env_addr,
+                       const char *substr_data,
+                       int64_t substr_len) {
+    jmp_buf buf;
+    jmp_buf *prev = nex_trap_buf;
+    nex_trap_buf = &buf;
+    if (setjmp(buf) == 0) {
+        nex_thunk_i64_fn fn = (nex_thunk_i64_fn)(uintptr_t)fn_addr;
+        (void)fn(env_addr);
+        nex_trap_buf = prev;
+        nex_trap_with(nex_msg_assert_traps_no);
+    } else {
+        nex_trap_buf = prev;
+        if (substr_data != NULL && substr_len > 0) {
+            static __thread char needle[1024];
+            int64_t n = substr_len;
+            if ((size_t)n >= sizeof(needle)) n = (int64_t)(sizeof(needle) - 1);
+            memcpy(needle, substr_data, (size_t)n);
+            needle[n] = 0;
+            const char *hay = nex_trap_msg;
+            if (hay == NULL || strstr(hay, needle) == NULL) {
+                nex_trap_msg = NULL;
+                nex_trap_with(nex_msg_assert_traps_ss);
+            }
+        }
+        nex_trap_msg = NULL;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -280,6 +362,20 @@ int64_t nex_str_lit_from_cstr(int64_t data_ptr, int64_t len) {
     nex_str_lit_cache[idx].length   = len;
     nex_str_lit_cache[idx].data     = data;
     return (int64_t)(intptr_t)&nex_str_lit_cache[idx];
+}
+
+/* Expose the descriptor's `data` pointer and length so the MLIR side
+ * can pass them into `nex_assert_failed` / `nex_assert_traps` without
+ * peeking into the struct layout from generated IR.
+ */
+int64_t nex_str_data(int64_t p) {
+    nex_str* s = (nex_str*)(intptr_t)p;
+    return (int64_t)(intptr_t)s->data;
+}
+
+int64_t nex_str_len(int64_t p) {
+    nex_str* s = (nex_str*)(intptr_t)p;
+    return s->length;
 }
 
 void nex_str_inc(int64_t p) {
