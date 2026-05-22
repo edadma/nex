@@ -281,7 +281,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     out.append("func.func private @nex_trap_slice_oob()\n")
     out.append("func.func private @nex_trap_axis_oob()\n")
     out.append("func.func private @nex_trap_complex_div_zero()\n")
+    out.append("func.func private @nex_trap_int_div_zero()\n")
+    out.append("func.func private @nex_assert_failed(i64, i64)\n")
+    out.append("func.func private @nex_assert_traps(i64, i64, i64, i64)\n")
     out.append("func.func private @nex_str_lit_from_cstr(i64, i64) -> i64\n")
+    out.append("func.func private @nex_str_data(i64) -> i64\n")
+    out.append("func.func private @nex_str_len(i64) -> i64\n")
     out.append("func.func private @nex_str_inc(i64)\n")
     out.append("func.func private @nex_str_dec(i64)\n")
     out.append("func.func private @nex_print_str(i64)\n")
@@ -847,6 +852,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TBinOp(op, lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
+      emitScalarDivZeroCheck(op, lv.ty, rv)
       (lv.ty, rv.ty, resultTy) match
         case (MScalar(TyInteger), MScalar(TyInteger), TyReal) =>
           // `int op int` whose elaborated result is real — e.g. `7 / 2`.
@@ -977,6 +983,23 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TCall(TVarRef(s, _, _), List(x), _, _)
         if s.kind == SymKind.Prelude && s.name == "sign" =>
       emitScalarSign(emitExpr(x))
+
+    case TCall(TVarRef(s, _, _), List(cond), _, _)
+        if s.kind == SymKind.Prelude && s.name == "assert" =>
+      emitAssertCall(cond, None)
+      MlirVal("%unused", MScalar(TyInteger))
+    case TCall(TVarRef(s, _, _), List(cond, msg), _, _)
+        if s.kind == SymKind.Prelude && s.name == "assert" =>
+      emitAssertCall(cond, Some(msg))
+      MlirVal("%unused", MScalar(TyInteger))
+    case TCall(TVarRef(s, _, _), List(fn), _, _)
+        if s.kind == SymKind.Prelude && s.name == "assert_traps" =>
+      emitAssertTrapsCall(fn, None)
+      MlirVal("%unused", MScalar(TyInteger))
+    case TCall(TVarRef(s, _, _), List(fn, sub), _, _)
+        if s.kind == SymKind.Prelude && s.name == "assert_traps" =>
+      emitAssertTrapsCall(fn, Some(sub))
+      MlirVal("%unused", MScalar(TyInteger))
 
     case TCall(TVarRef(s, _, _), List(loE, hiE), _, _)
         if s.kind == SymKind.Prelude && s.name == "range" =>
@@ -1387,6 +1410,18 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TBlockExpr(TCall(TVarRef(s, _, _), args, _, _)) if userDefs.contains(s.id) =>
       val (name, paramTys, retTyOpt) = userDefs(s.id)
       val _ = emitUserDefCall(name, paramTys, retTyOpt, args, s.name)
+    case TBlockExpr(TCall(TVarRef(s, _, _), List(cond), _, _))
+        if s.kind == SymKind.Prelude && s.name == "assert" =>
+      emitAssertCall(cond, None)
+    case TBlockExpr(TCall(TVarRef(s, _, _), List(cond, msg), _, _))
+        if s.kind == SymKind.Prelude && s.name == "assert" =>
+      emitAssertCall(cond, Some(msg))
+    case TBlockExpr(TCall(TVarRef(s, _, _), List(fn), _, _))
+        if s.kind == SymKind.Prelude && s.name == "assert_traps" =>
+      emitAssertTrapsCall(fn, None)
+    case TBlockExpr(TCall(TVarRef(s, _, _), List(fn, sub), _, _))
+        if s.kind == SymKind.Prelude && s.name == "assert_traps" =>
+      emitAssertTrapsCall(fn, Some(sub))
     case TBlockExpr(TIf(cond, thenB, elseB, _, _)) =>
       emitIfStatement(cond, thenB, elseB)
     case TBlockExpr(other) =>

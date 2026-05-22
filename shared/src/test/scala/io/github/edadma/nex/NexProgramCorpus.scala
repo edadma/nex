@@ -3034,6 +3034,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -3044,6 +3045,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
     Case(
       "prelude",
@@ -3054,6 +3056,7 @@ object NexProgramCorpus:
         |  print("ok")
       """.stripMargin,
       "ok\n",
+      mlir = true,
     ),
 
     // ========================================================================
