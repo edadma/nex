@@ -95,6 +95,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val fieldText = fields.map(_._2.text).mkString(", ")
       s"!llvm.struct<($fieldText)>"
 
+  /** A tuple value. Same `!llvm.struct<(...)>` lowering as [[MStruct]]
+    * but anonymous (no field names) and slots are addressed by
+    * position. Construction via `llvm.mlir.undef` + `llvm.insertvalue`
+    * chain; projection via `llvm.extractvalue`.
+    */
+  protected case class MTuple(elems: List[MlirType]) extends MlirType:
+    def text: String =
+      val elemText = elems.map(_.text).mkString(", ")
+      s"!llvm.struct<($elemText)>"
+
   protected case class MlirVal(reg: String, ty: MlirType)
 
   protected val out             = new StringBuilder
@@ -137,6 +147,11 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     * level, so this matches the source semantics naturally.
     */
   protected val varStructs      = mutable.Map.empty[Int, (String, MStruct)]
+  /** `var` tuple bindings. SSA-rebinding entries, exactly mirroring
+    * [[varStructs]] — `llvm.insertvalue` produces a new SSA value at
+    * each mutation and we re-bind the entry. Keyed by symbol id.
+    */
+  protected val varTuples       = mutable.Map.empty[Int, (String, MTuple)]
   /** Per-program registry of `@intrinsic("libm.X")` function symbols.
     * Populated at the start of [[compile]] by scanning every
     * [[TFunDecl]] whose body is a [[TIntrinsic]]. At a [[TCall]] site
@@ -189,6 +204,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     varSlots.clear()
     varTensors.clear()
     varStructs.clear()
+    varTuples.clear()
     currentLambdaCaptures = Map.empty
     tp.allDecls.foreach {
       case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
@@ -405,6 +421,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         val ptrReg  = emitTensorPointer(v.reg, t)
         val helper = arrayPrintHelper(elemT, rank = 2)
         out.append(s"  func.call @$helper($ptrReg, $rowsReg, $colsReg) : (i64, i64, i64) -> ()\n")
+      case mt: MTuple =>
+        val descR = emitTupleToString(v.reg, mt)
+        out.append(s"  func.call @nex_print_str($descR) : (i64) -> ()\n")
+        out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
       case other =>
         notYet(s"print of $other")
 
@@ -501,6 +521,34 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       out.append(s"  $next = llvm.insertvalue ${v.reg}, $acc[$idx] : ${ms.text}\n")
       acc = next
     MlirVal(acc, ms)
+
+  /** Lower a tuple literal `(a, b, ...)`. Same `llvm.mlir.undef` +
+    * `llvm.insertvalue` chain as a struct constructor, but slots are
+    * positional and the element types come from each arg's inferred
+    * type (collected into [[MTuple]] up front so the LLVM-struct text
+    * is consistent across all the insertvalue ops). Element-position
+    * `int → real` promotion is applied when the [[MTuple]] slot type
+    * is `MScalar(TyReal)` and the arg evaluates to `MScalar(TyInteger)`.
+    */
+  protected def emitTupleConstruct(mt: MTuple, args: List[TExpr]): MlirVal =
+    if args.size != mt.elems.size then
+      notYet(s"tuple: arity mismatch (${args.size} args vs ${mt.elems.size} slots)")
+    val argVals = args.zip(mt.elems).map { case (a, slotTy) =>
+      val av = emitExpr(a)
+      (av.ty, slotTy) match
+        case (lt, rt) if lt == rt                  => av
+        case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
+        case (lt, rt) =>
+          notYet(s"tuple: arg type $lt does not match slot type $rt")
+    }
+    val undef = fresh("tup_undef")
+    out.append(s"  $undef = llvm.mlir.undef : ${mt.text}\n")
+    var acc = undef
+    for ((v, idx) <- argVals.zipWithIndex) do
+      val next = fresh("tup")
+      out.append(s"  $next = llvm.insertvalue ${v.reg}, $acc[$idx] : ${mt.text}\n")
+      acc = next
+    MlirVal(acc, mt)
 
   /** The expression visitor. Every node that lowers must produce a
     * single SSA value with a known MLIR type; nodes that don't fit
@@ -626,6 +674,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
 
     case TVarRef(sym, _, _) if varStructs.contains(sym.id) =>
       val (reg, ty) = varStructs(sym.id)
+      MlirVal(reg, ty)
+
+    case TVarRef(sym, _, _) if varTuples.contains(sym.id) =>
+      val (reg, ty) = varTuples(sym.id)
       MlirVal(reg, ty)
 
     case TClone(inner, _, _) =>
@@ -908,6 +960,24 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case Some(ms: MStruct) => emitStructConstruct(ms, args)
         case _                  => notYet(s"unsupported struct constructor result type $tpe")
 
+    case TTuple(elems, _, tpe) =>
+      mlirTypeOf(tpe) match
+        case Some(mt: MTuple) => emitTupleConstruct(mt, elems)
+        case _                  => notYet(s"unsupported tuple literal element types $tpe")
+
+    case TTupleProj(receiver, idx, _, _) =>
+      val rv = emitExpr(receiver)
+      rv.ty match
+        case mt: MTuple =>
+          if idx < 0 || idx >= mt.elems.size then
+            notYet(s"tuple projection index $idx out of range 0..${mt.elems.size - 1}")
+          val elemTy = mt.elems(idx)
+          val r = fresh(s"tp_$idx")
+          out.append(s"  $r = llvm.extractvalue ${rv.reg}[$idx] : ${mt.text}\n")
+          MlirVal(r, elemTy)
+        case other =>
+          notYet(s"tuple projection on non-tuple type $other")
+
     case TCall(TVarRef(s, _, _), args, _, _) if userDefs.contains(s.id) =>
       val (name, paramTys, retTyOpt) = userDefs(s.id)
       retTyOpt match
@@ -1053,6 +1123,14 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val outTy = mlirTypeOf(tpe).get.asInstanceOf[MTensor]
       emitIfExpr(cond, thenB, elseB, outTy)
 
+    case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MTuple]) =>
+      val outTy = mlirTypeOf(tpe).get.asInstanceOf[MTuple]
+      emitIfExpr(cond, thenB, elseB, outTy)
+
+    case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MStruct]) =>
+      val outTy = mlirTypeOf(tpe).get.asInstanceOf[MStruct]
+      emitIfExpr(cond, thenB, elseB, outTy)
+
     case TFusedLoop(loopVar, length, body, None, _, tpe) =>
       val n = staticLength(length).getOrElse(notYet(s"fused loop with non-static length"))
       val elemT = tpe match
@@ -1143,6 +1221,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case s: MScalar => allocVarSlot(sym, v.reg, s)
         case t: MTensor => varTensors(sym.id) = (v.reg, t)
         case s: MStruct => varStructs(sym.id) = (v.reg, s)
+        case t: MTuple  => varTuples(sym.id) = (v.reg, t)
         case other      => notYet(s"var binding for ${sym.name} of type $other")
     case TBlockBinding(sym, kind, _) =>
       notYet(s"$kind binding for ${sym.name}")
@@ -1181,6 +1260,11 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       v.ty match
         case s: MStruct => varStructs(sym.id) = (v.reg, s)
         case other      => notYet(s"var-struct reassign with type $other")
+    case TBlockExpr(TAssign(TVarRef(sym, _, _), value, _, _)) if varTuples.contains(sym.id) =>
+      val v = emitExpr(value)
+      v.ty match
+        case t: MTuple => varTuples(sym.id) = (v.reg, t)
+        case other     => notYet(s"var-tuple reassign with type $other")
     case TBlockExpr(TAssign(target: TField, value, _, _))
         if rootVarStructSym(target).isDefined =>
       // Field write on a var-bound struct, possibly through a chain

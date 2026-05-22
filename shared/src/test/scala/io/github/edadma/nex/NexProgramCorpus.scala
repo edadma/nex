@@ -3125,6 +3125,7 @@ object NexProgramCorpus:
         |  print(a + b)
       """.stripMargin,
       "3\n4\n7\n",
+      mlir = true,
     ),
     Case(
       "tuple destructuring",
@@ -3136,6 +3137,7 @@ object NexProgramCorpus:
         |  print(x - y)
       """.stripMargin,
       "-10\n",
+      mlir = true,
     ),
     Case(
       "tuple destructuring",
@@ -3146,6 +3148,7 @@ object NexProgramCorpus:
         |  print(p + q + r)
       """.stripMargin,
       "7.5\n",
+      mlir = true,
     ),
     Case(
       "tuple destructuring",
@@ -3155,6 +3158,7 @@ object NexProgramCorpus:
         |def main() = print(a + b)
       """.stripMargin,
       "30\n",
+      mlir = true,
     ),
     Case(
       "tuple destructuring",
@@ -3165,6 +3169,7 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "7\n",
+      mlir = true,
     ),
     Case(
       "tuple destructuring",
@@ -3175,6 +3180,7 @@ object NexProgramCorpus:
         |  print(s"n=$n s=$s")
       """.stripMargin,
       "n=42 s=hi\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3192,6 +3198,7 @@ object NexProgramCorpus:
         |  print(a + b)
       """.stripMargin,
       "1\n2\n3\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3202,6 +3209,7 @@ object NexProgramCorpus:
         |  print(t)
       """.stripMargin,
       "(1, 2)\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3211,6 +3219,7 @@ object NexProgramCorpus:
         |def main() = print(a + b + c)
       """.stripMargin,
       "60\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3221,6 +3230,7 @@ object NexProgramCorpus:
         |  print(s"n=$n s=$s")
       """.stripMargin,
       "n=42 s=hello\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3234,6 +3244,7 @@ object NexProgramCorpus:
         |  print(s"$a $b")
       """.stripMargin,
       "6 -6\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3261,6 +3272,7 @@ object NexProgramCorpus:
         |  print(s"$a $b")
       """.stripMargin,
       "7 8\n",
+      mlir = true,
     ),
     Case(
       "paren-less tuple construction",
@@ -3276,6 +3288,7 @@ object NexProgramCorpus:
         |  print(s"$n $label")
       """.stripMargin,
       "5 non-pos\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3408,6 +3421,7 @@ object NexProgramCorpus:
         |  print(s"x+y = ${x + y}")
       """.stripMargin,
       "x+y = 30\n",
+      mlir = true,
     ),
     Case(
       "string interpolation",

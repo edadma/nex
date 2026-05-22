@@ -85,6 +85,14 @@ trait NexMLIRStrings:
     */
   protected def emitValueToString(e: TExpr): String =
     val v = emitExpr(e)
+    emitMlirValToString(v)
+
+  /** Convert an already-emitted [[MlirVal]] to a fresh string
+    * descriptor. Shared between [[emitValueToString]] (which evaluates
+    * the source expression first) and the per-slot tuple formatter
+    * (which has already extracted the element).
+    */
+  protected def emitMlirValToString(v: MlirVal): String =
     v.ty match
       case MScalar(TyInteger) =>
         val r = fresh("vstri")
@@ -103,8 +111,33 @@ trait NexMLIRStrings:
       case MString =>
         out.append(s"  func.call @nex_str_inc(${v.reg}) : (i64) -> ()\n")
         v.reg
+      case mt: MTuple =>
+        emitTupleToString(v.reg, mt)
       case other =>
         notYet(s"value-to-string for $other")
+
+  /** Format a tuple value as `(e0, e1, ..., eN-1)` into a heap string
+    * descriptor. Extracts each slot with `llvm.extractvalue`, converts
+    * it via [[emitMlirValToString]] (recurses for nested tuples), and
+    * left-folds concat with comma-space separators between slots.
+    * Each `nex_str_concat` operand is `dec`'d after the call (literals
+    * skip; heap descriptors with `refcount=1` drop to zero and free).
+    * The final descriptor's `refcount=1` belongs to the caller.
+    */
+  protected def emitTupleToString(reg: String, mt: MTuple): String =
+    def concatInto(acc: String, next: String): String =
+      val r = fresh("tupcc")
+      out.append(s"  $r = func.call @nex_str_concat($acc, $next) : (i64, i64) -> i64\n")
+      out.append(s"  func.call @nex_str_dec($acc) : (i64) -> ()\n")
+      out.append(s"  func.call @nex_str_dec($next) : (i64) -> ()\n")
+      r
+    var acc = emitStringLiteral("(")
+    for ((slotTy, idx) <- mt.elems.zipWithIndex) do
+      if idx > 0 then acc = concatInto(acc, emitStringLiteral(", "))
+      val slotR = fresh(s"tps_$idx")
+      out.append(s"  $slotR = llvm.extractvalue $reg[$idx] : ${mt.text}\n")
+      acc = concatInto(acc, emitMlirValToString(MlirVal(slotR, slotTy)))
+    concatInto(acc, emitStringLiteral(")"))
 
   /** Convert a value-producing expression to a fresh `MString`
     * descriptor formatted according to an f-string spec like
