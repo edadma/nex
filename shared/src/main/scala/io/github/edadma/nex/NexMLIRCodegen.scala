@@ -71,6 +71,16 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
   protected case class MFunc(paramTys: List[MlirType], retTyOpt: Option[MlirType]) extends MlirType:
     def text: String = "i64"
 
+  /** A by-reference parameter slot. At the MLIR level this is a
+    * `memref<T>` carrying the caller's scalar var slot — the callee
+    * loads through it for reads and stores through it for writes, so
+    * mutations flow back to the caller's binding. Only scalar element
+    * types are supported (the tensor `mut [T]` case needs a separate
+    * memref-backed var-tensor design).
+    */
+  protected case class MMemref(scalar: MScalar) extends MlirType:
+    def text: String = s"memref<${scalar.text}>"
+
   protected case class MlirVal(reg: String, ty: MlirType)
 
   protected val out             = new StringBuilder
@@ -176,7 +186,20 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     tp.allDecls.foreach {
       case f: TFunDecl
           if f.sym.name != "main" && !libmIntrinsics.contains(f.sym.id) =>
-        val paramTys = f.params.map(p => mlirTypeOf(p.tpe))
+        // Read the per-param mode list off the function's TyFunc — Mut
+        // scalars lower to `memref<T>` ref slots so callee writes flow
+        // back to the caller's var. Mut on a non-scalar type stays
+        // un-registered (the tensor `mut [T]` ABI is a separate
+        // sub-project; closures/strings would need their own boxing).
+        val modes: List[ParamMode] = f.sym.tpe match
+          case TyFunc(ps, _) if ps.size == f.params.size => ps.map(_._2)
+          case _ => List.fill(f.params.size)(ParamMode.Read)
+        val paramTys = f.params.zip(modes).map { case (p, mode) =>
+          (mlirTypeOf(p.tpe), mode) match
+            case (Some(s: MScalar), ParamMode.Mut) => Some(MMemref(s))
+            case (other, ParamMode.Read)           => other
+            case _                                  => None
+        }
         // Outer Option tracks "supported at all", inner Option tracks
         // "value-returning vs unit-returning". TyUnit registers with
         // an inner None.

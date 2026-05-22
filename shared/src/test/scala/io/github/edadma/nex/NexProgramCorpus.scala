@@ -3452,6 +3452,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "mut by-ref",
@@ -3466,6 +3467,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "28\n",
+      mlir = true,
     ),
     Case(
       "mut by-ref",
@@ -3484,6 +3486,7 @@ object NexProgramCorpus:
         |  print(y)
       """.stripMargin,
       "2\n1\n",
+      mlir = true,
     ),
     Case(
       "mut by-ref",
@@ -3498,6 +3501,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "105\n",
+      mlir = true,
     ),
     Case(
       "mut by-ref",
@@ -3512,6 +3516,7 @@ object NexProgramCorpus:
         |  print(r)
       """.stripMargin,
       "10\n11\n",
+      mlir = true,
     ),
     Case(
       "mut by-ref",
@@ -3527,6 +3532,7 @@ object NexProgramCorpus:
         |  print(n)
       """.stripMargin,
       "3\n",
+      mlir = true,
     ),
 
     // ========================================================================
@@ -3654,6 +3660,7 @@ object NexProgramCorpus:
         |  print(y)
       """.stripMargin,
       "42\n99\n",
+      mlir = true,
     ),
     Case(
       "auto-clone (§8.3)",
@@ -4731,6 +4738,7 @@ object NexProgramCorpus:
         |  print(SQRT2 * SQRT2)
       """.stripMargin,
       "2.0000000000000004\n",
+      mlir = true,
     ),
     Case(
       "const fn calls",
@@ -4741,6 +4749,7 @@ object NexProgramCorpus:
         |def main() = print(NINE)
       """.stripMargin,
       "9.0\n",
+      mlir = true,
     ),
     Case(
       "const fn calls",
@@ -4751,6 +4760,7 @@ object NexProgramCorpus:
         |def main() = print(FACT6)
       """.stripMargin,
       "720\n",
+      mlir = true,
     ),
     Case(
       "const fn calls",
@@ -4761,6 +4771,7 @@ object NexProgramCorpus:
         |def main() = print(abs(COS_HP) < 1.0e-10)
       """.stripMargin,
       "true\n",
+      mlir = true,
     ),
     Case(
       "const fn calls",
@@ -4771,6 +4782,7 @@ object NexProgramCorpus:
         |def main() = print(NINE)
       """.stripMargin,
       "9.0\n",
+      mlir = true,
     ),
 
     // ========================================================================

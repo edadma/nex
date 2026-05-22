@@ -783,23 +783,38 @@ trait NexMLIRScalarControl:
     if args.size != paramTys.size then
       notYet(s"arity mismatch on user def `$symName` — ${args.size} args vs ${paramTys.size} params")
     val argVals = args.zip(paramTys).map { case (a, expectedTy) =>
-      val av = emitExpr(a)
-      (av.ty, expectedTy) match
-        case (lt, rt) if lt == rt                  => av
-        case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
-        case (lt: MTensor, rt: MTensor)
-            if lt.elem == rt.elem
-              && lt.shape.length == rt.shape.length
-              && rt.shape.forall(_ < 0) =>
-          // Caller has a tensor whose element type and rank match the
-          // declared dynamic-shape param. Bridge via `tensor.cast`
-          // so the call's argument type matches the callee's
-          // signature byte-for-byte.
-          val r = fresh("tcast")
-          out.append(s"  $r = tensor.cast ${av.reg} : ${lt.text} to ${rt.text}\n")
-          MlirVal(r, rt)
-        case (lt, rt) =>
-          notYet(s"user def `$symName` arg type $lt does not match param type $rt")
+      expectedTy match
+        case MMemref(scalar) =>
+          // Pass the caller's slot directly so callee writes flow back
+          // to the caller's binding. Elaborator's mode-checker has
+          // already guaranteed the arg is a TVarRef to a var; we
+          // resolve it via varSlots (the slot is already a memref).
+          a match
+            case TVarRef(s, _, _) if varSlots.contains(s.id) =>
+              val (slot, sty) = varSlots(s.id)
+              if sty != scalar then
+                notYet(s"mut-arg slot type ${sty.text} doesn't match param ${scalar.text}")
+              MlirVal(slot, MMemref(scalar))
+            case _ =>
+              notYet(s"mut-arg to user def `$symName` is not a var slot")
+        case _ =>
+          val av = emitExpr(a)
+          (av.ty, expectedTy) match
+            case (lt, rt) if lt == rt                  => av
+            case (MScalar(TyInteger), MScalar(TyReal)) => promoteIntToReal(av)
+            case (lt: MTensor, rt: MTensor)
+                if lt.elem == rt.elem
+                  && lt.shape.length == rt.shape.length
+                  && rt.shape.forall(_ < 0) =>
+              // Caller has a tensor whose element type and rank match the
+              // declared dynamic-shape param. Bridge via `tensor.cast`
+              // so the call's argument type matches the callee's
+              // signature byte-for-byte.
+              val r = fresh("tcast")
+              out.append(s"  $r = tensor.cast ${av.reg} : ${lt.text} to ${rt.text}\n")
+              MlirVal(r, rt)
+            case (lt, rt) =>
+              notYet(s"user def `$symName` arg type $lt does not match param type $rt")
     }
     val paramTyText = paramTys.map(_.text).mkString(", ")
     retTyOpt match
@@ -844,7 +859,16 @@ trait NexMLIRScalarControl:
     varTensors.clear()
     boxedVarBoxes.clear()
     f.params.zip(paramTys).zipWithIndex.foreach { case ((p, ty), i) =>
-      env(p.id) = MlirVal(s"%arg$i", ty)
+      ty match
+        case MMemref(scalar) =>
+          // `mut scalar` param: `%argN` is already a `memref<T>` from
+          // the caller. Bind it as a var slot so plain TVarRef loads
+          // and TAssign stores flow through the same memref the
+          // caller's slot uses, making mutations visible to both
+          // sides.
+          varSlots(p.id) = (s"%arg$i", scalar)
+        case _ =>
+          env(p.id) = MlirVal(s"%arg$i", ty)
     }
     retTyOpt match
       case Some(retTy) =>
