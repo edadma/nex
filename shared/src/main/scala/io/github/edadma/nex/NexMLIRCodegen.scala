@@ -105,6 +105,17 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val elemText = elems.map(_.text).mkString(", ")
       s"!llvm.struct<($elemText)>"
 
+  /** A complex value `{ real, imag }` lowered to
+    * `!llvm.struct<(f64, f64)>`. Construction packs an `re`/`im` pair
+    * via `llvm.mlir.undef` + two `llvm.insertvalue`; arithmetic runs
+    * per-component (see [[emitComplexArith]]); `.re` / `.im` field
+    * reads emit `llvm.extractvalue`. Integer / real operands promote
+    * to a complex pair `{ x, 0.0 }` at the boundary, matching the
+    * LLVM backend's `toComplex` lift.
+    */
+  protected case object MComplex extends MlirType:
+    def text: String = "!llvm.struct<(f64, f64)>"
+
   protected case class MlirVal(reg: String, ty: MlirType)
 
   protected val out             = new StringBuilder
@@ -227,17 +238,22 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     tp.allDecls.foreach {
       case f: TFunDecl
           if f.sym.name != "main" && !libmIntrinsics.contains(f.sym.id) =>
-        // Read the per-param mode list off the function's TyFunc — Mut
+        // Read the per-param mode list off the function's TyFunc. Mut
         // scalars lower to `memref<T>` ref slots so callee writes flow
-        // back to the caller's var. Mut on a non-scalar type stays
-        // un-registered (the tensor `mut [T]` ABI is a separate
-        // sub-project; closures/strings would need their own boxing).
+        // back to the caller's var. Mut tensors are passed by-value
+        // (`tensor<...>`) and rely on the elaborator's auto-clone pass
+        // (NexLifetime) to wrap any caller-aliased var in TClone before
+        // the call — that's enough to match the observable output for
+        // every mut-tensor corpus case where the caller doesn't share
+        // storage with the val source. Closures/strings as mut stay
+        // un-registered.
         val modes: List[ParamMode] = f.sym.tpe match
           case TyFunc(ps, _) if ps.size == f.params.size => ps.map(_._2)
           case _ => List.fill(f.params.size)(ParamMode.Read)
         val paramTys = f.params.zip(modes).map { case (p, mode) =>
           (mlirTypeOf(p.tpe), mode) match
             case (Some(s: MScalar), ParamMode.Mut) => Some(MMemref(s))
+            case (Some(t: MTensor), ParamMode.Mut) => Some(t)
             case (other, ParamMode.Read)           => other
             case _                                  => None
         }
@@ -264,6 +280,7 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     out.append("func.func private @nex_ipow(i64, i64) -> i64\n")
     out.append("func.func private @nex_trap_slice_oob()\n")
     out.append("func.func private @nex_trap_axis_oob()\n")
+    out.append("func.func private @nex_trap_complex_div_zero()\n")
     out.append("func.func private @nex_str_lit_from_cstr(i64, i64) -> i64\n")
     out.append("func.func private @nex_str_inc(i64)\n")
     out.append("func.func private @nex_str_dec(i64)\n")
@@ -423,6 +440,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         out.append(s"  func.call @$helper($ptrReg, $rowsReg, $colsReg) : (i64, i64, i64) -> ()\n")
       case mt: MTuple =>
         val descR = emitTupleToString(v.reg, mt)
+        out.append(s"  func.call @nex_print_str($descR) : (i64) -> ()\n")
+        out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
+      case MComplex =>
+        val descR = emitComplexToString(v.reg)
         out.append(s"  func.call @nex_print_str($descR) : (i64) -> ()\n")
         out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
       case other =>
@@ -593,6 +614,13 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
               val r = fresh("neg")
               out.append(s"  $r = arith.negf ${v.reg} : f64\n")
               MlirVal(r, MScalar(TyReal))
+            case MComplex =>
+              val (re, im) = emitUnpackComplex(v.reg)
+              val nre = fresh("neg_re")
+              val nim = fresh("neg_im")
+              out.append(s"  $nre = arith.negf $re : f64\n")
+              out.append(s"  $nim = arith.negf $im : f64\n")
+              emitPackComplex(nre, nim)
             case other =>
               notYet(s"unary minus on $other")
 
@@ -652,6 +680,13 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val r = fresh("inf")
       out.append(s"  $r = arith.constant 0x7FF0000000000000 : f64\n")
       MlirVal(r, MScalar(TyReal))
+
+    case TVarRef(s, _, _) if s.kind == SymKind.Prelude && s.name == "i" =>
+      val zero = fresh("zero")
+      val one  = fresh("one")
+      out.append(s"  $zero = arith.constant 0.000000e+00 : f64\n")
+      out.append(s"  $one = arith.constant 1.000000e+00 : f64\n")
+      emitPackComplex(zero, one)
 
     case TVarRef(sym, _, _) if currentLambdaCaptures.contains(sym.id) =>
       // Reading a captured value from inside a lambda body — go
@@ -775,12 +810,39 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case (MString, MString) => emitStringConcat(lv.reg, rv.reg)
         case (lt, rt)           => notYet(s"`+` on string with $lt / $rt")
 
+    case TBinOp(op @ ("==" | "!="), lhs, rhs, _, _)
+        if lhs.tpe == TyComplex || rhs.tpe == TyComplex =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      val (lre, lim) = liftToComplex(lv)
+      val (rre, rim) = liftToComplex(rv)
+      val eR = fresh("ce_re")
+      val eI = fresh("ce_im")
+      out.append(s"  $eR = arith.cmpf oeq, $lre, $rre : f64\n")
+      out.append(s"  $eI = arith.cmpf oeq, $lim, $rim : f64\n")
+      val eq = fresh("ceq")
+      out.append(s"  $eq = arith.andi $eR, $eI : i1\n")
+      if op == "==" then MlirVal(eq, MScalar(TyBool))
+      else
+        val one = fresh("one")
+        val neg = fresh("cne")
+        out.append(s"  $one = arith.constant 1 : i1\n")
+        out.append(s"  $neg = arith.xori $eq, $one : i1\n")
+        MlirVal(neg, MScalar(TyBool))
+
     case TBinOp(op, lhs, rhs, _, _) if isComparisonOp(op) =>
       val lv = emitExpr(lhs)
       val rv = emitExpr(rhs)
       (lv.ty, rv.ty) match
         case (MString, MString) => emitStringCompare(op, lv.reg, rv.reg)
         case _                  => emitComparison(op, lv, rv)
+
+    case TBinOp(op, lhs, rhs, _, TyComplex) =>
+      val lv = emitExpr(lhs)
+      val rv = emitExpr(rhs)
+      val (lre, lim) = liftToComplex(lv)
+      val (rre, rim) = liftToComplex(rv)
+      emitComplexArith(op, lre, lim, rre, rim)
 
     case TBinOp(op, lhs, rhs, _, resultTy) =>
       val lv = emitExpr(lhs)
@@ -818,6 +880,23 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
           MlirVal(r, MScalar(TyInteger))
         case other =>
           notYet(s"to_integer on $other")
+
+    case TCall(TVarRef(s, _, _), List(arg), _, _)
+        if s.kind == SymKind.Prelude && s.name == "to_complex" =>
+      val v = emitExpr(arg)
+      v.ty match
+        case MComplex            => v
+        case MScalar(TyReal)     =>
+          val z = fresh("c_im0")
+          out.append(s"  $z = arith.constant 0.000000e+00 : f64\n")
+          emitPackComplex(v.reg, z)
+        case MScalar(TyInteger)  =>
+          val r = promoteIntToReal(v)
+          val z = fresh("c_im0")
+          out.append(s"  $z = arith.constant 0.000000e+00 : f64\n")
+          emitPackComplex(r.reg, z)
+        case other =>
+          notYet(s"to_complex on $other")
 
     case TCall(TVarRef(s, _, _), List(arr), _, _)
         if s.kind == SymKind.Prelude && s.name == "sum" =>
@@ -894,6 +973,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TCall(TVarRef(s, _, _), List(x), _, _)
         if s.kind == SymKind.Prelude && s.name == "abs" =>
       emitScalarAbs(emitExpr(x))
+
+    case TCall(TVarRef(s, _, _), List(x), _, _)
+        if s.kind == SymKind.Prelude && s.name == "sign" =>
+      emitScalarSign(emitExpr(x))
 
     case TCall(TVarRef(s, _, _), List(loE, hiE), _, _)
         if s.kind == SymKind.Prelude && s.name == "range" =>
@@ -1104,6 +1187,15 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
           val r       = fresh(s"f_${fieldName}")
           out.append(s"  $r = llvm.extractvalue ${rv.reg}[$idx] : ${ms.text}\n")
           MlirVal(r, fieldTy)
+        case MComplex =>
+          // `.re` / `.im` extract the f64 components of a complex value.
+          val idx = fieldName match
+            case "re" => 0
+            case "im" => 1
+            case other => notYet(s"field `$other` on complex (expected `re` or `im`)"); 0
+          val r = fresh(s"c_${fieldName}")
+          out.append(s"  $r = llvm.extractvalue ${rv.reg}[$idx] : !llvm.struct<(f64, f64)>\n")
+          MlirVal(r, MScalar(TyReal))
         case other =>
           notYet(s"field access on non-struct type $other")
 
@@ -1126,6 +1218,9 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MTuple]) =>
       val outTy = mlirTypeOf(tpe).get.asInstanceOf[MTuple]
       emitIfExpr(cond, thenB, elseB, outTy)
+
+    case TIf(cond, thenB, Some(elseB), _, TyComplex) =>
+      emitIfExpr(cond, thenB, elseB, MComplex)
 
     case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MStruct]) =>
       val outTy = mlirTypeOf(tpe).get.asInstanceOf[MStruct]
