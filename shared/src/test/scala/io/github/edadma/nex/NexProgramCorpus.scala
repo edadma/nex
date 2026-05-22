@@ -5619,7 +5619,6 @@ object NexProgramCorpus:
         |  print(b[3])
       """.stripMargin,
       "4\n255\n0\n128\n1\n",
-      pending = Some("LLVM byte descriptor pending"),
     ),
 
     Case(
@@ -5634,7 +5633,6 @@ object NexProgramCorpus:
         |  print(b)
       """.stripMargin,
       "[0x12, 0xFF, 0x00]\n",
-      pending = Some("LLVM byte descriptor pending"),
     ),
 
     Case(
@@ -5652,7 +5650,6 @@ object NexProgramCorpus:
         |  print(back == b)
       """.stripMargin,
       "[7, 11, 200]\ntrue\n",
-      pending = Some("LLVM byte descriptor pending"),
     ),
 
     Case(
@@ -5673,7 +5670,6 @@ object NexProgramCorpus:
         |  print(b[1])
       """.stripMargin,
       "3\n[0x02, 0x03, 0x04]\n2\n",
-      pending = Some("LLVM byte descriptor pending"),
     ),
 
     Case(
@@ -5696,6 +5692,5 @@ object NexProgramCorpus:
         |  print(a == d)
       """.stripMargin,
       "true\nfalse\nfalse\n",
-      pending = Some("LLVM byte descriptor pending"),
     ),
   )

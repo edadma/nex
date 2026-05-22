@@ -48,6 +48,15 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
       case _ =>
         arg.tpe match
+          case TyByteArray =>
+            // print a [byte]: hex-formatted form + trailing newline. The
+            // helper releases the buffer's owning share itself? — no,
+            // the helper only reads; we release here for parity with the
+            // array print path below.
+            val v = emitExpr(arg)
+            emitLine(s"  call void @__nex_print_bytes(ptr $v)\n")
+            emitArrDec(v, arg.tpe)
+            emitLine(s"  call i32 (ptr, ...) @printf(ptr @.nl)\n")
           case TyArray(_, _) =>
             // print an array: emit its formatted form + trailing newline.
             emitPrintArray(arg)
@@ -115,6 +124,9 @@ protected trait NexLLVMPrint extends NexLLVMState:
         emitLine(s"  call void @__nex_str_dec(ptr $v)\n")
       case TyArray(_, _) =>
         emitPrintArray(arg)
+      case TyByteArray =>
+        emitLine(s"  call void @__nex_print_bytes(ptr $v)\n")
+        emitArrDec(v, arg.tpe)
       case TyTuple(_) =>
         emitPrintTuple(arg)
       case TyStruct(_, _) =>

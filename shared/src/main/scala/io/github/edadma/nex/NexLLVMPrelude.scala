@@ -36,6 +36,42 @@ protected trait NexLLVMPrelude extends NexLLVMState:
       case ("rows",   List(a)) => emitArrayLengthish(a, "rows")
       case ("cols",   List(a)) => emitArrayLengthish(a, "cols")
 
+      // `[byte]` constructors / converters / file I/O (§3.3.1, §10.9).
+      // `bytes(n)` allocates a fresh zero-filled buffer of length n;
+      // `to_bytes` narrows an [integer] with a per-element range check;
+      // `to_integers` widens [byte] elements to integers; `read_bytes` /
+      // `write_bytes` wrap fopen+fread/fwrite+fclose with the path
+      // descriptor passed by reference and released by the helper.
+      case ("bytes", List(n)) =>
+        val nv = emitExpr(n)
+        val r  = newReg()
+        emitLine(s"  $r = call ptr @__nex_bytes_alloc(i64 $nv)\n")
+        r
+      case ("to_bytes", List(a)) =>
+        val av = emitExpr(a)
+        val r  = newReg()
+        emitLine(s"  $r = call ptr @__nex_bytes_from_int_arr(ptr $av)\n")
+        emitArrDec(av, a.tpe)
+        r
+      case ("to_integers", List(b)) =>
+        val bv = emitExpr(b)
+        val r  = newReg()
+        emitLine(s"  $r = call ptr @__nex_bytes_to_int_arr(ptr $bv)\n")
+        emitArrDec(bv, b.tpe)
+        r
+      case ("read_bytes", List(path)) =>
+        val pv = emitExpr(path)
+        val r  = newReg()
+        // The helper releases the path descriptor's share itself.
+        emitLine(s"  $r = call ptr @__nex_bytes_read_file(ptr $pv)\n")
+        r
+      case ("write_bytes", List(path, data)) =>
+        val pv = emitExpr(path)
+        val dv = emitExpr(data)
+        // The helper releases both shares itself.
+        emitLine(s"  call void @__nex_bytes_write_file(ptr $pv, ptr $dv)\n")
+        "void"
+
       // The scalar transcendentals (sqrt/exp/log/sin/cos/tan and their
       // companion entries) all live in `prelude/scalar.nex` as either
       // direct `@intrinsic("libm.X")` bridges or overloaded source-body
@@ -384,6 +420,21 @@ protected trait NexLLVMPrelude extends NexLLVMState:
     *   - rank-2 + `cols` → `__nex_arr2_cols`
     */
   private def emitArrayLengthish(arr: TExpr, which: String): String =
+    // `[byte]` is its own descriptor; route `length` straight through
+    // its native length helper. `rows` / `cols` are not meaningful on a
+    // byte buffer — only `length` is wired (the elaborator currently
+    // accepts `length(b)` for `b: [byte]` via the prelude registration).
+    if arr.tpe == TyByteArray then
+      val av = emitExpr(arr)
+      val r  = newReg()
+      which match
+        case "len" =>
+          emitLine(s"  $r = call i64 @__nex_bytes_len(ptr $av)\n")
+        case other =>
+          notYet(s"$other on [byte]")
+      emitArrDec(av, arr.tpe)
+      return r
+
     val rank = arrayRank(arr.tpe)
     val av   = emitExpr(arr)
     val r    = newReg()

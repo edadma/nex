@@ -470,6 +470,22 @@ protected trait NexLLVMControl extends NexLLVMState:
               case None       => notYet(s"assign to non-local `${s.name}`")
 
       case TIndex(arr, indices, _, _) =>
+        // `[byte]` routes through `__nex_bytes_store`, which performs the
+        // range check (rhs ∈ 0..255) and bounds check, then truncates
+        // i64 → i8 before storing. Keeps the trap policy identical to
+        // the interpreter's `[byte]` indexSet.
+        if arr.tpe == TyByteArray then
+          indices match
+            case List(i) =>
+              val av = emitExpr(arr)
+              val iv = emitExpr(i)
+              val rv = emitExpr(value)
+              emitLine(s"  call void @__nex_bytes_store(ptr $av, i64 $iv, i64 $rv)\n")
+              emitArrDec(av, arr.tpe)
+              return
+            case other =>
+              notImpl(s"assign to [byte] with ${other.size} indices")
+
         // arr[i] = v / arr[i, j] = v.  Compute slot ptr via the runtime
         // helper, then store the value into that slot.
         val rank = arrayRank(arr.tpe)

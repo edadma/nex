@@ -80,6 +80,25 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * `__nex_arr*_slot` and abort on overflow.
     */
   protected def emitIndex(arr: TExpr, indices: List[TExpr], resultT: Type): String =
+    // `[byte]` is its own descriptor — dispatch before the rank/elem path
+    // because TyByteArray has neither an element type nor a rank in the
+    // TyArray sense. The indexed read widens i8 → i64 (zero-extend).
+    if arr.tpe == TyByteArray then
+      indices match
+        case List(idx) =>
+          val arrV = emitExpr(arr)
+          val iv   = emitExpr(idx)
+          val slot = newReg()
+          emitLine(s"  $slot = call ptr @__nex_bytes_slot(ptr $arrV, i64 $iv)\n")
+          val raw  = newReg()
+          emitLine(s"  $raw = load i8, ptr $slot\n")
+          val widened = newReg()
+          emitLine(s"  $widened = zext i8 $raw to i64\n")
+          emitArrDec(arrV, arr.tpe)
+          return widened
+        case other =>
+          notImpl(s"index of [byte] with ${other.size} indices")
+
     val rank  = arrayRank(arr.tpe)
     val elem  = arrayElem(arr.tpe)
     val esz   = elemSize(elem)
@@ -512,6 +531,36 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * OOB slice would silently read past the buffer.
     */
   protected def emitSlice(arr: TExpr, lo: Option[TExpr], hi: Option[TExpr], inclusive: Boolean, stride: Option[TExpr], resultT: Type): String =
+    // `[byte]` slice copies through the bytes-specific helper which
+    // computes the bounds check, length, and copy in one place. The
+    // src buffer's owning share is released after the helper returns.
+    if arr.tpe == TyByteArray then
+      val av = emitExpr(arr)
+      // The bytes helper itself reads source length for negative-bound
+      // wrap, so we emit "default" sentinels here: lo defaults to 0 and
+      // hi to source length (signaled via the inclusive flag's normal
+      // path — open-ended hi is rare for `[byte]` and the helper will
+      // pin both bounds against the source's own length read).
+      val loV = lo match
+        case Some(e) => emitExpr(e)
+        case None    => "0"
+      val hiV = hi match
+        case Some(e) => emitExpr(e)
+        case None    =>
+          // The helper interprets a negative bound as "from end", so
+          // we can't pass -1 to mean "all". Instead read length once.
+          val l = newReg()
+          emitLine(s"  $l = call i64 @__nex_bytes_len(ptr $av)\n")
+          l
+      val stepV = stride match
+        case Some(e) => emitExpr(e)
+        case None    => "1"
+      val inc = if inclusive then "true" else "false"
+      val desc = newReg()
+      emitLine(s"  $desc = call ptr @__nex_bytes_slice(ptr $av, i64 $loV, i64 $hiV, i64 $stepV, i1 $inc)\n")
+      emitArrDec(av, arr.tpe)
+      return desc
+
     val elem = arrayElem(arr.tpe)
     val stE  = storageType(elem)
     val langE = llvmType(elem)
@@ -1043,6 +1092,14 @@ protected trait NexLLVMArrays extends NexLLVMState:
     * into a fresh allocation. Source's owning share is released.
     */
   protected def emitClone(arr: TExpr, resultT: Type): String =
+    // `[byte]` clones through the dedicated helper — descriptor has no
+    // owner / stride fields, so there's no fast/slow distinction.
+    if arr.tpe == TyByteArray then
+      val src  = emitExpr(arr)
+      val desc = newReg()
+      emitLine(s"  $desc = call ptr @__nex_bytes_clone(ptr $src)\n")
+      emitArrDec(src, arr.tpe)
+      return desc
     // Tier-1 perf optimization: when the source is provably contiguous
     // (owner==null at runtime) the per-element loop simplifies to a
     // memcpy through LLVM's loop optimizer; views (rank-1 strided or

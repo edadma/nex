@@ -633,6 +633,22 @@ class NexLLVMCodegen
       val (rre, rim) = toComplex(rv, r.tpe)
       emitComplexArith(op, lre, lim, rre, rim)
 
+    case TBinOp(op @ ("==" | "!="), l, r, _, TyBool) if l.tpe == TyByteArray && r.tpe == TyByteArray =>
+      // Structural equality on byte buffers: length-then-memcmp via
+      // `__nex_bytes_eq`. Mirrors the interpreter's [byte] equality
+      // (NexInterpEval.scala:949). Both source shares are released.
+      val lv = emitExpr(l)
+      val rv = emitExpr(r)
+      val eq = newReg()
+      emitLine(s"  $eq = call i1 @__nex_bytes_eq(ptr $lv, ptr $rv)\n")
+      emitArrDec(lv, l.tpe)
+      emitArrDec(rv, r.tpe)
+      if op == "==" then eq
+      else
+        val neg = newReg()
+        emitLine(s"  $neg = xor i1 $eq, 1\n")
+        neg
+
     case TBinOp(op @ ("==" | "!="), l, r, _, TyBool) if l.tpe == TyString && r.tpe == TyString =>
       // String equality: descriptor-level memcmp via the runtime
       // helper. Mirrors the interpreter's value-equality on strings.

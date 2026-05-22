@@ -694,7 +694,7 @@ protected trait NexLLVMState:
     * per-aggregate-type helpers generated on demand.
     */
   protected def isRefCountedType(t: Type): Boolean =
-    isArrayType(t) || isClosureType(t) || t == TyString
+    isArrayType(t) || isClosureType(t) || t == TyString || t == TyByteArray
       || aggregateContainsRefCounted(t) || enumContainsRefCounted(t)
 
   /** True when `t` is a [[TyEnum]] whose variants carry at least one
@@ -881,6 +881,8 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_inc(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_inc(ptr $value)\n")
+    else if t == TyByteArray then
+      emitLine(s"  call void @__nex_bytes_inc(ptr $value)\n")
     else if enumContainsRefCounted(t) then
       val te = t.asInstanceOf[TyEnum]
       requestEnumHelper(te)
@@ -899,6 +901,8 @@ protected trait NexLLVMState:
       emitLine(s"  call void @__nex_env_dec(ptr $env)\n")
     else if t == TyString then
       emitLine(s"  call void @__nex_str_dec(ptr $value)\n")
+    else if t == TyByteArray then
+      emitLine(s"  call void @__nex_bytes_dec(ptr $value)\n")
     else if enumContainsRefCounted(t) then
       val te = t.asInstanceOf[TyEnum]
       requestEnumHelper(te)

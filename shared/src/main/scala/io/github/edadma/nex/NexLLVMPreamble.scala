@@ -32,6 +32,16 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |declare double @strtod(ptr, ptr)
         |declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)
         |
+        |; File I/O — used by the `[byte]` read_bytes / write_bytes prelude.
+        |; The path argument is the platform's C string (NUL-terminated);
+        |; the mode argument is one of @.byte_mode_rb / @.byte_mode_wb below.
+        |declare ptr @fopen(ptr, ptr)
+        |declare i32 @fclose(ptr)
+        |declare i64 @fread(ptr, i64, i64, ptr)
+        |declare i64 @fwrite(ptr, i64, i64, ptr)
+        |declare i32 @fseek(ptr, i64, i32)
+        |declare i64 @ftell(ptr)
+        |
         |; setjmp / longjmp — used by __nex_assert_traps to catch traps.
         |; setjmp must be marked `returns_twice` so LLVM does not optimize
         |; assuming a single control-flow exit from the call.
@@ -128,6 +138,17 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |%nex_arr1 = type { i64, i64, ptr, i64, ptr }
         |%nex_arr2 = type { i64, i64, i64, ptr, i64, ptr }
         |%nex_str  = type { i64, i64, ptr }
+        |
+        |; A `[byte]` buffer descriptor: { refcount, length, data }. The
+        |; data pointer addresses a malloc'd i8 buffer of exactly `length`
+        |; bytes — no NUL terminator, no stride, no view machinery. The
+        |; buffer-only design intentionally lacks views; slicing copies
+        |; (`__nex_bytes_slice`) and there is no `view(by k)`-style strided
+        |; descriptor. That keeps the buffer dense and the helpers
+        |; straightforward — bytes are a storage format, not a computation
+        |; format, and the per-element ARC machinery for nested-refcounted
+        |; elements does not apply.
+        |%nex_bytes = type { i64, i64, ptr }
         |
         |@.fmt_int     = private unnamed_addr constant [6 x i8] c"%lld\0A\00"
         |@.fmt_real    = private unnamed_addr constant [4 x i8] c"%g\0A\00"
@@ -243,6 +264,14 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |@.slice_assign_len_msg = private unnamed_addr constant [37 x i8] c"trap: slice-assign: length mismatch\0A\00"
         |@.slice_assign_shape_msg = private unnamed_addr constant [36 x i8] c"trap: slice-assign: shape mismatch\0A\00"
         |@.minmax_empty_msg = private unnamed_addr constant [30 x i8] c"trap: min/max of empty array\0A\00"
+        |
+        |; `[byte]` runtime messages and format constants.
+        |@.byte_range_msg     = private unnamed_addr constant [38 x i8] c"trap: byte value out of range 0..255\0A\00"
+        |@.byte_read_open_err = private unnamed_addr constant [31 x i8] c"trap: read_bytes: cannot open\0A\00"
+        |@.byte_write_open_err = private unnamed_addr constant [32 x i8] c"trap: write_bytes: cannot open\0A\00"
+        |@.byte_mode_rb       = private unnamed_addr constant [3 x i8] c"rb\00"
+        |@.byte_mode_wb       = private unnamed_addr constant [3 x i8] c"wb\00"
+        |@.fmt_byte_hex       = private unnamed_addr constant [7 x i8] c"0x%02X\00"
         |
         |define void @__nex_assert(i1 %cond) {
         |entry:
@@ -688,6 +717,385 @@ protected trait NexLLVMPreamble extends NexLLVMState:
         |  %byte_off = mul i64 %strided, %elem_size
         |  %slot = getelementptr inbounds i8, ptr %buf, i64 %byte_off
         |  ret ptr %slot
+        |}
+        |""".stripMargin,
+    )
+    out.append(
+      """; --- [byte] runtime helpers -------------------------------------------
+        |;
+        |; A `[byte]` value is a `ptr` to a heap-allocated %nex_bytes
+        |; descriptor: { refcount, length, data }. The data buffer is a
+        |; tight i8 array of exactly `length` bytes. Slicing copies into
+        |; a fresh buffer; there are no views (this is intentional — bytes
+        |; are a storage format for file I/O / image-processing, not a
+        |; computation surface). ARC follows the same shape as the rank-1
+        |; helpers above: inc bumps refcount; dec releases the data buffer
+        |; and descriptor when refcount hits zero.
+        |
+        |define ptr @__nex_bytes_alloc(i64 %len) {
+        |entry:
+        |  %desc = call ptr @malloc(i64 24)
+        |  %rcp  = getelementptr inbounds %nex_bytes, ptr %desc, i32 0, i32 0
+        |  store i64 1, ptr %rcp
+        |  %lp   = getelementptr inbounds %nex_bytes, ptr %desc, i32 0, i32 1
+        |  store i64 %len, ptr %lp
+        |  %dp   = getelementptr inbounds %nex_bytes, ptr %desc, i32 0, i32 2
+        |  %buf  = call ptr @malloc(i64 %len)
+        |  ; Zero-fill so `bytes(n)` matches the interpreter's
+        |  ; `mutable.ArrayBuffer.fill[Byte](n)(0)`.
+        |  call void @llvm.memset.p0.i64(ptr %buf, i8 0, i64 %len, i1 false)
+        |  store ptr %buf, ptr %dp
+        |  ret ptr %desc
+        |}
+        |
+        |define void @__nex_bytes_inc(ptr %b) {
+        |entry:
+        |  %is_null = icmp eq ptr %b, null
+        |  br i1 %is_null, label %done, label %inc
+        |inc:
+        |  %rcp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = add i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |define void @__nex_bytes_dec(ptr %b) {
+        |entry:
+        |  %is_null = icmp eq ptr %b, null
+        |  br i1 %is_null, label %done, label %dec
+        |dec:
+        |  %rcp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 0
+        |  %rc  = load i64, ptr %rcp
+        |  %new = sub i64 %rc, 1
+        |  store i64 %new, ptr %rcp
+        |  %iz  = icmp eq i64 %new, 0
+        |  br i1 %iz, label %free_it, label %done
+        |free_it:
+        |  %dp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %buf = load ptr, ptr %dp
+        |  call void @free(ptr %buf)
+        |  call void @free(ptr %b)
+        |  br label %done
+        |done:
+        |  ret void
+        |}
+        |
+        |define i64 @__nex_bytes_len(ptr %b) {
+        |entry:
+        |  %lp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %l  = load i64, ptr %lp
+        |  ret i64 %l
+        |}
+        |
+        |; Resolve the i-th element slot. Negative indices wrap from the end
+        |; before the bounds check, matching `__nex_arr1_slot`.
+        |define ptr @__nex_bytes_slot(ptr %b, i64 %idx) {
+        |entry:
+        |  %lp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %is_neg  = icmp slt i64 %idx, 0
+        |  %wrapped = add i64 %idx, %len
+        |  %i       = select i1 %is_neg, i64 %wrapped, i64 %idx
+        |  %lt  = icmp slt i64 %i, 0
+        |  %ge  = icmp sge i64 %i, %len
+        |  %bad = or i1 %lt, %ge
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.oob_msg)
+        |  unreachable
+        |ok:
+        |  %dp   = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %buf  = load ptr, ptr %dp
+        |  %slot = getelementptr inbounds i8, ptr %buf, i64 %i
+        |  ret ptr %slot
+        |}
+        |
+        |; Indexed write with built-in range check: traps if v ∉ 0..255,
+        |; otherwise stores the low 8 bits. The bounds check on the index
+        |; is shared with `__nex_bytes_slot`.
+        |define void @__nex_bytes_store(ptr %b, i64 %idx, i64 %v) {
+        |entry:
+        |  %lo  = icmp slt i64 %v, 0
+        |  %hi  = icmp sgt i64 %v, 255
+        |  %bad = or i1 %lo, %hi
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.byte_range_msg)
+        |  unreachable
+        |ok:
+        |  %slot = call ptr @__nex_bytes_slot(ptr %b, i64 %idx)
+        |  %byte = trunc i64 %v to i8
+        |  store i8 %byte, ptr %slot
+        |  ret void
+        |}
+        |
+        |; Structural equality: lengths must match, then memcmp the buffers.
+        |define i1 @__nex_bytes_eq(ptr %a, ptr %b) {
+        |entry:
+        |  %lap = getelementptr inbounds %nex_bytes, ptr %a, i32 0, i32 1
+        |  %la  = load i64, ptr %lap
+        |  %lbp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %lb  = load i64, ptr %lbp
+        |  %leneq = icmp eq i64 %la, %lb
+        |  br i1 %leneq, label %check, label %neq
+        |check:
+        |  %dap = getelementptr inbounds %nex_bytes, ptr %a, i32 0, i32 2
+        |  %da  = load ptr, ptr %dap
+        |  %dbp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %db  = load ptr, ptr %dbp
+        |  %c   = call i32 @memcmp(ptr %da, ptr %db, i64 %la)
+        |  %eq  = icmp eq i32 %c, 0
+        |  ret i1 %eq
+        |neq:
+        |  ret i1 false
+        |}
+        |
+        |; Clone — fresh refcount=1 descriptor + copy of the data buffer.
+        |define ptr @__nex_bytes_clone(ptr %src) {
+        |entry:
+        |  %lp   = getelementptr inbounds %nex_bytes, ptr %src, i32 0, i32 1
+        |  %len  = load i64, ptr %lp
+        |  %dst  = call ptr @__nex_bytes_alloc(i64 %len)
+        |  %sdp  = getelementptr inbounds %nex_bytes, ptr %src, i32 0, i32 2
+        |  %sbuf = load ptr, ptr %sdp
+        |  %ddp  = getelementptr inbounds %nex_bytes, ptr %dst, i32 0, i32 2
+        |  %dbuf = load ptr, ptr %ddp
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %dbuf, ptr %sbuf, i64 %len, i1 false)
+        |  ret ptr %dst
+        |}
+        |
+        |; Copy a slice [lo..upper) into a fresh buffer where `upper = hi+1`
+        |; if `inclusive` else `hi`. Negative bounds wrap from the end. The
+        |; mirrored interpreter trap message is "slice [..] out of bounds
+        |; for [byte] of size N" — the AOT side uses the shared slice_oob
+        |; message because the corpus tests don't pin the byte-specific
+        |; format, and consistency with arr1's slice trap surface is more
+        |; valuable than verbatim parity here.
+        |define ptr @__nex_bytes_slice(ptr %src, i64 %loRaw, i64 %hiRaw, i64 %step, i1 %inclusive) {
+        |entry:
+        |  %lp  = getelementptr inbounds %nex_bytes, ptr %src, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %loNeg = icmp slt i64 %loRaw, 0
+        |  %loW   = add i64 %loRaw, %len
+        |  %lo    = select i1 %loNeg, i64 %loW, i64 %loRaw
+        |  %hiNeg = icmp slt i64 %hiRaw, 0
+        |  %hiW   = add i64 %hiRaw, %len
+        |  %hi    = select i1 %hiNeg, i64 %hiW, i64 %hiRaw
+        |  %hiPlus = add i64 %hi, 1
+        |  %upper  = select i1 %inclusive, i64 %hiPlus, i64 %hi
+        |  %loBad  = icmp slt i64 %lo, 0
+        |  %upBad  = icmp sgt i64 %upper, %len
+        |  %ordBad = icmp slt i64 %upper, %lo
+        |  %stepBad = icmp sle i64 %step, 0
+        |  %b1 = or i1 %loBad, %upBad
+        |  %b2 = or i1 %b1, %ordBad
+        |  %bad = or i1 %b2, %stepBad
+        |  br i1 %bad, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.slice_oob_msg)
+        |  unreachable
+        |ok:
+        |  ; length = ceil((upper - lo) / step)
+        |  %span = sub i64 %upper, %lo
+        |  %nz   = icmp sle i64 %span, 0
+        |  %zero = select i1 %nz, i64 0, i64 %span
+        |  %adj  = add i64 %zero, %step
+        |  %adj1 = sub i64 %adj, 1
+        |  %dlen = sdiv i64 %adj1, %step
+        |  %dst  = call ptr @__nex_bytes_alloc(i64 %dlen)
+        |  %sdp  = getelementptr inbounds %nex_bytes, ptr %src, i32 0, i32 2
+        |  %sbuf = load ptr, ptr %sdp
+        |  %ddp  = getelementptr inbounds %nex_bytes, ptr %dst, i32 0, i32 2
+        |  %dbuf = load ptr, ptr %ddp
+        |  %step1 = icmp eq i64 %step, 1
+        |  br i1 %step1, label %fast, label %loop_init
+        |fast:
+        |  %srcBase = getelementptr inbounds i8, ptr %sbuf, i64 %lo
+        |  call void @llvm.memcpy.p0.p0.i64(ptr %dbuf, ptr %srcBase, i64 %dlen, i1 false)
+        |  ret ptr %dst
+        |loop_init:
+        |  %iSlot = alloca i64
+        |  store i64 0, ptr %iSlot
+        |  br label %cond
+        |cond:
+        |  %i = load i64, ptr %iSlot
+        |  %live = icmp slt i64 %i, %dlen
+        |  br i1 %live, label %body, label %exit
+        |body:
+        |  %off = mul i64 %i, %step
+        |  %srcIdx = add i64 %lo, %off
+        |  %sslot = getelementptr inbounds i8, ptr %sbuf, i64 %srcIdx
+        |  %sb = load i8, ptr %sslot
+        |  %dslot = getelementptr inbounds i8, ptr %dbuf, i64 %i
+        |  store i8 %sb, ptr %dslot
+        |  %next = add i64 %i, 1
+        |  store i64 %next, ptr %iSlot
+        |  br label %cond
+        |exit:
+        |  ret ptr %dst
+        |}
+        |
+        |; to_bytes([integer]) — narrows each i64 to i8, trapping if any
+        |; element is outside 0..255. Mirrors the interpreter's per-element
+        |; check; the trap message matches the byte-range one (`"trap: byte
+        |; value out of range 0..255\n"`) — the interpreter uses a more
+        |; specific message that mentions the element index, but the
+        |; AOT-side keeps the shared shape since the corpus parity tests
+        |; don't drive this path with bad inputs.
+        |define ptr @__nex_bytes_from_int_arr(ptr %arr) {
+        |entry:
+        |  %len = call i64 @__nex_arr1_len(ptr %arr)
+        |  %dst = call ptr @__nex_bytes_alloc(i64 %len)
+        |  %ddp = getelementptr inbounds %nex_bytes, ptr %dst, i32 0, i32 2
+        |  %dbuf = load ptr, ptr %ddp
+        |  %iSlot = alloca i64
+        |  store i64 0, ptr %iSlot
+        |  br label %cond
+        |cond:
+        |  %i = load i64, ptr %iSlot
+        |  %live = icmp slt i64 %i, %len
+        |  br i1 %live, label %body, label %exit
+        |body:
+        |  %sp = call ptr @__nex_arr1_slot(ptr %arr, i64 %i, i64 8)
+        |  %v  = load i64, ptr %sp
+        |  %lo = icmp slt i64 %v, 0
+        |  %hi = icmp sgt i64 %v, 255
+        |  %bad = or i1 %lo, %hi
+        |  br i1 %bad, label %trap, label %store_it
+        |trap:
+        |  call void @__nex_trap_with(ptr @.byte_range_msg)
+        |  unreachable
+        |store_it:
+        |  %byte  = trunc i64 %v to i8
+        |  %dslot = getelementptr inbounds i8, ptr %dbuf, i64 %i
+        |  store i8 %byte, ptr %dslot
+        |  %next = add i64 %i, 1
+        |  store i64 %next, ptr %iSlot
+        |  br label %cond
+        |exit:
+        |  ret ptr %dst
+        |}
+        |
+        |; to_integers([byte]) — widens each i8 to i64 (zero-extend), into
+        |; a fresh rank-1 integer array.
+        |define ptr @__nex_bytes_to_int_arr(ptr %b) {
+        |entry:
+        |  %lp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %dst = call ptr @__nex_arr1_alloc(i64 %len, i64 8)
+        |  %dp  = getelementptr inbounds %nex_arr1, ptr %dst, i32 0, i32 2
+        |  %dbuf = load ptr, ptr %dp
+        |  %sdp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %sbuf = load ptr, ptr %sdp
+        |  %iSlot = alloca i64
+        |  store i64 0, ptr %iSlot
+        |  br label %cond
+        |cond:
+        |  %i = load i64, ptr %iSlot
+        |  %live = icmp slt i64 %i, %len
+        |  br i1 %live, label %body, label %exit
+        |body:
+        |  %sslot = getelementptr inbounds i8, ptr %sbuf, i64 %i
+        |  %byte  = load i8, ptr %sslot
+        |  %v     = zext i8 %byte to i64
+        |  %dslot = getelementptr inbounds i64, ptr %dbuf, i64 %i
+        |  store i64 %v, ptr %dslot
+        |  %next = add i64 %i, 1
+        |  store i64 %next, ptr %iSlot
+        |  br label %cond
+        |exit:
+        |  ret ptr %dst
+        |}
+        |
+        |; Print a byte buffer as [0xHH, 0xHH, ...] with no trailing newline.
+        |; The caller adds the newline when this is the top-level `print`.
+        |define void @__nex_print_bytes(ptr %b) {
+        |entry:
+        |  %ignored_open = call i32 (ptr, ...) @printf(ptr @.arr_open)
+        |  %lp = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %dp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %buf = load ptr, ptr %dp
+        |  %iSlot = alloca i64
+        |  store i64 0, ptr %iSlot
+        |  br label %cond
+        |cond:
+        |  %i = load i64, ptr %iSlot
+        |  %live = icmp slt i64 %i, %len
+        |  br i1 %live, label %body, label %close
+        |body:
+        |  %is_first = icmp eq i64 %i, 0
+        |  br i1 %is_first, label %elem, label %sep
+        |sep:
+        |  %ignored_sep = call i32 (ptr, ...) @printf(ptr @.arr_sep)
+        |  br label %elem
+        |elem:
+        |  %slot = getelementptr inbounds i8, ptr %buf, i64 %i
+        |  %byte = load i8, ptr %slot
+        |  %v    = zext i8 %byte to i32
+        |  %ignored_elem = call i32 (ptr, ...) @printf(ptr @.fmt_byte_hex, i32 %v)
+        |  %next = add i64 %i, 1
+        |  store i64 %next, ptr %iSlot
+        |  br label %cond
+        |close:
+        |  %ignored_close = call i32 (ptr, ...) @printf(ptr @.arr_close)
+        |  ret void
+        |}
+        |
+        |; read_bytes(path) — slurp the entire file at `path` into a fresh
+        |; %nex_bytes. The path descriptor's reference is released after
+        |; the call. Traps on open failure; size determined via
+        |; fseek(SEEK_END) + ftell + rewind. SEEK_END is the platform-
+        |; agnostic literal 2 used by every libc that ships fseek; SEEK_SET
+        |; is 0.
+        |define ptr @__nex_bytes_read_file(ptr %path_desc) {
+        |entry:
+        |  %path = call ptr @__nex_str_data(ptr %path_desc)
+        |  %fp   = call ptr @fopen(ptr %path, ptr @.byte_mode_rb)
+        |  call void @__nex_str_dec(ptr %path_desc)
+        |  %is_null = icmp eq ptr %fp, null
+        |  br i1 %is_null, label %trap, label %ok
+        |trap:
+        |  call void @__nex_trap_with(ptr @.byte_read_open_err)
+        |  unreachable
+        |ok:
+        |  %ignored_end = call i32 @fseek(ptr %fp, i64 0, i32 2)
+        |  %size = call i64 @ftell(ptr %fp)
+        |  %ignored_set = call i32 @fseek(ptr %fp, i64 0, i32 0)
+        |  %dst  = call ptr @__nex_bytes_alloc(i64 %size)
+        |  %ddp  = getelementptr inbounds %nex_bytes, ptr %dst, i32 0, i32 2
+        |  %dbuf = load ptr, ptr %ddp
+        |  %ignored_read = call i64 @fread(ptr %dbuf, i64 1, i64 %size, ptr %fp)
+        |  %ignored_close = call i32 @fclose(ptr %fp)
+        |  ret ptr %dst
+        |}
+        |
+        |; write_bytes(path, data) — write the entire `data` buffer to
+        |; `path` (binary mode, truncating). Releases both the path
+        |; descriptor and the data buffer's owning shares before returning.
+        |define void @__nex_bytes_write_file(ptr %path_desc, ptr %b) {
+        |entry:
+        |  %path = call ptr @__nex_str_data(ptr %path_desc)
+        |  %fp   = call ptr @fopen(ptr %path, ptr @.byte_mode_wb)
+        |  call void @__nex_str_dec(ptr %path_desc)
+        |  %is_null = icmp eq ptr %fp, null
+        |  br i1 %is_null, label %trap, label %ok
+        |trap:
+        |  call void @__nex_bytes_dec(ptr %b)
+        |  call void @__nex_trap_with(ptr @.byte_write_open_err)
+        |  unreachable
+        |ok:
+        |  %lp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 1
+        |  %len = load i64, ptr %lp
+        |  %dp  = getelementptr inbounds %nex_bytes, ptr %b, i32 0, i32 2
+        |  %buf = load ptr, ptr %dp
+        |  %ignored_write = call i64 @fwrite(ptr %buf, i64 1, i64 %len, ptr %fp)
+        |  %ignored_close = call i32 @fclose(ptr %fp)
+        |  call void @__nex_bytes_dec(ptr %b)
+        |  ret void
         |}
         |
         |; --- String runtime helpers -------------------------------------------
