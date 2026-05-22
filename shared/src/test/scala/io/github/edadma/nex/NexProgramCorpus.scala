@@ -5593,4 +5593,109 @@ object NexProgramCorpus:
       """.stripMargin,
       "ok\n",
     ),
+
+    // ========================================================================
+    // [byte] buffer
+    // ========================================================================
+    //
+    // Pending on AOT parity until the LLVM backend learns the byte
+    // descriptor (a fresh i8-strided sibling of %nex_arr1). The
+    // interpreter side exercises the full surface today.
+
+    Case(
+      "[byte] buffer",
+      "construct, index, read back",
+      """
+        |def main() =
+        |  val b = bytes(4)
+        |  b[0] = 255
+        |  b[1] = 0
+        |  b[2] = 128
+        |  b[3] = 1
+        |  print(length(b))
+        |  print(b[0])
+        |  print(b[1])
+        |  print(b[2])
+        |  print(b[3])
+      """.stripMargin,
+      "4\n255\n0\n128\n1\n",
+      pending = Some("LLVM byte descriptor pending"),
+    ),
+
+    Case(
+      "[byte] buffer",
+      "hex pretty-print",
+      """
+        |def main() =
+        |  val b = bytes(3)
+        |  b[0] = 18
+        |  b[1] = 255
+        |  b[2] = 0
+        |  print(b)
+      """.stripMargin,
+      "[0x12, 0xFF, 0x00]\n",
+      pending = Some("LLVM byte descriptor pending"),
+    ),
+
+    Case(
+      "[byte] buffer",
+      "round-trip via to_integers and to_bytes",
+      """
+        |def main() =
+        |  val b = bytes(3)
+        |  b[0] = 7
+        |  b[1] = 11
+        |  b[2] = 200
+        |  val ints = to_integers(b)
+        |  print(ints)
+        |  val back = to_bytes(ints)
+        |  print(back == b)
+      """.stripMargin,
+      "[7, 11, 200]\ntrue\n",
+      pending = Some("LLVM byte descriptor pending"),
+    ),
+
+    Case(
+      "[byte] buffer",
+      "slicing copies",
+      """
+        |def main() =
+        |  val b = bytes(5)
+        |  b[0] = 1
+        |  b[1] = 2
+        |  b[2] = 3
+        |  b[3] = 4
+        |  b[4] = 5
+        |  val s = b[1..4]
+        |  print(length(s))
+        |  print(s)
+        |  s[0] = 99
+        |  print(b[1])
+      """.stripMargin,
+      "3\n[0x02, 0x03, 0x04]\n2\n",
+      pending = Some("LLVM byte descriptor pending"),
+    ),
+
+    Case(
+      "[byte] buffer",
+      "structural equality on length and bytes",
+      """
+        |def main() =
+        |  val a = bytes(2)
+        |  a[0] = 9
+        |  a[1] = 10
+        |  val b = bytes(2)
+        |  b[0] = 9
+        |  b[1] = 10
+        |  val c = bytes(2)
+        |  c[0] = 9
+        |  c[1] = 11
+        |  val d = bytes(3)
+        |  print(a == b)
+        |  print(a == c)
+        |  print(a == d)
+      """.stripMargin,
+      "true\nfalse\nfalse\n",
+      pending = Some("LLVM byte descriptor pending"),
+    ),
   )
