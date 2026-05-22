@@ -24,7 +24,7 @@ import scala.collection.mutable
   *
   * Anything outside the recognised shape throws `notYet`.
   */
-class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIRScalarControl, NexMLIRLambdas:
+class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIRScalarControl, NexMLIRLambdas, NexMLIREnums:
 
   /** MLIR type of an emitted value. Either an LLVM-like scalar or a
     * static-shape tensor. We don't model rank-2 yet — every tensor in
@@ -115,6 +115,21 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     */
   protected case object MComplex extends MlirType:
     def text: String = "!llvm.struct<(f64, f64)>"
+
+  /** Tagged-union enum value. Lowers to
+    * `!llvm.struct<(i32, !llvm.array<NxI64>)>` where N is the maximum
+    * field count across all variants. Each variant field occupies one
+    * i64 payload slot (int → i64, real ↔ i64 via bitcast, bool ↔ i64
+    * via zext/trunc, string is already i64). Bare-only enums use N=0,
+    * which the LLVM dialect accepts.
+    */
+  protected case class MEnum(
+      name:         String,
+      variants:     List[(String, List[(String, Type)])],
+      payloadSlots: Int,
+  ) extends MlirType:
+    def text: String =
+      s"!llvm.struct<(i32, !llvm.array<$payloadSlots x i64>)>"
 
   protected case class MlirVal(reg: String, ty: MlirType)
 
@@ -216,7 +231,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     varTensors.clear()
     varStructs.clear()
     varTuples.clear()
+    variantInfo.clear()
+    enumTypeCache.clear()
+    enumStrPending.clear()
+    enumStrEmitted.clear()
     currentLambdaCaptures = Map.empty
+    collectEnumVariants(tp)
     tp.allDecls.foreach {
       case TTopBinding(sym, BindingKind.Val | BindingKind.Const, value, _)
           if isLiteralScalarExpr(value) =>
@@ -357,6 +377,12 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     emitMainBody(mainDecl.body)
     out.append(s"  func.return $c0 : i32\n")
     out.append("}\n")
+    // Per-enum stringifier helpers. Drained after main so any helper
+    // requested from inside main / user defs / lambda bodies lands in
+    // the module. MLIR is order-independent so emitting helpers after
+    // `@main` is fine — forward references through `func.call` resolve
+    // module-globally.
+    flushEnumStrHelpers()
     // Module-level globals (string literal byte arrays, etc.) come
     // first; MLIR's module is order-independent but the conventional
     // ordering puts globals before functions.
@@ -449,6 +475,10 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
       case MComplex =>
         val descR = emitComplexToString(v.reg)
+        out.append(s"  func.call @nex_print_str($descR) : (i64) -> ()\n")
+        out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
+      case me: MEnum =>
+        val descR = emitEnumValToString(v.reg, me)
         out.append(s"  func.call @nex_print_str($descR) : (i64) -> ()\n")
         out.append(s"  func.call @nex_str_dec($descR) : (i64) -> ()\n")
       case other =>
@@ -692,6 +722,19 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       out.append(s"  $zero = arith.constant 0.000000e+00 : f64\n")
       out.append(s"  $one = arith.constant 1.000000e+00 : f64\n")
       emitPackComplex(zero, one)
+
+    case TVarRef(s, _, _) if s.kind == SymKind.EnumVariant =>
+      // Bare variant value (no fields). Reach this when source writes
+      // `Red`, `Diverged`, etc. — including when bound to a val, passed
+      // as an arg, or used as the scrutinee of a match. Fielded variants
+      // applied through `Foo(a, b)` are reached via the TCall arm below.
+      variantInfo.get(s.id) match
+        case Some((te, idx, fs)) if fs.isEmpty =>
+          emitVariantConstruct(te, idx, Nil)
+        case Some((_, _, _)) =>
+          notYet(s"reference to fielded variant `${s.name}` as a first-class value (apply with parens: `${s.name}(...)`)")
+        case None =>
+          notYet(s"unknown variant `${s.name}` — codegen variantInfo missed it")
 
     case TVarRef(sym, _, _) if currentLambdaCaptures.contains(sym.id) =>
       // Reading a captured value from inside a lambda body — go
@@ -1056,6 +1099,15 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
     case TCall(TVarRef(s, _, _), args, _, _) if libmIntrinsics.contains(s.id) =>
       emitLibmCall(libmIntrinsics(s.id), args.map(emitExpr))
 
+    case TCall(TVarRef(s, _, _), args, _, _) if s.kind == SymKind.EnumVariant =>
+      // Fielded variant construction: `Converged(3.14)` builds a
+      // `{ i32 tag, [N x i64] payload }` value with each arg packed
+      // into its own i64 slot. Tag index and field types come from
+      // [[variantInfo]] populated by `collectEnumVariants`.
+      variantInfo.get(s.id) match
+        case Some((te, idx, _)) => emitVariantConstruct(te, idx, args)
+        case None               => notYet(s"unknown variant `${s.name}`")
+
     case TCall(TVarRef(s, _, _), args, _, tpe) if s.kind == SymKind.TypeName =>
       // Struct constructor: `Point(x, y)` lowers like a tuple literal —
       // `llvm.mlir.undef` of the struct's LLVM type, then a chain of
@@ -1249,6 +1301,9 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       val outTy = mlirTypeOf(tpe).get.asInstanceOf[MStruct]
       emitIfExpr(cond, thenB, elseB, outTy)
 
+    case TMatch(scrutinee, cases, _, t) =>
+      emitMatch(scrutinee, cases, t)
+
     case TFusedLoop(loopVar, length, body, None, _, tpe) =>
       val n = staticLength(length).getOrElse(notYet(s"fused loop with non-static length"))
       val elemT = tpe match
@@ -1424,6 +1479,8 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
       emitAssertTrapsCall(fn, Some(sub))
     case TBlockExpr(TIf(cond, thenB, elseB, _, _)) =>
       emitIfStatement(cond, thenB, elseB)
+    case TBlockExpr(TMatch(scrutinee, cases, _, t)) =>
+      val _ = emitMatch(scrutinee, cases, t)
     case TBlockExpr(other) =>
       notYet(s"statement-position expression: ${other.getClass.getSimpleName}")
 

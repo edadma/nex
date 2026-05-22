@@ -923,6 +923,16 @@ trait NexMLIRScalarControl:
       if paramOpts.forall(_.isDefined) && retOpt.isDefined then
         Some(MFunc(paramOpts.map(_.get), retOpt.get))
       else None
+    case te: TyEnum                                               =>
+      // Every variant field type must be one of int / real / bool /
+      // string so each fits a single i64 payload slot. Aggregates are
+      // out of scope for the first cut.
+      val ok = te.variants.forall { case (_, fs) =>
+        fs.forall { case (_, ft) =>
+          ft == TyInteger || ft == TyReal || ft == TyBool || ft == TyString
+        }
+      }
+      if ok then Some(menumOf(te)) else None
     case _                                                        => None
 
   /** True when `e` is a scalar literal (after literal-fold of unary
