@@ -1028,6 +1028,7 @@ object NexProgramCorpus:
         |  print(sum(ys))
       """.stripMargin,
       "12\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1038,6 +1039,7 @@ object NexProgramCorpus:
         |  print(reduce(xs, 0, (a, x) -> a + x))
       """.stripMargin,
       "10\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -1236,6 +1238,7 @@ object NexProgramCorpus:
         |  print(sum(map(xs, f)))
       """.stripMargin,
       "100\n",
+      mlir = true,
     ),
     Case(
       "functions",
@@ -4782,6 +4785,7 @@ object NexProgramCorpus:
         |def main() = print(id(42))
       """.stripMargin,
       "42\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4791,6 +4795,7 @@ object NexProgramCorpus:
         |def main() = print(id(3.5))
       """.stripMargin,
       "3.5\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4800,6 +4805,7 @@ object NexProgramCorpus:
         |def main() = print(id("hi"))
       """.stripMargin,
       "hi\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4812,6 +4818,7 @@ object NexProgramCorpus:
         |  print(id("hi"))
       """.stripMargin,
       "42\n3.5\nhi\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4823,6 +4830,7 @@ object NexProgramCorpus:
         |  print(twice(1.5))
       """.stripMargin,
       "42\n3.0\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4834,6 +4842,7 @@ object NexProgramCorpus:
         |  print(min2(2.5, 1.5))
       """.stripMargin,
       "3\n1.5\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4848,6 +4857,7 @@ object NexProgramCorpus:
         |  print(same(true, true))
       """.stripMargin,
       "true\nfalse\ntrue\nfalse\ntrue\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4871,6 +4881,7 @@ object NexProgramCorpus:
         |  print(f("hi"))
       """.stripMargin,
       "100\n200\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4884,6 +4895,7 @@ object NexProgramCorpus:
         |  print(f("x"))
       """.stripMargin,
       "1\n1\n2\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4896,6 +4908,7 @@ object NexProgramCorpus:
         |  print(first(3.14, true))
       """.stripMargin,
       "1\nyes\n3.14\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4907,6 +4920,7 @@ object NexProgramCorpus:
         |  print(second("yes", 99))
       """.stripMargin,
       "hi\n99\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4918,6 +4932,7 @@ object NexProgramCorpus:
         |  print(pickMax(2.5, 1.5))
       """.stripMargin,
       "7\n2.5\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4929,6 +4944,7 @@ object NexProgramCorpus:
         |  print(apply1(3.0, x -> x + 0.5))
       """.stripMargin,
       "10\n3.5\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4941,6 +4957,7 @@ object NexProgramCorpus:
         |  print(applyTwice("a", s -> id(s)))
       """.stripMargin,
       "7\na\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4952,6 +4969,7 @@ object NexProgramCorpus:
         |  print(add(1.5, 2.5))
       """.stripMargin,
       "3\n4.0\n",
+      mlir = true,
     ),
     Case(
       "user generics",
@@ -4965,6 +4983,7 @@ object NexProgramCorpus:
         |  print(show(2.5))
       """.stripMargin,
       "yes\nord\nord\n",
+      mlir = true,
     ),
 
     // ========================================================================

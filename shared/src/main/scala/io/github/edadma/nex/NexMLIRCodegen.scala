@@ -645,6 +645,18 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
         case t: MTensor if t.shape.nonEmpty => emitMapInlineLambda(av, t, lam, outElem)
         case other                          => notYet(s"map over $other")
 
+    case TCall(TVarRef(s, _, _), List(arr, fnExpr), _, tpe)
+        if s.kind == SymKind.Prelude && s.name == "map"
+          && mlirTypeOf(fnExpr.tpe).exists(_.isInstanceOf[MFunc]) =>
+      val av = emitExpr(arr)
+      val fv = emitExpr(fnExpr)
+      val outElem = tpe match
+        case TyArray(e, _) => e
+        case other         => notYet(s"map returns non-array $other")
+      av.ty match
+        case t @ MTensor(_, List(_)) => emitMapClosure(av, t, fv, outElem)
+        case other                   => notYet(s"closure-arg map over $other")
+
     case TCall(TVarRef(s, _, _), List(arr, init, lam: TLambda), _, _)
         if s.kind == SymKind.Prelude && s.name == "reduce" && lam.params.size == 2 =>
       val av = emitExpr(arr)
@@ -858,6 +870,9 @@ class NexMLIRCodegen extends NexMLIRStrings, NexMLIRArrays, NexMLIRHOFs, NexMLIR
 
     case TIf(cond, thenB, Some(elseB), _, tpe) if isMlirScalarType(tpe) =>
       emitIfExpr(cond, thenB, elseB, MScalar(tpe))
+
+    case TIf(cond, thenB, Some(elseB), _, TyString) =>
+      emitIfExpr(cond, thenB, elseB, MString)
 
     case TIf(cond, thenB, Some(elseB), _, tpe) if mlirTypeOf(tpe).exists(_.isInstanceOf[MTensor]) =>
       // Tensor-returning if-expression. Both branches must produce

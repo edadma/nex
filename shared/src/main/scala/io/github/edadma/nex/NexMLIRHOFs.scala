@@ -43,6 +43,66 @@ trait NexMLIRHOFs:
       case None    => env.remove(paramSym.id)
     MlirVal(outR, outTy)
 
+  /** `map(arr, f)` where `f` is a closure-typed value (an MFunc — a
+    * heap descriptor address) rather than an inline TLambda. Lowers to
+    * an `scf.for` walking the input tensor, extracting each element,
+    * issuing one indirect call per iteration, and inserting the result
+    * into a fresh output tensor carried as an iter_arg.
+    *
+    * Pre-extracts fn / env from the closure descriptor once outside the
+    * loop (closure values are immutable; the same `(fn, env)` is used
+    * for every element).
+    *
+    * Restricted to rank-1 inputs with scalar element types — the
+    * indirect-call path requires every argument and the return to fit
+    * in i64-shaped LLVM-compatible slots, which is already the
+    * standing closure-ABI constraint.
+    */
+  protected def emitMapClosure(av: MlirVal, srcTy: MTensor, fv: MlirVal, outElem: Type): MlirVal =
+    val inElem = srcTy.elem
+    val inS    = scalarText(inElem)
+    val outS   = scalarText(outElem)
+    val outTy  = MTensor(outElem, srcTy.shape)
+
+    val c0Idx = fresh("c0")
+    out.append(s"  $c0Idx = arith.constant 0 : index\n")
+    val c1Idx = fresh("c1")
+    out.append(s"  $c1Idx = arith.constant 1 : index\n")
+
+    val lenIdx = tensorDimAsIndex(av.reg, srcTy, 0)
+
+    val outInit =
+      if srcTy.shape.head >= 0 then
+        val r = fresh("init")
+        out.append(s"  $r = tensor.empty() : ${outTy.text}\n")
+        r
+      else emitTensorEmpty(outTy, List(lenIdx))
+
+    val fn = fresh("mfn")
+    out.append(s"  $fn = func.call @nex_closure_fn(${fv.reg}) : (i64) -> i64\n")
+    val ev = fresh("menv")
+    out.append(s"  $ev = func.call @nex_closure_env(${fv.reg}) : (i64) -> i64\n")
+    val fnp = fresh("mfnp")
+    out.append(s"  $fnp = llvm.inttoptr $fn : i64 to !llvm.ptr\n")
+
+    val iv      = fresh("mi")
+    val outIter = fresh("oit")
+    val outR    = fresh("mres")
+    out.append(
+      s"  $outR = scf.for $iv = $c0Idx to $lenIdx step $c1Idx " +
+        s"iter_args($outIter = $outInit) -> (${outTy.text}) {\n",
+    )
+    val elt = fresh("elt")
+    out.append(s"    $elt = tensor.extract ${av.reg}[$iv] : ${srcTy.text}\n")
+    val res = fresh("ires")
+    out.append(s"    $res = llvm.call $fnp($ev, $elt) : !llvm.ptr, (i64, $inS) -> $outS\n")
+    val ins = fresh("ins")
+    out.append(s"    $ins = tensor.insert $res into $outIter[$iv] : ${outTy.text}\n")
+    out.append(s"    scf.yield $ins : ${outTy.text}\n")
+    out.append("  }\n")
+
+    MlirVal(outR, outTy)
+
   /** `filter(arr, x -> pred)` with an inline one-param predicate. Output
     * length depends on how many elements satisfy the predicate, so the
     * result has dynamic shape `tensor<?xT>` and is built in two passes:
